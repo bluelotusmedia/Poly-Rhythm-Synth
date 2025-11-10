@@ -96,14 +96,39 @@
         display: flex;
         flex-direction: column;
       }
-      .control-group h2 {
-        margin-top: 0;
-        color: var(--secondary-color);
+      .control-group-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         border-bottom: 1px solid var(--primary-color);
         padding-bottom: 0.5rem;
         margin-bottom: 1rem;
+      }
+      .control-group-header h2 {
+        margin: 0;
+        color: var(--secondary-color);
         font-size: 1.2rem;
         font-weight: 500;
+        border: none;
+        padding: 0;
+      }
+       .randomizer-buttons-group {
+        display: flex;
+        gap: 0.5rem;
+      }
+      .randomizer-buttons-group button {
+        background: none;
+        border: 1px solid #444;
+        color: var(--on-surface-color);
+        padding: 0.2rem 0.4rem;
+        font-size: 1rem;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background-color 0.2s, border-color 0.2s;
+      }
+      .randomizer-buttons-group button:hover {
+        background-color: #333;
+        border-color: var(--secondary-color);
       }
       .control-row {
         display: flex;

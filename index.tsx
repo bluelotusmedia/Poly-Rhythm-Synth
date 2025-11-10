@@ -99,6 +99,7 @@ interface ChannelControlsProps {
   onUpdate: (id: string, updates: Partial<ChannelState>) => void;
   onToggleSequencer: (id: string) => void;
   onLoadSample: (channelId: string, file: File) => void;
+  onRandomize: (mode: RandomizeMode) => void;
   analyserNode?: AnalyserNode;
   currentStep: number;
   isTransportPlaying: boolean;
@@ -118,16 +119,18 @@ interface MasterControlsProps {
     setGlobalFilterType: (type: FilterType) => void;
     isTransportPlaying: boolean;
     onToggleTransport: () => void;
+    onRandomize: (mode: RandomizeMode) => void;
 }
 
 interface LFOControlsProps {
     lfoState: LFOState;
     setLFOState: React.Dispatch<React.SetStateAction<LFOState>>;
     linkStatus: LinkStatus;
+    onRandomize: (mode: RandomizeMode) => void;
 }
 
 interface RandomizerProps {
-    onRandomize: (mode: RandomizeMode) => void;
+    onRandomize: (mode: RandomizeMode, scope: 'global' | 'master' | 'lfo' | string) => void;
 }
 
 declare global {
@@ -346,7 +349,7 @@ const CircularVisualizerSequencer: React.FC<CircularVisualizerSequencerProps> = 
 };
 
 
-const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, onToggleSequencer, onLoadSample, analyserNode, currentStep, isTransportPlaying }) => {
+const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, onToggleSequencer, onLoadSample, onRandomize, analyserNode, currentStep, isTransportPlaying }) => {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -365,6 +368,13 @@ const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, on
 
   return (
     <div className="control-group">
+      <div className="control-group-header">
+        <h2>{channel.name}</h2>
+        <div className="randomizer-buttons-group">
+          <button title="Chaos Randomize" onClick={() => onRandomize('chaos')}>🎲</button>
+          <button title="Musical Randomize" onClick={() => onRandomize('solfeggio')}>🎵</button>
+        </div>
+      </div>
        {analyserNode && (
         <div className="channel-visualizer-container">
           <CircularVisualizerSequencer 
@@ -377,7 +387,6 @@ const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, on
           />
         </div>
        )}
-      <h2>{channel.name}</h2>
        <div className="control-row">
            <label>Enable Sequencer</label>
             <button 
@@ -465,7 +474,13 @@ const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, on
 const MasterControls: React.FC<MasterControlsProps> = (props) => {
     return (
         <div className="control-group master-container">
-            <h2>Master</h2>
+            <div className="control-group-header">
+                <h2>Master</h2>
+                <div className="randomizer-buttons-group">
+                    <button title="Chaos Randomize" onClick={() => props.onRandomize('chaos')}>🎲</button>
+                    <button title="Musical Randomize" onClick={() => props.onRandomize('solfeggio')}>🎵</button>
+                </div>
+            </div>
             <div className="control-row">
                 <label>Transport</label>
                 <button onClick={props.onToggleTransport} className={props.isTransportPlaying ? 'active' : ''}>
@@ -516,7 +531,7 @@ const MasterControls: React.FC<MasterControlsProps> = (props) => {
     );
 };
 
-const LFOControls: React.FC<LFOControlsProps> = ({lfoState, setLFOState, linkStatus}) => {
+const LFOControls: React.FC<LFOControlsProps> = ({lfoState, setLFOState, linkStatus, onRandomize}) => {
     const handleUpdate = (updates: Partial<LFOState>) => {
         setLFOState(prevState => ({...prevState, ...updates}));
     };
@@ -530,7 +545,13 @@ const LFOControls: React.FC<LFOControlsProps> = ({lfoState, setLFOState, linkSta
 
     return (
          <div className="control-group lfo-container">
-            <h2>LFO</h2>
+            <div className="control-group-header">
+                <h2>LFO</h2>
+                <div className="randomizer-buttons-group">
+                    <button title="Chaos Randomize" onClick={() => onRandomize('chaos')}>🎲</button>
+                    <button title="Musical Randomize" onClick={() => onRandomize('solfeggio')}>🎵</button>
+                </div>
+            </div>
              <div className="control-row">
                 <label>Shape</label>
                 <select value={lfoState.shape} onChange={e => handleUpdate({ shape: e.target.value as LFO_Shape })}>
@@ -586,10 +607,12 @@ const LFOControls: React.FC<LFOControlsProps> = ({lfoState, setLFOState, linkSta
 const Randomizer: React.FC<RandomizerProps> = ({ onRandomize }) => {
     return (
          <div className="control-group randomizer-container">
-            <h2>Randomizer</h2>
+            <div className="control-group-header">
+                <h2>Randomizer</h2>
+            </div>
              <div className="control-row">
-                <button className="small" onClick={() => onRandomize('chaos')}>Chaos</button>
-                <button className="small" onClick={() => onRandomize('solfeggio')}>Solfeggio</button>
+                <button className="small" onClick={() => onRandomize('chaos', 'global')}>Global Chaos</button>
+                <button className="small" onClick={() => onRandomize('solfeggio', 'global')}>Global Musical</button>
             </div>
         </div>
     );
@@ -936,55 +959,67 @@ const App = () => {
         }
     }, []);
 
-    const handleRandomize = useCallback((mode: RandomizeMode) => {
+    const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | 'master' | 'lfo' | string = 'global') => {
         const random = (min: number, max: number, floor = false) => {
             const val = Math.random() * (max - min) + min;
             return floor ? Math.floor(val) : val;
         };
 
-        const newLFOState: LFOState = {
-            ...lfoState,
-            shape: lfoShapes[random(0, lfoShapes.length, true)],
-            rate: random(0.1, 20),
-            depth: random(0, 1),
-            sync: Math.random() > 0.5,
-            syncRate: lfoSyncRates[random(0, lfoSyncRates.length, true)],
-            routing: {
-                filterCutoff: Math.random() > 0.5,
-                filterResonance: Math.random() > 0.5,
-                channel1Vol: Math.random() > 0.5,
-                channel2Vol: Math.random() > 0.5,
-                channel3Vol: Math.random() > 0.5,
-            }
-        };
-        setLFOState(newLFOState);
-        
-        setGlobalFilterCutoff(random(100, 15000));
-        setGlobalFilterResonance(random(0, 20));
-        setGlobalFilterType(filterTypes[random(0, filterTypes.length, true)]);
-
-        const newChannels = channels.map(c => {
-            const steps = random(4, 32, true);
-            const solfeggioFrequency = solfeggioFrequencies[random(0, solfeggioFrequencies.length, true)];
-            return {
-                ...c,
-                volume: random(0.2, 0.9),
-                sequencerEnabled: Math.random() > 0.3,
-                sequencerSteps: steps,
-                sequencerPulses: random(1, steps, true),
-                sequencerRotate: random(0, steps - 1, true),
-                oscillatorType: oscillatorTypes[random(0, oscillatorTypes.length, true)],
-                noiseType: noiseTypes[random(0, noiseTypes.length, true)],
-                frequency: mode === 'solfeggio' 
-                    ? solfeggioFrequency.value
-                    : random(100, 1000),
-                solfeggioFrequency: mode === 'solfeggio'
-                    ? solfeggioFrequency.value.toString()
-                    : c.solfeggioFrequency
+        if (scope === 'global' || scope === 'lfo') {
+            const newLFOState: LFOState = {
+                ...lfoState,
+                shape: lfoShapes[random(0, lfoShapes.length, true)],
+                rate: random(0.1, 20),
+                depth: random(0, 1),
+                sync: Math.random() > 0.5,
+                syncRate: lfoSyncRates[random(0, lfoSyncRates.length, true)],
+                routing: {
+                    filterCutoff: Math.random() > 0.5,
+                    filterResonance: Math.random() > 0.5,
+                    channel1Vol: Math.random() > 0.5,
+                    channel2Vol: Math.random() > 0.5,
+                    channel3Vol: Math.random() > 0.5,
+                }
             };
-        });
-        setChannels(newChannels);
+            setLFOState(newLFOState);
+        }
 
+        if (scope === 'global' || scope === 'master') {
+            setGlobalFilterCutoff(random(100, 15000));
+            setGlobalFilterResonance(random(0, 20));
+            setGlobalFilterType(filterTypes[random(0, filterTypes.length, true)]);
+        }
+
+        if (scope === 'global' || channels.some(c => c.id === scope)) {
+            setChannels(prevChannels => prevChannels.map(c => {
+                if (scope === 'global' || c.id === scope) {
+                    const steps = random(4, 32, true);
+                    const solfeggioFrequency = solfeggioFrequencies[random(0, solfeggioFrequencies.length, true)];
+                    return {
+                        ...c,
+                        volume: random(0.2, 0.9),
+                        sequencerEnabled: Math.random() > 0.3,
+                        sequencerSteps: steps,
+                        sequencerPulses: random(1, steps, true),
+                        sequencerRotate: random(0, steps - 1, true),
+                        oscillatorType: oscillatorTypes[random(0, oscillatorTypes.length, true)],
+                        noiseType: noiseTypes[random(0, noiseTypes.length, true)],
+                        frequency: mode === 'solfeggio' 
+                            ? solfeggioFrequency.value
+                            : random(100, 1000),
+                        solfeggioFrequency: mode === 'solfeggio'
+                            ? solfeggioFrequency.value.toString()
+                            : c.solfeggioFrequency,
+                        effects: {
+                            distortion: random(0, 0.8),
+                            delayTime: random(0, 1),
+                            delayFeedback: random(0, 0.9)
+                        }
+                    };
+                }
+                return c;
+            }));
+        }
     }, [channels, lfoState]);
 
     const handleToggleLink = useCallback(() => { if (linkRef.current) linkRef.current.enable(!linkStatus.isEnabled); }, [linkStatus.isEnabled]);
@@ -1023,6 +1058,7 @@ const App = () => {
                     setGlobalFilterType={setGlobalFilterType}
                     isTransportPlaying={isTransportPlaying}
                     onToggleTransport={handleToggleTransport}
+                    onRandomize={(mode) => handleRandomize(mode, 'master')}
                 />
                 <div className="channels-container">
                     {channels.map(channel => (
@@ -1032,13 +1068,19 @@ const App = () => {
                             onUpdate={handleUpdateChannel}
                             onToggleSequencer={handleToggleSequencer}
                             onLoadSample={handleLoadSample}
+                            onRandomize={(mode) => handleRandomize(mode, channel.id)}
                             analyserNode={audioNodesRef.current.get(channel.id)?.analyser}
                             currentStep={currentStep}
                             isTransportPlaying={isTransportPlaying}
                         />
                     ))}
                 </div>
-                <LFOControls lfoState={lfoState} setLFOState={setLFOState} linkStatus={linkStatus} />
+                <LFOControls 
+                    lfoState={lfoState} 
+                    setLFOState={setLFOState} 
+                    linkStatus={linkStatus} 
+                    onRandomize={(mode) => handleRandomize(mode, 'lfo')}
+                />
                 <Randomizer onRandomize={handleRandomize} />
             </div>
         </div>
