@@ -91,11 +91,8 @@ interface LFOState {
 }
 
 // --- Tuning System Types ---
-type TuningSystem = '440_ET' | '432_ET' | 'just_intonation' | 'pythagorean' | 'solfeggio' | 'custom';
-interface CustomTuning {
-    name: string;
-    frequencies: number[];
-}
+type TuningSystem = '440_ET' | '432_ET' | 'just_intonation_440' | 'just_intonation_432' | 'pythagorean_440' | 'pythagorean_432' | 'solfeggio' | 'wholesome_scale';
+
 
 // --- New Audio Node Types ---
 interface LayerAudioNodes {
@@ -203,8 +200,6 @@ interface GenerativeToolsProps {
     setMorphDuration: (duration: number) => void;
     harmonicTuningSystem: TuningSystem;
     setHarmonicTuningSystem: (system: TuningSystem) => void;
-    onLoadCustomTuning: (file: File) => void;
-    customTuning: CustomTuning | null;
 }
 
 
@@ -244,6 +239,7 @@ const solfeggioFrequenciesData = [
   { value: 963, label: '963 Hz - Oneness' },
 ];
 const solfeggioFrequencies = solfeggioFrequenciesData.map(f => f.value);
+const wholesomeScaleFrequencies = [192, 216, 240, 256, 288, 320, 360]; // G Major Diatonic with integer frequencies
 
 const musicalScales = {
     major: [0, 2, 4, 5, 7, 9, 11],
@@ -299,34 +295,11 @@ const getRandomBool = (probability = 0.5) => Math.random() < probability;
 function getRandomElement<T>(arr: readonly T[] | T[]): T {
     return arr[Math.floor(Math.random() * arr.length)];
 }
-const midiToFreq = (midi: number, a4 = 440) => a4 * Math.pow(2, (midi - 69) / 12);
 const getNoteFromScale = (rootFreq: number, ratios: number[], octaves: number) => {
     const octave = getRandomInt(0, octaves - 1);
     const ratio = getRandomElement(ratios);
     return rootFreq * ratio * Math.pow(2, octave);
 };
-
-const isObject = (item: any) => {
-  return (item && typeof item === 'object' && !Array.isArray(item));
-}
-
-const deepMerge = <T extends object>(target: T, source: Partial<T>): T => {
-  let output = { ...target };
-  if (isObject(target) && isObject(source)) {
-    Object.keys(source).forEach(key => {
-      const sourceKey = key as keyof T;
-      if (isObject(source[sourceKey])) {
-        if (!(sourceKey in target))
-          Object.assign(output, { [sourceKey]: source[sourceKey] });
-        else
-          (output as any)[sourceKey] = deepMerge(target[sourceKey] as object, source[sourceKey] as object);
-      } else {
-        Object.assign(output, { [sourceKey]: source[sourceKey] });
-      }
-    });
-  }
-  return output;
-}
 
 
 // --- Components ---
@@ -526,8 +499,13 @@ const LFOVisualizer: React.FC<{ shape: LFO_Shape; rate: number }> = ({ shape, ra
         if (!ctx) return;
         let animationFrameId: number;
         let phase = 0;
+        let lastTime = 0;
 
         const draw = (time: number) => {
+            if (lastTime === 0) lastTime = time;
+            const deltaTime = (time - lastTime) / 1000;
+            lastTime = time;
+            
             const { width, height } = canvas;
             ctx.fillStyle = '#191924';
             ctx.fillRect(0, 0, width, height);
@@ -536,11 +514,11 @@ const LFOVisualizer: React.FC<{ shape: LFO_Shape; rate: number }> = ({ shape, ra
             ctx.lineWidth = 2;
             ctx.beginPath();
 
-            const frequency = rate / 10; // Adjust for nice visualization
-            phase += (time - (phase || time)) * frequency * 0.001;
+            phase += deltaTime * rate;
             
             for (let x = 0; x < width; x++) {
-                const angle = 2 * Math.PI * (x / width) + phase;
+                const normalizedX = x / width;
+                const angle = 2 * Math.PI * (normalizedX + phase);
                 let y;
                 switch (shape) {
                     case 'sine':
@@ -550,11 +528,10 @@ const LFOVisualizer: React.FC<{ shape: LFO_Shape; rate: number }> = ({ shape, ra
                         y = Math.sin(angle) >= 0 ? height * 0.1 : height * 0.9;
                         break;
                     case 'sawtooth':
-                         y = (1 - (2 * (angle / (2*Math.PI)) % 1)) * height;
-                         y = (y + height/2) % height
+                         y = ( (angle / (2*Math.PI)) % 1) * height;
                         break;
                     case 'triangle':
-                        y = (1 - 2 * Math.abs( ( (angle / (2 * Math.PI)) % 1) - 0.5)) * height;
+                        y = 2 * Math.abs( ( (angle / (2 * Math.PI)) % 1) - 0.5) * height;
                         break;
                     case 'ramp':
                         y = (1-((angle / (2*Math.PI)) % 1)) * height;
@@ -1226,17 +1203,7 @@ const MasterEffects: React.FC<MasterEffectsProps> = ({ effects, setEffects, onRa
 const TuningSelector: React.FC<{
     harmonicTuningSystem: TuningSystem,
     setHarmonicTuningSystem: (system: TuningSystem) => void,
-    onLoadCustomTuning: (file: File) => void,
-    customTuning: CustomTuning | null
-}> = ({ harmonicTuningSystem, setHarmonicTuningSystem, onLoadCustomTuning, customTuning }) => {
-    const fileInputRef = useRef<HTMLInputElement>(null);
-
-    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        if (event.target.files && event.target.files[0]) {
-            onLoadCustomTuning(event.target.files[0]);
-        }
-    };
-
+}> = ({ harmonicTuningSystem, setHarmonicTuningSystem }) => {
     return (
         <div className="tuning-selector">
             <div className="control-row">
@@ -1244,16 +1211,13 @@ const TuningSelector: React.FC<{
                 <select value={harmonicTuningSystem} onChange={e => setHarmonicTuningSystem(e.target.value as TuningSystem)}>
                     <option value="440_ET">440Hz Equal Temperament</option>
                     <option value="432_ET">432Hz Equal Temperament</option>
-                    <option value="just_intonation">Just Intonation</option>
-                    <option value="pythagorean">Pythagorean</option>
+                    <option value="just_intonation_440">Just Intonation (A4=440)</option>
+                    <option value="just_intonation_432">Just Intonation (A4=432)</option>
+                    <option value="pythagorean_440">Pythagorean (A4=440)</option>
+                    <option value="pythagorean_432">Pythagorean (A4=432)</option>
                     <option value="solfeggio">Solfeggio</option>
-                    {customTuning && <option value="custom">{customTuning.name}</option>}
+                    <option value="wholesome_scale">Wholesome Scale (G Major)</option>
                 </select>
-            </div>
-            <div className="control-row">
-                <label>Load Custom Tuning</label>
-                <input type="file" accept=".json" style={{ display: 'none' }} ref={fileInputRef} onChange={handleFileChange} />
-                <button className="small file-load-button" onClick={() => fileInputRef.current?.click()}>Load</button>
             </div>
         </div>
     );
@@ -1262,7 +1226,7 @@ const TuningSelector: React.FC<{
 
 const GenerativeTools: React.FC<GenerativeToolsProps> = ({
     onRandomize, onIntelligentRandomize, isMorphEnabled, setIsMorphEnabled, morphDuration, setMorphDuration,
-    harmonicTuningSystem, setHarmonicTuningSystem, onLoadCustomTuning, customTuning
+    harmonicTuningSystem, setHarmonicTuningSystem
 }) => {
     return (
         <div className="control-group generative-container">
@@ -1306,8 +1270,6 @@ const GenerativeTools: React.FC<GenerativeToolsProps> = ({
                     <TuningSelector
                         harmonicTuningSystem={harmonicTuningSystem}
                         setHarmonicTuningSystem={setHarmonicTuningSystem}
-                        onLoadCustomTuning={onLoadCustomTuning}
-                        customTuning={customTuning}
                     />
                  </div>
             </div>
@@ -1491,11 +1453,12 @@ const useAudio = (
       const { audioContext } = audioContextRef.current;
       if (!audioContext) return;
       while (stepTimeRef.current < audioContext.currentTime + 0.1) {
+        const currentGlobalStep = currentStep;
         engineStates.forEach(engine => {
           const pattern = patternsRef.current.get(engine.id);
           const engineNodes = engineNodesRef.current.get(engine.id);
           if (pattern && engineNodes && engine.sequencerEnabled) {
-              const stepIndex = currentStep % pattern.length;
+              const stepIndex = currentGlobalStep % pattern.length;
               if (pattern[stepIndex] === 1) {
                   engineNodes.sequencerGain.gain.cancelScheduledValues(stepTimeRef.current);
                   engineNodes.sequencerGain.gain.setValueAtTime(1, stepTimeRef.current);
@@ -1707,7 +1670,7 @@ interface MorphSnapshot {
 interface MorphState {
     isActive: boolean;
     duration: number; // in steps
-    progress: number; // in steps
+    startStep: number;
     start: MorphSnapshot | null;
     target: MorphSnapshot | null;
 }
@@ -1721,7 +1684,6 @@ const App = () => {
   const [filter2, setFilter2] = useState<FilterState>({ cutoff: 500, resonance: 1, type: 'highpass' });
   const [filterRouting, setFilterRouting] = useState<FilterRouting>('series');
   const [harmonicTuningSystem, setHarmonicTuningSystem] = useState<TuningSystem>('440_ET');
-  const [customTuning, setCustomTuning] = useState<CustomTuning | null>(null);
   const [bottomTab, setBottomTab] = useState<'lfos' | 'matrix'>('lfos');
 
   
@@ -1752,17 +1714,17 @@ const App = () => {
 
   const [isMorphEnabled, setIsMorphEnabled] = useState(false);
   const [morphDuration, setMorphDuration] = useState(16);
-  const [morph, setMorph] = useState<MorphState>({ isActive: false, duration: 16, progress: 0, start: null, target: null, });
+  const [morph, setMorph] = useState<MorphState>({ isActive: false, duration: 16, startStep: 0, start: null, target: null, });
+  const lastMorphStepRef = useRef(-1);
 
   const { isInitialized, initializeAudio, currentStep, loadSample, engineNodesRef, masterAnalyserRef, leftAnalyserRef, rightAnalyserRef } = useAudio(
     engineStates, setEngineStates, masterVolume, filter1, filter2, filterRouting, lfoStates, masterEffects, bpm, isTransportPlaying,
   );
   
   const cancelMorph = useCallback(() => {
-    if (morph.isActive) {
-        setMorph(prev => ({ ...prev, isActive: false, progress: 0, start: null, target: null }));
-    }
-  }, [morph.isActive]);
+    setMorph(prev => ({ ...prev, isActive: false, start: null, target: null }));
+    lastMorphStepRef.current = -1;
+  }, []);
 
   const handleEngineUpdate = (engineId: string, updates: Partial<EngineState>) => {
     cancelMorph();
@@ -1789,21 +1751,6 @@ const App = () => {
       })
     );
   };
-  
-  const handleLoadCustomTuning = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const result = JSON.parse(e.target?.result as string);
-            if (result.frequencies && Array.isArray(result.frequencies) && result.frequencies.every((f: any) => typeof f === 'number')) {
-                const name = result.name || file.name.replace('.json', '');
-                setCustomTuning({ name, frequencies: result.frequencies });
-                setHarmonicTuningSystem('custom');
-            } else { alert('Invalid tuning file format.'); }
-        } catch (error) { alert('Error parsing tuning file.'); console.error(error); }
-    };
-    reader.readAsText(file);
-  };
 
   const wrappedSetMasterVolume = (v: number) => { cancelMorph(); setMasterVolume(v); };
   const handleFilter1Update = (u: Partial<FilterState>) => { cancelMorph(); setFilter1(p => ({...p, ...u})); };
@@ -1811,16 +1758,21 @@ const App = () => {
   const wrappedSetMasterEffects = (effects: React.SetStateAction<MasterEffect[]>) => { cancelMorph(); setMasterEffects(effects); };
 
   const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | string) => {
+    cancelMorph();
     const getHarmonicFreq = () => {
-        let root = 440;
-        let ratios = justIntonationRatios;
+        const getRoot = (a4: number) => a4 * Math.pow(2, -9 / 12); // Get C4 from A4
+        let root = getRoot(440);
+        let ratios: number[] | null = null;
+
         switch (harmonicTuningSystem) {
-            case '432_ET': root = 432; ratios = musicalScales.major.map(s => Math.pow(2, s / 12)); break;
-            case '440_ET': root = 440; ratios = musicalScales.major.map(s => Math.pow(2, s / 12)); break;
-            case 'just_intonation': root = 261.63; ratios = justIntonationRatios; break;
-            case 'pythagorean': root = 261.63; ratios = pythagoreanRatios; break;
+            case '432_ET': root = getRoot(432); ratios = musicalScales.major.map(s => Math.pow(2, s / 12)); break;
+            case '440_ET': root = getRoot(440); ratios = musicalScales.major.map(s => Math.pow(2, s / 12)); break;
+            case 'just_intonation_440': root = getRoot(440); ratios = justIntonationRatios; break;
+            case 'just_intonation_432': root = getRoot(432); ratios = justIntonationRatios; break;
+            case 'pythagorean_440': root = getRoot(440); ratios = pythagoreanRatios; break;
+            case 'pythagorean_432': root = getRoot(432); ratios = pythagoreanRatios; break;
             case 'solfeggio': return getRandomElement(solfeggioFrequencies);
-            case 'custom': if (customTuning) return getRandomElement(customTuning.frequencies); else return 440;
+            case 'wholesome_scale': return getRandomElement(wholesomeScaleFrequencies) * getRandomElement([0.5, 1, 2]);
         }
         return getNoteFromScale(root, ratios, 3);
     };
@@ -1920,8 +1872,8 @@ const App = () => {
         targetSnapshot.effects = masterEffects.map(ef => ef.id === scope ? randomizeEffect(ef) : ef);
     }
 
-    if (isMorphEnabled) {
-        setMorph({ isActive: true, duration: morphDuration, progress: 0, start: startSnapshot, target: targetSnapshot });
+    if (isMorphEnabled && isTransportPlaying) {
+        setMorph({ isActive: true, duration: morphDuration, startStep: currentStep, start: startSnapshot, target: targetSnapshot });
     } else {
         setEngineStates(targetSnapshot.engines);
         setLfoStates(targetSnapshot.lfos);
@@ -1929,18 +1881,22 @@ const App = () => {
         setFilter2(targetSnapshot.filter2);
         setMasterEffects(targetSnapshot.effects);
     }
-  }, [engineStates, lfoStates, filter1, filter2, masterEffects, isMorphEnabled, morphDuration, harmonicTuningSystem, customTuning]);
+  }, [engineStates, lfoStates, filter1, filter2, masterEffects, isMorphEnabled, morphDuration, harmonicTuningSystem, isTransportPlaying, currentStep, cancelMorph]);
   
   useEffect(() => {
-    if (!morph.isActive || !isTransportPlaying || !morph.start || !morph.target) {
-        if(morph.isActive && !isTransportPlaying) cancelMorph();
+    if (!morph.isActive || !morph.start || !morph.target || !isTransportPlaying) {
         return;
     }
-    const stepProgress = 1 / ( (60 / bpm) / 4 * 60); // progress per animation frame
     
-    if (morph.progress < morph.duration) {
-        setMorph(prev => ({...prev, progress: prev.progress + 1}));
-    } else {
+    // This ensures we only run the interpolation logic ONCE per sequencer step
+    if (currentStep === lastMorphStepRef.current) {
+        return;
+    }
+    lastMorphStepRef.current = currentStep;
+
+    const stepsElapsed = (currentStep - morph.startStep + Math.max(...engineStates.map(e => e.sequencerSteps), 1)) % Math.max(...engineStates.map(e => e.sequencerSteps), 1);
+
+    if (stepsElapsed >= morph.duration) {
         // Ensure final state is set exactly
         setEngineStates(morph.target.engines);
         setLfoStates(morph.target.lfos);
@@ -1951,9 +1907,8 @@ const App = () => {
         return;
     }
 
-
-    const interpolate = (start: number, end: number, progress: number) => start + (end - start) * progress;
-    const progress = morph.progress / morph.duration;
+    const progress = stepsElapsed / morph.duration;
+    const interpolate = (start: number, end: number) => start + (end - start) * progress;
 
     // Interpolate and update states
     const nextEngines = morph.start.engines.map((startEngine, i) => {
@@ -1963,21 +1918,21 @@ const App = () => {
             ...startEngine,
             synth: {
                 ...startEngine.synth,
-                volume: interpolate(startEngine.synth.volume, targetEngine.synth.volume, progress),
-                frequency: interpolate(startEngine.synth.frequency, targetEngine.synth.frequency, progress),
+                volume: interpolate(startEngine.synth.volume, targetEngine.synth.volume),
+                frequency: interpolate(startEngine.synth.frequency, targetEngine.synth.frequency),
             },
             noise: {
                 ...startEngine.noise,
-                volume: interpolate(startEngine.noise.volume, targetEngine.noise.volume, progress),
+                volume: interpolate(startEngine.noise.volume, targetEngine.noise.volume),
             },
             sampler: {
                 ...startEngine.sampler,
-                volume: interpolate(startEngine.sampler.volume, targetEngine.sampler.volume, progress),
-                transpose: interpolate(startEngine.sampler.transpose, targetEngine.sampler.transpose, progress),
+                volume: interpolate(startEngine.sampler.volume, targetEngine.sampler.volume),
+                transpose: interpolate(startEngine.sampler.transpose, targetEngine.sampler.transpose),
             },
-            sequencerSteps: Math.round(interpolate(startEngine.sequencerSteps, targetEngine.sequencerSteps, progress)),
-            sequencerPulses: Math.round(interpolate(startEngine.sequencerPulses, targetEngine.sequencerPulses, progress)),
-            sequencerRotate: Math.round(interpolate(startEngine.sequencerRotate, targetEngine.sequencerRotate, progress)),
+            sequencerSteps: Math.round(interpolate(startEngine.sequencerSteps, targetEngine.sequencerSteps)),
+            sequencerPulses: Math.round(interpolate(startEngine.sequencerPulses, targetEngine.sequencerPulses)),
+            sequencerRotate: Math.round(interpolate(startEngine.sequencerRotate, targetEngine.sequencerRotate)),
         };
     });
     setEngineStates(nextEngines);
@@ -1987,40 +1942,50 @@ const App = () => {
         if (!targetLfo) return startLfo;
         return {
             ...startLfo,
-            rate: interpolate(startLfo.rate, targetLfo.rate, progress),
-            depth: interpolate(startLfo.depth, targetLfo.depth, progress),
+            rate: interpolate(startLfo.rate, targetLfo.rate),
+            depth: interpolate(startLfo.depth, targetLfo.depth),
         };
     });
     setLfoStates(nextLfos);
     
     setFilter1({
         ...morph.start.filter1,
-        cutoff: interpolate(morph.start.filter1.cutoff, morph.target.filter1.cutoff, progress),
-        resonance: interpolate(morph.start.filter1.resonance, morph.target.filter1.resonance, progress),
+        cutoff: interpolate(morph.start.filter1.cutoff, morph.target.filter1.cutoff),
+        resonance: interpolate(morph.start.filter1.resonance, morph.target.filter1.resonance),
     });
     setFilter2({
         ...morph.start.filter2,
-        cutoff: interpolate(morph.start.filter2.cutoff, morph.target.filter2.cutoff, progress),
-        resonance: interpolate(morph.start.filter2.resonance, morph.target.filter2.resonance, progress),
+        cutoff: interpolate(morph.start.filter2.cutoff, morph.target.filter2.cutoff),
+        resonance: interpolate(morph.start.filter2.resonance, morph.target.filter2.resonance),
     });
 
     const nextEffects = morph.start.effects.map((startEffect) => {
         const targetEffect = morph.target!.effects.find(e => e.id === startEffect.id);
         if (!targetEffect) return startEffect;
-        const newParams: MasterEffect['params'] = {};
-        if (startEffect.type === 'distortion' && startEffect.params.distortion && targetEffect.params.distortion) newParams.distortion = { mode: startEffect.params.distortion.mode, amount: interpolate(startEffect.params.distortion.amount, targetEffect.params.distortion.amount, progress)};
-        if (startEffect.type === 'delay' && startEffect.params.delay && targetEffect.params.delay) newParams.delay = { time: interpolate(startEffect.params.delay.time, targetEffect.params.delay.time, progress), feedback: interpolate(startEffect.params.delay.feedback, targetEffect.params.delay.feedback, progress), mix: interpolate(startEffect.params.delay.mix, targetEffect.params.delay.mix, progress)};
-        if (startEffect.type === 'reverb' && startEffect.params.reverb && targetEffect.params.reverb) newParams.reverb = { decay: interpolate(startEffect.params.reverb.decay, targetEffect.params.reverb.decay, progress), mix: interpolate(startEffect.params.reverb.mix, targetEffect.params.reverb.mix, progress)};
+        const newParams: MasterEffect['params'] = JSON.parse(JSON.stringify(startEffect.params));
+
+        if (startEffect.type === 'distortion' && startEffect.params.distortion && targetEffect.params.distortion) {
+            newParams.distortion!.amount = interpolate(startEffect.params.distortion.amount, targetEffect.params.distortion.amount);
+        }
+        if (startEffect.type === 'delay' && startEffect.params.delay && targetEffect.params.delay) {
+            newParams.delay!.time = interpolate(startEffect.params.delay.time, targetEffect.params.delay.time);
+            newParams.delay!.feedback = interpolate(startEffect.params.delay.feedback, targetEffect.params.delay.feedback);
+            newParams.delay!.mix = interpolate(startEffect.params.delay.mix, targetEffect.params.delay.mix);
+        }
+        if (startEffect.type === 'reverb' && startEffect.params.reverb && targetEffect.params.reverb) {
+            newParams.reverb!.decay = interpolate(startEffect.params.reverb.decay, targetEffect.params.reverb.decay);
+            newParams.reverb!.mix = interpolate(startEffect.params.reverb.mix, targetEffect.params.reverb.mix);
+        }
         return {...startEffect, params: newParams };
     });
     setMasterEffects(nextEffects);
 
-  }, [currentStep, isTransportPlaying, morph]);
+  }, [currentStep, isTransportPlaying, morph, cancelMorph, engineStates]);
 
   const handleToggleTransport = () => {
       setIsTransportPlaying(p => { 
         if (!p) {
-            setMorph(prev => ({ ...prev, progress: 0 })); // Reset progress on play
+            lastMorphStepRef.current = -1; // Reset morph tracking on play
         } else {
             cancelMorph(); 
         }
@@ -2035,6 +2000,7 @@ const App = () => {
       alert("API Key not configured.");
       return;
     }
+    cancelMorph();
     setIsAiLoading(true);
 
     const currentState = { engines: engineStates, lfos: lfoStates, filter1, filter2, effects: masterEffects };
@@ -2043,11 +2009,11 @@ const App = () => {
     The user wants to randomize only the following part(s): '${scope}'.
     Your task is to generate a new set of parameters for ONLY the specified scope. The new parameters should be an interesting and musically pleasing evolution of the current state.
     For example, if the current synth frequency is 440Hz, a good variation might be 660Hz (a perfect fifth higher), not a random number like 1234Hz. If the LFO is slow, maybe a slightly faster but related tempo would be good.
-    IMPORTANT: Return ONLY the JSON object for the part(s) you are changing. For example, if scope is 'engine1', return an object like: { "engines": [{ "id": "engine1", "synth": { "frequency": 660, "volume": 0.6 } }] }. Do not return the full synth state.`;
+    IMPORTANT: Return ONLY the JSON object for the part(s) you are changing. For example, if scope is 'engine1', return an object like: { "engines": [{ "id": "engine1", "synth": { "frequency": 660, "volume": 0.6 } }] }. Do not return the full synth state. Be minimal in your response.`;
 
     let responseSchema: any = { type: Type.OBJECT, properties: {}, optional: ['engines', 'lfos', 'filter1', 'filter2', 'effects'] };
-    if (scope === 'global' || scope.startsWith('engine')) responseSchema.properties.engines = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, synth: { type: Type.OBJECT, properties: { volume: { type: Type.NUMBER }, frequency: { type: Type.NUMBER }, oscillatorType: { type: Type.STRING, enum: [...oscillatorTypes] } }, optional: ['volume', 'frequency', 'oscillatorType'] }, noise: { type: Type.OBJECT, properties: { volume: {type: Type.NUMBER}, noiseType: { type: Type.STRING, enum: [...noiseTypes]}}, optional: ['volume', 'noiseType'] }, sequencerSteps: { type: Type.NUMBER }, sequencerPulses: { type: Type.NUMBER } }, optional: ['synth', 'noise', 'sequencerSteps', 'sequencerPulses'] } };
-    if (scope === 'global' || scope.startsWith('lfo')) responseSchema.properties.lfos = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, rate: { type: Type.NUMBER }, depth: { type: Type.NUMBER }, shape: { type: Type.STRING, enum: [...lfoShapes] } }, optional: ['rate', 'depth', 'shape'] } };
+    if (scope === 'global' || scope.startsWith('engine')) responseSchema.properties.engines = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, synth: { type: Type.OBJECT, properties: { volume: { type: Type.NUMBER }, frequency: { type: Type.NUMBER }, oscillatorType: { type: Type.STRING, enum: [...oscillatorTypes] } }, optional: ['volume', 'frequency', 'oscillatorType'] }, noise: { type: Type.OBJECT, properties: { volume: {type: Type.NUMBER}, noiseType: { type: Type.STRING, enum: [...noiseTypes]}}, optional: ['volume', 'noiseType'] }, sequencerSteps: { type: Type.NUMBER }, sequencerPulses: { type: Type.NUMBER } }, optional: ['id', 'synth', 'noise', 'sequencerSteps', 'sequencerPulses'] } };
+    if (scope === 'global' || scope.startsWith('lfo')) responseSchema.properties.lfos = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, rate: { type: Type.NUMBER }, depth: { type: Type.NUMBER }, shape: { type: Type.STRING, enum: [...lfoShapes] } }, optional: ['id', 'rate', 'depth', 'shape'] } };
     if (scope === 'global' || scope === 'filter1') responseSchema.properties.filter1 = { type: Type.OBJECT, properties: { cutoff: { type: Type.NUMBER }, resonance: { type: Type.NUMBER }, type: { type: Type.STRING, enum: [...filterTypes] } }, optional: ['cutoff', 'resonance', 'type'] };
     if (scope === 'global' || scope === 'filter2') responseSchema.properties.filter2 = { type: Type.OBJECT, properties: { cutoff: { type: Type.NUMBER }, resonance: { type: Type.NUMBER }, type: { type: Type.STRING, enum: [...filterTypes] } }, optional: ['cutoff', 'resonance', 'type'] };
     
@@ -2061,29 +2027,39 @@ const App = () => {
         const update = JSON.parse(response.text);
         
         const startSnapshot: MorphSnapshot = { engines: JSON.parse(JSON.stringify(engineStates)), lfos: JSON.parse(JSON.stringify(lfoStates)), filter1: {...filter1}, filter2: {...filter2}, effects: JSON.parse(JSON.stringify(masterEffects)) };
-        let targetSnapshot = JSON.parse(JSON.stringify(startSnapshot));
-
+        
+        let targetEngines = JSON.parse(JSON.stringify(startSnapshot.engines));
+        let targetLfos = JSON.parse(JSON.stringify(startSnapshot.lfos));
+        let targetFilter1 = JSON.parse(JSON.stringify(startSnapshot.filter1));
+        let targetFilter2 = JSON.parse(JSON.stringify(startSnapshot.filter2));
+        
         if (update.engines) {
             update.engines.forEach((engineUpdate: Partial<EngineState> & { id: string }) => {
-                const index = targetSnapshot.engines.findIndex(e => e.id === engineUpdate.id);
+                const index = targetEngines.findIndex((e: EngineState) => e.id === engineUpdate.id);
                 if (index !== -1) {
-                    targetSnapshot.engines[index] = deepMerge(targetSnapshot.engines[index], engineUpdate);
+                    if (engineUpdate.synth) targetEngines[index].synth = {...targetEngines[index].synth, ...engineUpdate.synth};
+                    if (engineUpdate.noise) targetEngines[index].noise = {...targetEngines[index].noise, ...engineUpdate.noise};
+                    if (engineUpdate.sampler) targetEngines[index].sampler = {...targetEngines[index].sampler, ...engineUpdate.sampler};
+                    if (engineUpdate.sequencerSteps) targetEngines[index].sequencerSteps = engineUpdate.sequencerSteps;
+                    if (engineUpdate.sequencerPulses) targetEngines[index].sequencerPulses = engineUpdate.sequencerPulses;
                 }
             });
         }
         if (update.lfos) {
              update.lfos.forEach((lfoUpdate: Partial<LFOState> & { id: string }) => {
-                const index = targetSnapshot.lfos.findIndex(l => l.id === lfoUpdate.id);
+                const index = targetLfos.findIndex((l: LFOState) => l.id === lfoUpdate.id);
                 if (index !== -1) {
-                    targetSnapshot.lfos[index] = deepMerge(targetSnapshot.lfos[index], lfoUpdate);
+                    targetLfos[index] = {...targetLfos[index], ...lfoUpdate};
                 }
             });
         }
-        if (update.filter1) targetSnapshot.filter1 = deepMerge(targetSnapshot.filter1, update.filter1);
-        if (update.filter2) targetSnapshot.filter2 = deepMerge(targetSnapshot.filter2, update.filter2);
+        if (update.filter1) targetFilter1 = {...targetFilter1, ...update.filter1};
+        if (update.filter2) targetFilter2 = {...targetFilter2, ...update.filter2};
+
+        const targetSnapshot = { engines: targetEngines, lfos: targetLfos, filter1: targetFilter1, filter2: targetFilter2, effects: startSnapshot.effects };
         
-        if (isMorphEnabled) {
-            setMorph({ isActive: true, duration: morphDuration, progress: 0, start: startSnapshot, target: targetSnapshot });
+        if (isMorphEnabled && isTransportPlaying) {
+            setMorph({ isActive: true, duration: morphDuration, startStep: currentStep, start: startSnapshot, target: targetSnapshot });
         } else {
             setEngineStates(targetSnapshot.engines);
             setLfoStates(targetSnapshot.lfos);
@@ -2097,7 +2073,7 @@ const App = () => {
     } finally {
         setIsAiLoading(false);
     }
-  }, [ai, engineStates, lfoStates, filter1, filter2, masterEffects, isMorphEnabled, morphDuration]);
+  }, [ai, engineStates, lfoStates, filter1, filter2, masterEffects, isMorphEnabled, morphDuration, cancelMorph, isTransportPlaying, currentStep]);
 
   if (!isReady) {
     return (
@@ -2126,7 +2102,6 @@ const App = () => {
                     isMorphEnabled={isMorphEnabled} setIsMorphEnabled={setIsMorphEnabled}
                     morphDuration={morphDuration} setMorphDuration={setMorphDuration}
                     harmonicTuningSystem={harmonicTuningSystem} setHarmonicTuningSystem={setHarmonicTuningSystem}
-                    onLoadCustomTuning={handleLoadCustomTuning} customTuning={customTuning}
                 />
             </div>
              <div className="full-width-container">

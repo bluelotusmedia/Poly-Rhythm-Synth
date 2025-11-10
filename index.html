@@ -108,6 +108,7 @@
         display: grid;
         grid-template-columns: 2fr 3fr;
         gap: 1.5rem;
+        min-width: 0;
       }
 
        .filters-container { 
@@ -370,6 +371,7 @@
       .master-effects-container {
         display: flex;
         flex-direction: column;
+        min-width: 0; /* CRITICAL FIX for grid + overflow */
       }
       .effects-chain {
         display: flex;
@@ -380,7 +382,7 @@
         border-radius: 6px;
         overflow-x: auto;
         align-items: flex-start;
-        flex-grow: 1; /* Allow chain to fill space */
+        flex-grow: 1;
       }
       .effects-chain-empty {
         width: 100%;
@@ -390,6 +392,7 @@
         border: 2px dashed var(--surface-color-light);
         color: var(--disabled-color);
         font-style: italic;
+        flex-grow: 1;
       }
       .effect-module {
         background-color: var(--surface-color-light);
