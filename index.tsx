@@ -10,6 +10,7 @@ type NoiseType = 'white' | 'pink' | 'brown';
 type LFO_Shape = 'sine' | 'square' | 'sawtooth' | 'triangle' | 'ramp';
 type FilterType = 'lowpass' | 'highpass' | 'bandpass' | 'notch';
 type RandomizeMode = 'chaos' | 'solfeggio';
+type EngineLayerType = 'synth' | 'noise' | 'sampler';
 
 // --- New Layered Architecture Types ---
 interface SynthLayerState {
@@ -346,6 +347,7 @@ const CircularVisualizerSequencer: React.FC<CircularVisualizerSequencerProps> = 
 
 
 const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLayerUpdate, onLoadSample, onRandomize, analyserNode, currentStep, isTransportPlaying }) => {
+  const [activeTab, setActiveTab] = useState<EngineLayerType>('synth');
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -361,6 +363,108 @@ const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLay
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files && e.target.files.length > 0) { onLoadSample(engine.id, e.target.files[0]); } };
   const handleLoadClick = () => { fileInputRef.current?.click(); };
 
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'synth':
+        return (
+          <div className="layer-group">
+            <div className="layer-header">
+              <h4>Synth Settings</h4>
+              <button onClick={() => onLayerUpdate(engine.id, 'synth', { enabled: !engine.synth.enabled })} className={engine.synth.enabled ? 'active power-toggle' : 'power-toggle'}>
+                {engine.synth.enabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            <div className="control-row">
+              <label>Volume</label>
+              <div className="control-value-wrapper">
+                <input type="range" min="0" max="1" step="0.01" value={engine.synth.volume} onChange={(e) => onLayerUpdate(engine.id, 'synth', { volume: parseFloat(e.target.value) })} />
+                <span>{engine.synth.volume.toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="control-row">
+              <label>Solfeggio</label>
+              <select value={engine.synth.solfeggioFrequency} onChange={(e) => onLayerUpdate(engine.id, 'synth', { solfeggioFrequency: e.target.value, frequency: parseFloat(e.target.value) })}>
+                {solfeggioFrequencies.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
+            </div>
+            <div className="control-row">
+              <label>Waveform</label>
+              <select value={engine.synth.oscillatorType} onChange={(e) => onLayerUpdate(engine.id, 'synth', { oscillatorType: e.target.value as OscillatorType })}>
+                {oscillatorTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+              </select>
+            </div>
+          </div>
+        );
+      case 'noise':
+        return (
+          <div className="layer-group">
+            <div className="layer-header">
+              <h4>Noise Settings</h4>
+              <button onClick={() => onLayerUpdate(engine.id, 'noise', { enabled: !engine.noise.enabled })} className={engine.noise.enabled ? 'active power-toggle' : 'power-toggle'}>
+                {engine.noise.enabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            <div className="control-row">
+              <label>Volume</label>
+              <div className="control-value-wrapper">
+                <input type="range" min="0" max="1" step="0.01" value={engine.noise.volume} onChange={(e) => onLayerUpdate(engine.id, 'noise', { volume: parseFloat(e.target.value) })} />
+                <span>{engine.noise.volume.toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="control-row">
+              <label>Noise Type</label>
+              <select value={engine.noise.noiseType} onChange={(e) => onLayerUpdate(engine.id, 'noise', { noiseType: e.target.value as NoiseType })}>
+                {noiseTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+              </select>
+            </div>
+          </div>
+        );
+      case 'sampler':
+        return (
+          <div className="layer-group">
+            <div className="layer-header">
+              <h4>Sampler Settings</h4>
+              <button onClick={() => onLayerUpdate(engine.id, 'sampler', { enabled: !engine.sampler.enabled })} className={engine.sampler.enabled ? 'active power-toggle' : 'power-toggle'}>
+                {engine.sampler.enabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            <div className="control-row">
+              <label>Volume</label>
+              <div className="control-value-wrapper">
+                <input type="range" min="0" max="1" step="0.01" value={engine.sampler.volume} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { volume: parseFloat(e.target.value) })} />
+                <span>{engine.sampler.volume.toFixed(2)}</span>
+              </div>
+            </div>
+            <div
+              className={`drop-zone ${isDraggingOver ? 'drop-zone-active' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={handleLoadClick}
+              style={{ cursor: 'pointer' }}
+            >
+              <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} accept="audio/*" />
+              {engine.sampler.sampleName ?
+                <div>
+                  <span>{engine.sampler.sampleName}</span>
+                  <span className="replace-sample-text">(Click or drop to replace)</span>
+                </div>
+                : <span>Drop file or click to load</span>
+              }
+            </div>
+            <div className="control-row">
+              <label>Transpose</label>
+              <div className="control-value-wrapper">
+                <input type="range" min="-24" max="24" step="1" value={engine.sampler.transpose} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { transpose: parseInt(e.target.value, 10) })} />
+                <span>{engine.sampler.transpose} st</span>
+              </div>
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
 
   return (
     <div className="control-group">
@@ -383,97 +487,13 @@ const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLay
           />
         </div>
        )}
-        <div className="engine-layers-container">
-            {/* --- SYNTH LAYER --- */}
-            <div className="layer-group">
-                <div className="layer-header">
-                    <h4>Synth</h4>
-                    <button onClick={() => onLayerUpdate(engine.id, 'synth', { enabled: !engine.synth.enabled })} className={engine.synth.enabled ? 'active power-toggle' : 'power-toggle'}>
-                        {engine.synth.enabled ? 'On' : 'Off'}
-                    </button>
-                </div>
-                <div className="control-row">
-                    <label>Volume</label>
-                    <div className="control-value-wrapper">
-                        <input type="range" min="0" max="1" step="0.01" value={engine.synth.volume} onChange={(e) => onLayerUpdate(engine.id, 'synth', { volume: parseFloat(e.target.value) })} />
-                        <span>{engine.synth.volume.toFixed(2)}</span>
-                    </div>
-                </div>
-                <div className="control-row">
-                    <label>Solfeggio</label>
-                    <select value={engine.synth.solfeggioFrequency} onChange={(e) => onLayerUpdate(engine.id, 'synth', { solfeggioFrequency: e.target.value, frequency: parseFloat(e.target.value) })}>
-                        {solfeggioFrequencies.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                    </select>
-                </div>
-                <div className="control-row">
-                    <label>Waveform</label>
-                    <select value={engine.synth.oscillatorType} onChange={(e) => onLayerUpdate(engine.id, 'synth', { oscillatorType: e.target.value as OscillatorType })}>
-                        {oscillatorTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-                    </select>
-                </div>
-            </div>
-            {/* --- NOISE LAYER --- */}
-            <div className="layer-group">
-                <div className="layer-header">
-                    <h4>Noise</h4>
-                    <button onClick={() => onLayerUpdate(engine.id, 'noise', { enabled: !engine.noise.enabled })} className={engine.noise.enabled ? 'active power-toggle' : 'power-toggle'}>
-                        {engine.noise.enabled ? 'On' : 'Off'}
-                    </button>
-                </div>
-                <div className="control-row">
-                    <label>Volume</label>
-                    <div className="control-value-wrapper">
-                        <input type="range" min="0" max="1" step="0.01" value={engine.noise.volume} onChange={(e) => onLayerUpdate(engine.id, 'noise', { volume: parseFloat(e.target.value) })} />
-                        <span>{engine.noise.volume.toFixed(2)}</span>
-                    </div>
-                </div>
-                <div className="control-row">
-                    <label>Noise Type</label>
-                    <select value={engine.noise.noiseType} onChange={(e) => onLayerUpdate(engine.id, 'noise', { noiseType: e.target.value as NoiseType })}>
-                        {noiseTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-                    </select>
-                </div>
-            </div>
-            {/* --- SAMPLER LAYER --- */}
-            <div className="layer-group">
-                 <div className="layer-header">
-                    <h4>Sampler</h4>
-                    <button onClick={() => onLayerUpdate(engine.id, 'sampler', { enabled: !engine.sampler.enabled })} className={engine.sampler.enabled ? 'active power-toggle' : 'power-toggle'}>
-                        {engine.sampler.enabled ? 'On' : 'Off'}
-                    </button>
-                </div>
-                <div className="control-row">
-                    <label>Volume</label>
-                    <div className="control-value-wrapper">
-                        <input type="range" min="0" max="1" step="0.01" value={engine.sampler.volume} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { volume: parseFloat(e.target.value) })} />
-                        <span>{engine.sampler.volume.toFixed(2)}</span>
-                    </div>
-                </div>
-                 <div 
-                    className={`drop-zone ${isDraggingOver ? 'drop-zone-active' : ''}`} 
-                    onDragOver={handleDragOver} 
-                    onDragLeave={handleDragLeave} 
-                    onDrop={handleDrop}
-                    onClick={handleLoadClick}
-                    style={{cursor: 'pointer'}}
-                    >
-                    <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{display: 'none'}} accept="audio/*" />
-                    {engine.sampler.sampleName ? 
-                        <div>
-                        <span>{engine.sampler.sampleName}</span>
-                        <span className="replace-sample-text">(Click or drop to replace)</span>
-                        </div>
-                        : <span>Drop file or click to load</span>
-                    }
-                </div>
-                <div className="control-row">
-                    <label>Transpose</label>
-                    <div className="control-value-wrapper">
-                        <input type="range" min="-24" max="24" step="1" value={engine.sampler.transpose} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { transpose: parseInt(e.target.value, 10) })} />
-                        <span>{engine.sampler.transpose} st</span>
-                    </div>
-                </div>
-            </div>
+        <div className="tab-nav">
+          <button onClick={() => setActiveTab('synth')} className={`tab-button ${activeTab === 'synth' ? 'active' : ''}`}>Synth</button>
+          <button onClick={() => setActiveTab('noise')} className={`tab-button ${activeTab === 'noise' ? 'active' : ''}`}>Noise</button>
+          <button onClick={() => setActiveTab('sampler')} className={`tab-button ${activeTab === 'sampler' ? 'active' : ''}`}>Sampler</button>
+        </div>
+        <div className="tab-content">
+          {renderTabContent()}
         </div>
        <div className="control-row">
            <label>Enable Sequencer</label>

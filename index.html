@@ -287,18 +287,39 @@
         flex-grow: 1;
       }
 
-      /* New Engine/Layer Styles */
-      .engine-layers-container {
+      /* New Tabbed Layout Styles */
+      .tab-nav {
         display: flex;
-        flex-direction: column;
-        gap: 1.5rem;
-        margin-bottom: 1.5rem;
+        border-bottom: 1px solid #333;
+        margin-bottom: 1rem;
       }
+      .tab-button {
+        background: none;
+        border: none;
+        color: #888;
+        padding: 0.75rem 1rem;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: color 0.2s, border-color 0.2s;
+        font-size: 1rem;
+        font-weight: 500;
+      }
+      .tab-button:hover {
+        color: var(--on-surface-color);
+      }
+      .tab-button.active {
+        color: var(--secondary-color);
+        border-bottom-color: var(--secondary-color);
+      }
+      .tab-content {
+        padding-top: 0.5rem;
+      }
+      
       .layer-group {
-        background-color: #2c2c2c;
+        background-color: transparent;
         border-radius: 6px;
-        padding: 1rem;
-        border: 1px solid #3a3a3a;
+        padding: 0;
+        border: none;
       }
       .layer-header {
         display: flex;
