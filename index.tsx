@@ -2136,6 +2136,16 @@ const App = () => {
                     {masterAnalyserRef.current && <div className="visualizer-wrapper"><span className="visualizer-label">M</span><Visualizer analyserNode={masterAnalyserRef.current} type="waveform" /></div>}
                 </div>
              </div>
+             <div className="channels-container">
+                {engineStates.map(engine => (
+                <EngineControls key={engine.id} engine={engine}
+                    onUpdate={handleEngineUpdate} onLayerUpdate={handleEngineLayerUpdate}
+                    onLoadSample={loadSample} onRandomize={handleRandomize} onIntelligentRandomize={handleIntelligentRandomize}
+                    analyserNode={engineNodesRef.current.get(engine.id)?.analyser}
+                    currentStep={currentStep} isTransportPlaying={isTransportPlaying}
+                />
+                ))}
+             </div>
              <div className="processing-container">
                 <div className="filters-container">
                     <div className="filters-container-header">
@@ -2148,16 +2158,6 @@ const App = () => {
                     </div>
                 </div>
                  <MasterEffects effects={masterEffects} setEffects={wrappedSetMasterEffects} onRandomize={handleRandomize} onIntelligentRandomize={handleIntelligentRandomize} />
-             </div>
-             <div className="channels-container">
-                {engineStates.map(engine => (
-                <EngineControls key={engine.id} engine={engine}
-                    onUpdate={handleEngineUpdate} onLayerUpdate={handleEngineLayerUpdate}
-                    onLoadSample={loadSample} onRandomize={handleRandomize} onIntelligentRandomize={handleIntelligentRandomize}
-                    analyserNode={engineNodesRef.current.get(engine.id)?.analyser}
-                    currentStep={currentStep} isTransportPlaying={isTransportPlaying}
-                />
-                ))}
              </div>
              <div className="bottom-module-container">
                 <div className="bottom-tab-nav">
