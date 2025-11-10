@@ -1,5 +1,4 @@
 
-
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -11,6 +10,21 @@ type LFO_Shape = 'sine' | 'square' | 'sawtooth' | 'triangle' | 'ramp';
 type FilterType = 'lowpass' | 'highpass' | 'bandpass' | 'notch';
 type RandomizeMode = 'chaos' | 'solfeggio';
 type EngineLayerType = 'synth' | 'noise' | 'sampler';
+
+// --- Master Effects Types ---
+type MasterEffectType = 'distortion' | 'delay' | 'reverb';
+
+interface MasterEffect {
+  id: string;
+  type: MasterEffectType;
+  enabled: boolean;
+  params: {
+    distortion?: { amount: number }; // 0 to 1
+    delay?: { time: number; feedback: number; mix: number }; // s, 0-1, 0-1
+    reverb?: { decay: number; mix: number }; // s, 0-1
+  };
+}
+
 
 // --- New Layered Architecture Types ---
 interface SynthLayerState {
@@ -39,6 +53,7 @@ interface EffectState {
 interface EngineState {
   id: string;
   name: string;
+  isAiControlled: boolean;
   synth: SynthLayerState;
   noise: NoiseLayerState;
   sampler: SamplerLayerState;
@@ -50,6 +65,8 @@ interface EngineState {
 }
 
 interface LFOState {
+    id: string;
+    name: string;
     rate: number;
     depth: number;
     shape: LFO_Shape;
@@ -75,16 +92,16 @@ interface EngineAudioNodes {
     sampler: LayerAudioNodes;
     engineMixer: GainNode;
     sequencerGain: GainNode;
-    lfoVolumeScaler: GainNode;
     analyser: AnalyserNode;
     distortion?: WaveShaperNode;
     delay?: DelayNode;
     feedback?: GainNode;
 }
 
-interface LfoRoutingNodes {
-    filterCutoffScaler: GainNode;
-    filterResonanceScaler: GainNode;
+interface LfoRoutingBusses {
+    filterCutoffModBus: GainNode;
+    filterResonanceModBus: GainNode;
+    engineVolModBusses: Map<string, GainNode>;
 }
 
 
@@ -112,44 +129,70 @@ interface CircularVisualizerSequencerProps {
 interface EngineControlsProps {
   engine: EngineState;
   onUpdate: (engineId: string, updates: Partial<EngineState>) => void;
-  onLayerUpdate: <K extends keyof Omit<EngineState, 'id' | 'name'>>(
+  onLayerUpdate: <K extends keyof Omit<EngineState, 'id' | 'name' | 'isAiControlled'>>(
     engineId: string,
     layer: K,
     updates: Partial<EngineState[K]>
   ) => void;
   onLoadSample: (engineId: string, file: File) => void;
   onRandomize: (mode: RandomizeMode) => void;
+  onToggleAiControl: (engineId: string) => void;
   analyserNode?: AnalyserNode;
   currentStep: number;
   isTransportPlaying: boolean;
 }
 
-interface MasterControlsProps {
+interface TopBarProps {
     masterVolume: number;
     setMasterVolume: (volume: number) => void;
     linkStatus: LinkStatus;
     toggleLink: () => void;
     setBPM: (bpm: number) => void;
+    isTransportPlaying: boolean;
+    onToggleTransport: () => void;
+}
+
+interface MasterFilterControlsProps {
     globalFilterCutoff: number;
     setGlobalFilterCutoff: (cutoff: number) => void;
     globalFilterResonance: number;
     setGlobalFilterResonance: (resonance: number) => void;
     globalFilterType: FilterType;
     setGlobalFilterType: (type: FilterType) => void;
-    isTransportPlaying: boolean;
-    onToggleTransport: () => void;
     onRandomize: (mode: RandomizeMode) => void;
 }
 
 interface LFOControlsProps {
     lfoState: LFOState;
-    setLFOState: React.Dispatch<React.SetStateAction<LFOState>>;
+    onUpdate: (updates: Partial<LFOState>) => void;
     linkStatus: LinkStatus;
     onRandomize: (mode: RandomizeMode) => void;
 }
 
-interface RandomizerProps {
+interface GenerativeToolsProps {
     onRandomize: (mode: RandomizeMode, scope: 'global' | 'master' | 'lfo' | string) => void;
+    isAiJamEnabled: boolean;
+    setIsAiJamEnabled: (enabled: boolean) => void;
+    aiJamInterval: number;
+    setAiJamInterval: (interval: number) => void;
+    isAiJamLoading: boolean;
+}
+
+interface MasterEffectsProps {
+    effects: MasterEffect[];
+    setEffects: React.Dispatch<React.SetStateAction<MasterEffect[]>>;
+}
+
+interface EffectModuleProps {
+    effect: MasterEffect;
+    onUpdate: (id: string, params: MasterEffect['params']) => void;
+    onRemove: (id: string) => void;
+    onToggle: (id: string) => void;
+    onDragStart: (e: React.DragEvent<HTMLDivElement>, effect: MasterEffect) => void;
+    onDragEnter: (e: React.DragEvent<HTMLDivElement>, effect: MasterEffect) => void;
+    onDragEnd: (e: React.DragEvent<HTMLDivElement>) => void;
+    isDragging: boolean;
+    isDragOver: boolean;
 }
 
 declare global {
@@ -172,6 +215,8 @@ const lfoShapes: LFO_Shape[] = ['sine', 'square', 'sawtooth', 'ramp', 'triangle'
 const filterTypes: FilterType[] = ['lowpass', 'highpass', 'bandpass', 'notch'];
 const lfoSyncRates = ['1/16', '1/8', '1/4', '1/2', '1'];
 const noiseTypes: NoiseType[] = ['white', 'pink', 'brown'];
+const availableMasterEffects: MasterEffectType[] = ['distortion', 'delay', 'reverb'];
+
 
 // --- Utility Functions ---
 const generateEuclideanPattern = (steps: number, pulses: number): number[] => {
@@ -203,7 +248,6 @@ const rotatePattern = (pattern: number[], rotation: number): number[] => {
 const getRandom = (min: number, max: number) => Math.random() * (max - min) + min;
 const getRandomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 const getRandomBool = (probability = 0.5) => Math.random() < probability;
-// FIX: Changed to function declaration to avoid TSX parsing ambiguity with generics.
 function getRandomElement<T>(arr: readonly T[]): T {
     return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -346,7 +390,7 @@ const CircularVisualizerSequencer: React.FC<CircularVisualizerSequencerProps> = 
 };
 
 
-const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLayerUpdate, onLoadSample, onRandomize, analyserNode, currentStep, isTransportPlaying }) => {
+const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLayerUpdate, onLoadSample, onRandomize, onToggleAiControl, analyserNode, currentStep, isTransportPlaying }) => {
   const [activeTab, setActiveTab] = useState<EngineLayerType>('synth');
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -360,8 +404,11 @@ const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLay
       e.dataTransfer.clearData();
     }
   };
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files && e.target.files.length > 0) { onLoadSample(engine.id, e.target.files[0]); } };
-  const handleLoadClick = () => { fileInputRef.current?.click(); };
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      onLoadSample(engine.id, e.target.files[0]);
+    }
+  };
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -369,853 +416,1350 @@ const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLay
         return (
           <div className="layer-group">
             <div className="layer-header">
-              <h4>Synth Settings</h4>
-              <button onClick={() => onLayerUpdate(engine.id, 'synth', { enabled: !engine.synth.enabled })} className={engine.synth.enabled ? 'active power-toggle' : 'power-toggle'}>
-                {engine.synth.enabled ? 'On' : 'Off'}
+              <h4>Synth Oscillator</h4>
+              <button 
+                className={`power-toggle small ${engine.synth.enabled ? 'active' : ''}`}
+                onClick={() => onLayerUpdate(engine.id, 'synth', { enabled: !engine.synth.enabled })}>
+                {engine.synth.enabled ? 'ON' : 'OFF'}
               </button>
             </div>
-            <div className="control-row">
-              <label>Volume</label>
-              <div className="control-value-wrapper">
-                <input type="range" min="0" max="1" step="0.01" value={engine.synth.volume} onChange={(e) => onLayerUpdate(engine.id, 'synth', { volume: parseFloat(e.target.value) })} />
-                <span>{engine.synth.volume.toFixed(2)}</span>
+            {engine.synth.enabled && <>
+              <div className="control-row">
+                <label>Waveform</label>
+                <select value={engine.synth.oscillatorType} onChange={e => onLayerUpdate(engine.id, 'synth', { oscillatorType: e.target.value as OscillatorType })}>
+                  {oscillatorTypes.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
               </div>
-            </div>
-            <div className="control-row">
-              <label>Solfeggio</label>
-              <select value={engine.synth.solfeggioFrequency} onChange={(e) => onLayerUpdate(engine.id, 'synth', { solfeggioFrequency: e.target.value, frequency: parseFloat(e.target.value) })}>
-                {solfeggioFrequencies.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </select>
-            </div>
-            <div className="control-row">
-              <label>Waveform</label>
-              <select value={engine.synth.oscillatorType} onChange={(e) => onLayerUpdate(engine.id, 'synth', { oscillatorType: e.target.value as OscillatorType })}>
-                {oscillatorTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-              </select>
-            </div>
+              <div className="control-row">
+                <label>Frequency</label>
+                 <div className="control-value-wrapper">
+                  <input type="range" min="20" max="2000" step="1" value={engine.synth.frequency} onChange={e => onLayerUpdate(engine.id, 'synth', { frequency: +e.target.value })} />
+                  <span>{engine.synth.frequency.toFixed(0)} Hz</span>
+                </div>
+              </div>
+              <div className="control-row">
+                <label>Volume</label>
+                <div className="control-value-wrapper">
+                    <input type="range" min="0" max="1" step="0.01" value={engine.synth.volume} onChange={e => onLayerUpdate(engine.id, 'synth', { volume: +e.target.value })} />
+                    <span>{(engine.synth.volume * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+              <div className="control-row">
+                  <label>Solfeggio</label>
+                  <select value={engine.synth.solfeggioFrequency} onChange={e => {
+                      const freq = solfeggioFrequencies.find(f => f.value === +e.target.value)?.value ?? 440;
+                      onLayerUpdate(engine.id, 'synth', { solfeggioFrequency: e.target.value, frequency: freq });
+                  }}>
+                      <option value="">Manual</option>
+                      {solfeggioFrequencies.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  </select>
+              </div>
+            </>}
           </div>
         );
       case 'noise':
         return (
           <div className="layer-group">
-            <div className="layer-header">
-              <h4>Noise Settings</h4>
-              <button onClick={() => onLayerUpdate(engine.id, 'noise', { enabled: !engine.noise.enabled })} className={engine.noise.enabled ? 'active power-toggle' : 'power-toggle'}>
-                {engine.noise.enabled ? 'On' : 'Off'}
+             <div className="layer-header">
+              <h4>Noise Generator</h4>
+              <button 
+                className={`power-toggle small ${engine.noise.enabled ? 'active' : ''}`}
+                onClick={() => onLayerUpdate(engine.id, 'noise', { enabled: !engine.noise.enabled })}>
+                {engine.noise.enabled ? 'ON' : 'OFF'}
               </button>
             </div>
-            <div className="control-row">
-              <label>Volume</label>
-              <div className="control-value-wrapper">
-                <input type="range" min="0" max="1" step="0.01" value={engine.noise.volume} onChange={(e) => onLayerUpdate(engine.id, 'noise', { volume: parseFloat(e.target.value) })} />
-                <span>{engine.noise.volume.toFixed(2)}</span>
+            {engine.noise.enabled && <>
+              <div className="control-row">
+                <label>Type</label>
+                <select value={engine.noise.noiseType} onChange={e => onLayerUpdate(engine.id, 'noise', { noiseType: e.target.value as NoiseType })}>
+                  {noiseTypes.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
               </div>
-            </div>
-            <div className="control-row">
-              <label>Noise Type</label>
-              <select value={engine.noise.noiseType} onChange={(e) => onLayerUpdate(engine.id, 'noise', { noiseType: e.target.value as NoiseType })}>
-                {noiseTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-              </select>
-            </div>
+              <div className="control-row">
+                <label>Volume</label>
+                <div className="control-value-wrapper">
+                  <input type="range" min="0" max="1" step="0.01" value={engine.noise.volume} onChange={e => onLayerUpdate(engine.id, 'noise', { volume: +e.target.value })} />
+                   <span>{(engine.noise.volume * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+            </>}
           </div>
         );
-      case 'sampler':
+       case 'sampler':
         return (
           <div className="layer-group">
             <div className="layer-header">
-              <h4>Sampler Settings</h4>
-              <button onClick={() => onLayerUpdate(engine.id, 'sampler', { enabled: !engine.sampler.enabled })} className={engine.sampler.enabled ? 'active power-toggle' : 'power-toggle'}>
-                {engine.sampler.enabled ? 'On' : 'Off'}
+              <h4>Sampler</h4>
+              <button 
+                className={`power-toggle small ${engine.sampler.enabled ? 'active' : ''}`}
+                onClick={() => onLayerUpdate(engine.id, 'sampler', { enabled: !engine.sampler.enabled })}>
+                {engine.sampler.enabled ? 'ON' : 'OFF'}
               </button>
             </div>
-            <div className="control-row">
-              <label>Volume</label>
-              <div className="control-value-wrapper">
-                <input type="range" min="0" max="1" step="0.01" value={engine.sampler.volume} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { volume: parseFloat(e.target.value) })} />
-                <span>{engine.sampler.volume.toFixed(2)}</span>
-              </div>
-            </div>
-            <div
-              className={`drop-zone ${isDraggingOver ? 'drop-zone-active' : ''}`}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={handleLoadClick}
-              style={{ cursor: 'pointer' }}
-            >
-              <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} accept="audio/*" />
-              {engine.sampler.sampleName ?
-                <div>
-                  <span>{engine.sampler.sampleName}</span>
-                  <span className="replace-sample-text">(Click or drop to replace)</span>
+            {engine.sampler.enabled && <>
+               <div
+                  className={`drop-zone ${isDraggingOver ? 'drop-zone-active' : ''}`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                >
+                  {engine.sampler.sampleName ? 
+                   (<div>
+                        <span>Loaded: {engine.sampler.sampleName}</span>
+                        <span className="replace-sample-text">Drag/drop or click to replace</span>
+                    </div>)
+                   : 'Drag & Drop Sample'}
+                   <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept="audio/*" style={{ display: 'none' }}/>
+                   <button className="small" onClick={() => fileInputRef.current?.click()}>Load</button>
                 </div>
-                : <span>Drop file or click to load</span>
-              }
-            </div>
-            <div className="control-row">
-              <label>Transpose</label>
-              <div className="control-value-wrapper">
-                <input type="range" min="-24" max="24" step="1" value={engine.sampler.transpose} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { transpose: parseInt(e.target.value, 10) })} />
-                <span>{engine.sampler.transpose} st</span>
+              <div className="control-row">
+                <label>Transpose</label>
+                <div className="control-value-wrapper">
+                  <input type="range" min="-24" max="24" step="1" value={engine.sampler.transpose} onChange={e => onLayerUpdate(engine.id, 'sampler', { transpose: +e.target.value })} />
+                   <span>{engine.sampler.transpose} st</span>
+                </div>
               </div>
-            </div>
+              <div className="control-row">
+                <label>Volume</label>
+                <div className="control-value-wrapper">
+                  <input type="range" min="0" max="1" step="0.01" value={engine.sampler.volume} onChange={e => onLayerUpdate(engine.id, 'sampler', { volume: +e.target.value })} />
+                   <span>{(engine.sampler.volume * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+            </>}
           </div>
         );
-      default:
-        return null;
+      default: return null;
     }
   };
 
   return (
-    <div className="control-group">
-      <div className="control-group-header">
-        <h2>{engine.name}</h2>
-        <div className="randomizer-buttons-group">
-          <button title="Chaos Randomize" onClick={() => onRandomize('chaos')}>🎲</button>
-          <button title="Musical Randomize" onClick={() => onRandomize('solfeggio')}>🎵</button>
+    <div className="control-group engine-controls">
+        <div className="control-group-header">
+            <h2>{engine.name}</h2>
+            <div className="randomizer-buttons-group">
+                <button title="Solfeggio Random" onClick={() => onRandomize('solfeggio')}>S</button>
+                <button title="Chaos Random" onClick={() => onRandomize('chaos')}>C</button>
+                <button
+                    className={`ai-toggle ${engine.isAiControlled ? 'active' : ''}`}
+                    title="Toggle AI Control"
+                    onClick={() => onToggleAiControl(engine.id)}
+                >
+                    AI
+                </button>
+            </div>
         </div>
-      </div>
-       {analyserNode && (
-        <div className="channel-visualizer-container">
-          <CircularVisualizerSequencer 
-            analyserNode={analyserNode}
-            steps={engine.sequencerSteps}
-            pulses={engine.sequencerPulses}
-            rotate={engine.sequencerRotate}
-            currentStep={currentStep % engine.sequencerSteps}
-            isTransportPlaying={isTransportPlaying}
-          />
+        {analyserNode &&
+            <div className="channel-visualizer-container">
+                <CircularVisualizerSequencer
+                    analyserNode={analyserNode}
+                    steps={engine.sequencerSteps}
+                    pulses={engine.sequencerPulses}
+                    rotate={engine.sequencerRotate}
+                    currentStep={currentStep}
+                    isTransportPlaying={isTransportPlaying}
+                />
+            </div>
+        }
+         <div className="control-row">
+            <label>Sequencer</label>
+            <button
+                className={`power-toggle small ${engine.sequencerEnabled ? 'active' : ''}`}
+                onClick={() => onUpdate(engine.id, { sequencerEnabled: !engine.sequencerEnabled })}>
+                {engine.sequencerEnabled ? 'ON' : 'OFF'}
+            </button>
         </div>
-       )}
+        {engine.sequencerEnabled && (
+            <>
+                <div className="control-row">
+                    <label>Steps</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="1" max="32" step="1" value={engine.sequencerSteps} onChange={e => onUpdate(engine.id, { sequencerSteps: +e.target.value })} />
+                        <span>{engine.sequencerSteps}</span>
+                    </div>
+                </div>
+                <div className="control-row">
+                    <label>Pulses</label>
+                     <div className="control-value-wrapper">
+                        <input type="range" min="0" max={engine.sequencerSteps} step="1" value={engine.sequencerPulses} onChange={e => onUpdate(engine.id, { sequencerPulses: +e.target.value })} />
+                        <span>{engine.sequencerPulses}</span>
+                    </div>
+                </div>
+                 <div className="control-row">
+                    <label>Rotate</label>
+                     <div className="control-value-wrapper">
+                        <input type="range" min="0" max={engine.sequencerSteps -1} step="1" value={engine.sequencerRotate} onChange={e => onUpdate(engine.id, { sequencerRotate: +e.target.value })} />
+                        <span>{engine.sequencerRotate}</span>
+                    </div>
+                </div>
+            </>
+        )}
+
         <div className="tab-nav">
-          <button onClick={() => setActiveTab('synth')} className={`tab-button ${activeTab === 'synth' ? 'active' : ''}`}>Synth</button>
-          <button onClick={() => setActiveTab('noise')} className={`tab-button ${activeTab === 'noise' ? 'active' : ''}`}>Noise</button>
-          <button onClick={() => setActiveTab('sampler')} className={`tab-button ${activeTab === 'sampler' ? 'active' : ''}`}>Sampler</button>
+          {(['synth', 'noise', 'sampler'] as EngineLayerType[]).map(tab => (
+            <button 
+              key={tab} 
+              className={`tab-button ${activeTab === tab ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            </button>
+          ))}
         </div>
         <div className="tab-content">
           {renderTabContent()}
         </div>
-       <div className="control-row">
-           <label>Enable Sequencer</label>
-            <button 
-              onClick={() => onUpdate(engine.id, { sequencerEnabled: !engine.sequencerEnabled })} 
-              className={engine.sequencerEnabled ? 'active' : ''}
-            >
-              {engine.sequencerEnabled ? 'On' : 'Off'}
-            </button>
-      </div>
-       <div className="control-row">
-        <label>Steps</label>
-        <div className="control-value-wrapper">
-          <input type="range" min="1" max="32" step="1" value={engine.sequencerSteps} onChange={(e) => onUpdate(engine.id, { sequencerSteps: parseInt(e.target.value, 10) })} />
-          <span>{engine.sequencerSteps}</span>
+    </div>
+  );
+};
+
+const TopBar: React.FC<TopBarProps> = ({
+    masterVolume, setMasterVolume, linkStatus, toggleLink, setBPM, isTransportPlaying, onToggleTransport
+}) => {
+    return (
+        <div className="top-bar">
+            <div className="top-bar-group">
+                <h2>Poly-Rhythm Synth</h2>
+            </div>
+            <div className="top-bar-group">
+                <div className="control-row">
+                    <label>Master Volume</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="0" max="1" step="0.01" value={masterVolume} onChange={e => setMasterVolume(Number(e.target.value))} />
+                        <span>{(masterVolume * 100).toFixed(0)}%</span>
+                    </div>
+                </div>
+            </div>
+            <div className="top-bar-group">
+                <div className="control-row">
+                    <label>BPM</label>
+                    <div className="control-value-wrapper">
+                        <input
+                            type="number"
+                            value={linkStatus.bpm.toFixed(2)}
+                            onChange={(e) => setBPM(parseFloat(e.target.value))}
+                            style={{ width: '80px' }}
+                            disabled={linkStatus.isEnabled}
+                        />
+                        <button onClick={toggleLink} className={linkStatus.isEnabled ? 'active' : ''} title={`Peers: ${linkStatus.peers}`}>
+                            Link {linkStatus.isEnabled ? `(${linkStatus.peers})` : ''}
+                        </button>
+                    </div>
+                </div>
+                <button onClick={onToggleTransport} className={isTransportPlaying ? 'active' : ''}>
+                    {isTransportPlaying ? 'Stop' : 'Play'}
+                </button>
+            </div>
         </div>
-      </div>
-       <div className="control-row">
-        <label>Pulses</label>
-        <div className="control-value-wrapper">
-          <input type="range" min="0" max={engine.sequencerSteps} step="1" value={engine.sequencerPulses} onChange={(e) => onUpdate(engine.id, { sequencerPulses: parseInt(e.target.value, 10) })} />
-          <span>{engine.sequencerPulses}</span>
+    );
+};
+
+
+const MasterFilterControls: React.FC<MasterFilterControlsProps> = ({
+    globalFilterCutoff, setGlobalFilterCutoff, globalFilterResonance, setGlobalFilterResonance,
+    globalFilterType, setGlobalFilterType, onRandomize
+}) => {
+    return (
+        <div className="control-group master-filter-container">
+            <div className="control-group-header">
+                <h2>Master Filter</h2>
+                <div className="randomizer-buttons-group">
+                    <button onClick={() => onRandomize('solfeggio')}>S</button>
+                    <button onClick={() => onRandomize('chaos')}>C</button>
+                </div>
+            </div>
+            <div className="control-row">
+                <label>Type</label>
+                <select value={globalFilterType} onChange={e => setGlobalFilterType(e.target.value as FilterType)}>
+                    {filterTypes.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+            </div>
+            <div className="control-row">
+                <label>Cutoff</label>
+                <div className="control-value-wrapper">
+                    <input type="range" min="20" max="20000" step="1" value={globalFilterCutoff} onChange={e => setGlobalFilterCutoff(Number(e.target.value))} />
+                    <span>{globalFilterCutoff.toFixed(0)} Hz</span>
+                </div>
+            </div>
+            <div className="control-row">
+                <label>Resonance</label>
+                <div className="control-value-wrapper">
+                    <input type="range" min="0" max="30" step="0.1" value={globalFilterResonance} onChange={e => setGlobalFilterResonance(Number(e.target.value))} />
+                    <span>{globalFilterResonance.toFixed(2)}</span>
+                </div>
+            </div>
         </div>
-      </div>
-       <div className="control-row">
-        <label>Rotate</label>
-        <div className="control-value-wrapper">
-          <input type="range" min="0" max={engine.sequencerSteps - 1} step="1" value={engine.sequencerRotate} onChange={(e) => onUpdate(engine.id, { sequencerRotate: parseInt(e.target.value, 10) })} />
-          <span>{engine.sequencerRotate}</span>
+    );
+}
+
+
+const LFOControls: React.FC<LFOControlsProps> = ({ lfoState, onUpdate, linkStatus, onRandomize }) => {
+    const handleRoutingChange = (target: keyof LFOState['routing'], value: boolean) => {
+        onUpdate({ routing: { ...lfoState.routing, [target]: value } });
+    };
+
+    return (
+        <div className="control-group lfo-controls">
+            <div className="control-group-header">
+                <h2>{lfoState.name}</h2>
+                 <div className="randomizer-buttons-group">
+                    <button onClick={() => onRandomize('solfeggio')}>S</button>
+                    <button onClick={() => onRandomize('chaos')}>C</button>
+                </div>
+            </div>
+            <div className="control-row">
+                <label>Shape</label>
+                <select value={lfoState.shape} onChange={e => onUpdate({ shape: e.target.value as LFO_Shape })}>
+                    {lfoShapes.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+            </div>
+            <div className="control-row">
+                <label>{lfoState.sync ? 'Sync Rate' : 'Rate'}</label>
+                {lfoState.sync ? (
+                     <select value={lfoState.syncRate} onChange={e => onUpdate({ syncRate: e.target.value })}>
+                        {lfoSyncRates.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                ) : (
+                    <div className="control-value-wrapper">
+                        <input type="range" min="0.1" max="30" step="0.1" value={lfoState.rate} onChange={e => onUpdate({ rate: +e.target.value })} />
+                        <span>{lfoState.rate.toFixed(1)} Hz</span>
+                    </div>
+                )}
+            </div>
+             <div className="control-row">
+                <label>Depth</label>
+                 <div className="control-value-wrapper">
+                    <input type="range" min="0" max="1" step="0.01" value={lfoState.depth} onChange={e => onUpdate({ depth: +e.target.value })} />
+                    <span>{(lfoState.depth * 100).toFixed(0)}%</span>
+                </div>
+            </div>
+            <div className="control-row">
+                <label>BPM Sync</label>
+                <button onClick={() => onUpdate({ sync: !lfoState.sync })} className={lfoState.sync ? 'active' : ''}>
+                    {lfoState.sync ? 'ON' : 'OFF'}
+                </button>
+            </div>
+            <div className="routing-section">
+                <h4>Routing</h4>
+                <div className="control-row checkbox-row">
+                    <label htmlFor={`lfo-filter-cutoff-${lfoState.id}`}>Filter Cutoff</label>
+                    <input type="checkbox" id={`lfo-filter-cutoff-${lfoState.id}`} checked={lfoState.routing.filterCutoff} onChange={e => handleRoutingChange('filterCutoff', e.target.checked)} />
+                </div>
+                 <div className="control-row checkbox-row">
+                    <label htmlFor={`lfo-filter-res-${lfoState.id}`}>Filter Res</label>
+                    <input type="checkbox" id={`lfo-filter-res-${lfoState.id}`} checked={lfoState.routing.filterResonance} onChange={e => handleRoutingChange('filterResonance', e.target.checked)} />
+                </div>
+                <div className="control-row checkbox-row">
+                    <label htmlFor={`lfo-eng1vol-${lfoState.id}`}>Engine 1 Vol</label>
+                    <input type="checkbox" id={`lfo-eng1vol-${lfoState.id}`} checked={lfoState.routing.engine1Vol} onChange={e => handleRoutingChange('engine1Vol', e.target.checked)} />
+                </div>
+                <div className="control-row checkbox-row">
+                    <label htmlFor={`lfo-eng2vol-${lfoState.id}`}>Engine 2 Vol</label>
+                    <input type="checkbox" id={`lfo-eng2vol-${lfoState.id}`} checked={lfoState.routing.engine2Vol} onChange={e => handleRoutingChange('engine2Vol', e.target.checked)} />
+                </div>
+                <div className="control-row checkbox-row">
+                    <label htmlFor={`lfo-eng3vol-${lfoState.id}`}>Engine 3 Vol</label>
+                    <input type="checkbox" id={`lfo-eng3vol-${lfoState.id}`} checked={lfoState.routing.engine3Vol} onChange={e => handleRoutingChange('engine3Vol', e.target.checked)} />
+                </div>
+            </div>
         </div>
+    );
+};
+
+const EffectModule: React.FC<EffectModuleProps> = ({ effect, onUpdate, onRemove, onToggle, onDragStart, onDragEnter, onDragEnd, isDragging, isDragOver }) => {
+    const handleParamChange = (param: string, value: any) => {
+        onUpdate(effect.id, { ...effect.params, [effect.type]: { ...effect.params[effect.type], [param]: value } });
+    };
+
+    const renderParams = () => {
+        switch (effect.type) {
+            case 'distortion':
+                return (
+                    <div className="control-row">
+                        <label>Amount</label>
+                        <div className="control-value-wrapper">
+                            <input type="range" min="0" max="1" step="0.01" value={effect.params.distortion?.amount ?? 0} onChange={e => handleParamChange('amount', +e.target.value)} />
+                             <span>{( (effect.params.distortion?.amount ?? 0) * 100).toFixed(0)}%</span>
+                        </div>
+                    </div>
+                );
+            case 'delay':
+                return <>
+                    <div className="control-row">
+                        <label>Time</label>
+                        <div className="control-value-wrapper">
+                            <input type="range" min="0" max="1" step="0.01" value={effect.params.delay?.time ?? 0} onChange={e => handleParamChange('time', +e.target.value)} />
+                             <span>{(effect.params.delay?.time ?? 0).toFixed(2)}s</span>
+                        </div>
+                    </div>
+                    <div className="control-row">
+                        <label>Feedback</label>
+                        <div className="control-value-wrapper">
+                            <input type="range" min="0" max="0.95" step="0.01" value={effect.params.delay?.feedback ?? 0} onChange={e => handleParamChange('feedback', +e.target.value)} />
+                             <span>{((effect.params.delay?.feedback ?? 0) * 100).toFixed(0)}%</span>
+                        </div>
+                    </div>
+                     <div className="control-row">
+                        <label>Mix</label>
+                        <div className="control-value-wrapper">
+                            <input type="range" min="0" max="1" step="0.01" value={effect.params.delay?.mix ?? 0} onChange={e => handleParamChange('mix', +e.target.value)} />
+                             <span>{((effect.params.delay?.mix ?? 0) * 100).toFixed(0)}%</span>
+                        </div>
+                    </div>
+                </>;
+            case 'reverb':
+                 return <>
+                    <div className="control-row">
+                        <label>Decay</label>
+                         <div className="control-value-wrapper">
+                            <input type="range" min="0.1" max="10" step="0.1" value={effect.params.reverb?.decay ?? 0} onChange={e => handleParamChange('decay', +e.target.value)} />
+                             <span>{(effect.params.reverb?.decay ?? 0).toFixed(1)}s</span>
+                        </div>
+                    </div>
+                     <div className="control-row">
+                        <label>Mix</label>
+                         <div className="control-value-wrapper">
+                            <input type="range" min="0" max="1" step="0.01" value={effect.params.reverb?.mix ?? 0} onChange={e => handleParamChange('mix', +e.target.value)} />
+                             <span>{((effect.params.reverb?.mix ?? 0) * 100).toFixed(0)}%</span>
+                        </div>
+                    </div>
+                </>;
+            default: return null;
+        }
+    }
+
+    return (
+        <div
+            className={`effect-module ${isDragging ? 'dragging' : ''} ${isDragOver ? 'drag-over' : ''}`}
+            draggable
+            onDragStart={(e) => onDragStart(e, effect)}
+            onDragEnter={(e) => onDragEnter(e, effect)}
+            onDragEnd={onDragEnd}
+        >
+            <div className="effect-header">
+                <h4>{effect.type.charAt(0).toUpperCase() + effect.type.slice(1)}</h4>
+                <div className="effect-header-buttons">
+                    <button className={`small ${effect.enabled ? 'active' : ''}`} onClick={() => onToggle(effect.id)}>
+                        {effect.enabled ? 'On' : 'Off'}
+                    </button>
+                    <button className="small remove-effect-btn" onClick={() => onRemove(effect.id)}>X</button>
+                </div>
+            </div>
+            {renderParams()}
+        </div>
+    );
+};
+
+const MasterEffects: React.FC<MasterEffectsProps> = ({ effects, setEffects }) => {
+    const [draggingEffect, setDraggingEffect] = useState<MasterEffect | null>(null);
+    const [dragOverEffect, setDragOverEffect] = useState<MasterEffect | null>(null);
+    const dragNode = useRef<HTMLDivElement | null>(null);
+
+    const handleAddEffect = (type: MasterEffectType) => {
+        const newEffect: MasterEffect = {
+            id: `${type}-${Date.now()}`,
+            type,
+            enabled: true,
+            params: {}
+        };
+        switch(type) {
+            case 'distortion': newEffect.params.distortion = { amount: 0.5 }; break;
+            case 'delay': newEffect.params.delay = { time: 0.5, feedback: 0.5, mix: 0.5 }; break;
+            case 'reverb': newEffect.params.reverb = { decay: 2, mix: 0.5 }; break;
+        }
+        setEffects(prev => [...prev, newEffect]);
+    };
+
+    const handleUpdateEffect = (id: string, params: MasterEffect['params']) => {
+        setEffects(prev => prev.map(e => e.id === id ? { ...e, params } : e));
+    };
+    const handleRemoveEffect = (id: string) => {
+        setEffects(prev => prev.filter(e => e.id !== id));
+    };
+    const handleToggleEffect = (id: string) => {
+        setEffects(prev => prev.map(e => e.id === id ? { ...e, enabled: !e.enabled } : e));
+    };
+
+    const handleDragStart = (e: React.DragEvent<HTMLDivElement>, effect: MasterEffect) => {
+        setDraggingEffect(effect);
+        dragNode.current = e.target as HTMLDivElement;
+        dragNode.current.addEventListener('dragend', handleDragEnd);
+    };
+
+    const handleDragEnter = (e: React.DragEvent<HTMLDivElement>, effect: MasterEffect) => {
+        if (draggingEffect && draggingEffect.id !== effect.id) {
+            setDragOverEffect(effect);
+        }
+    };
+
+    const handleDragEnd = () => {
+        if (draggingEffect && dragOverEffect) {
+            setEffects(prev => {
+                const newEffects = [...prev];
+                const draggingIndex = newEffects.findIndex(e => e.id === draggingEffect.id);
+                const dragOverIndex = newEffects.findIndex(e => e.id === dragOverEffect.id);
+                const [removed] = newEffects.splice(draggingIndex, 1);
+                newEffects.splice(dragOverIndex, 0, removed);
+                return newEffects;
+            });
+        }
+        setDraggingEffect(null);
+        setDragOverEffect(null);
+        if (dragNode.current) {
+            dragNode.current.removeEventListener('dragend', handleDragEnd);
+            dragNode.current = null;
+        }
+    };
+
+    return (
+        <div className="control-group master-effects-container">
+            <div className="control-group-header master-effects-header">
+                <h2>Master Effects</h2>
+                <select onChange={(e) => handleAddEffect(e.target.value as MasterEffectType)} value="">
+                    <option value="" disabled>Add Effect...</option>
+                    {availableMasterEffects.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+            </div>
+            <div className="effects-chain">
+                {effects.length > 0 ? effects.map(effect => (
+                    <EffectModule
+                        key={effect.id}
+                        effect={effect}
+                        onUpdate={handleUpdateEffect}
+                        onRemove={handleRemoveEffect}
+                        onToggle={handleToggleEffect}
+                        onDragStart={handleDragStart}
+                        onDragEnter={handleDragEnter}
+                        onDragEnd={handleDragEnd}
+                        isDragging={draggingEffect?.id === effect.id}
+                        isDragOver={dragOverEffect?.id === effect.id}
+                    />
+                )) : (
+                     <div className="effects-chain-empty">
+                        <p>Add an effect to begin</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+
+const GenerativeTools: React.FC<GenerativeToolsProps> = ({
+    onRandomize, isAiJamEnabled, setIsAiJamEnabled,
+    aiJamInterval, setAiJamInterval, isAiJamLoading
+}) => {
+    return (
+        <div className="control-group generative-container">
+            <div className="control-group-header">
+                <h2>Generative Tools</h2>
+            </div>
+            <div className="generative-controls">
+                 <div className="control-row">
+                    <label>Randomize All</label>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                         <button onClick={() => onRandomize('solfeggio', 'global')}>Solfeggio</button>
+                         <button onClick={() => onRandomize('chaos', 'global')}>Chaos</button>
+                    </div>
+                </div>
+                <div className="control-row">
+                    <label>AI Jam Assistant</label>
+                    <button
+                        className={isAiJamEnabled ? 'active' : ''}
+                        onClick={() => setIsAiJamEnabled(!isAiJamEnabled)}
+                    >
+                        {isAiJamEnabled ? 'Disable' : 'Enable'} AI Jam
+                    </button>
+                </div>
+                {isAiJamEnabled && (
+                    <div className="control-row">
+                        <label>Interval (s)</label>
+                         <div className="control-value-wrapper">
+                            <input
+                                type="range"
+                                min="2"
+                                max="30"
+                                step="1"
+                                value={aiJamInterval}
+                                onChange={e => setAiJamInterval(Number(e.target.value))}
+                            />
+                            <span>{aiJamInterval}s</span>
+                         </div>
+                    </div>
+                )}
+                {isAiJamLoading && <div className="loading-indicator">AI is thinking...</div>}
+            </div>
+        </div>
+    );
+};
+
+
+// --- Main Audio Hook ---
+const useAudio = (
+  engineStates: EngineState[],
+  setEngineStates: React.Dispatch<React.SetStateAction<EngineState[]>>,
+  masterVolume: number,
+  globalFilterCutoff: number,
+  globalFilterResonance: number,
+  globalFilterType: FilterType,
+  lfoStates: LFOState[],
+  masterEffects: MasterEffect[],
+  linkStatus: LinkStatus,
+  isTransportPlaying: boolean
+) => {
+  const audioContextRef = useRef<{ audioContext: AudioContext | null, masterGain: GainNode | null }>({ audioContext: null, masterGain: null });
+  const engineNodesRef = useRef<Map<string, EngineAudioNodes>>(new Map());
+  const globalFilterNodeRef = useRef<BiquadFilterNode | null>(null);
+  const lfoNodesRef = useRef<Map<string, { lfo: OscillatorNode; depth: GainNode }>>(new Map());
+  const lfoRoutingBussesRef = useRef<LfoRoutingBusses | null>(null);
+  const masterEffectsChainRef = useRef<AudioNode[]>([]);
+
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [sampleBuffers, setSampleBuffers] = useState<Map<string, AudioBuffer>>(new Map());
+
+  const patternsRef = useRef<Map<string, number[]>>(new Map());
+  const stepTimeRef = useRef(0);
+
+  const initializeAudio = useCallback(() => {
+    if (isInitialized) return;
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const masterGain = audioContext.createGain();
+    masterGain.connect(audioContext.destination);
+    
+    audioContextRef.current = { audioContext, masterGain };
+
+    const globalFilterNode = audioContext.createBiquadFilter();
+    globalFilterNodeRef.current = globalFilterNode;
+
+    engineStates.forEach(engine => {
+      const engineMixer = audioContext.createGain();
+      const sequencerGain = audioContext.createGain();
+      const analyser = audioContext.createAnalyser();
+
+      engineMixer.connect(sequencerGain).connect(analyser).connect(globalFilterNode);
+
+      engineNodesRef.current.set(engine.id, {
+        synth: { volumeGain: audioContext.createGain() },
+        noise: { volumeGain: audioContext.createGain() },
+        sampler: { volumeGain: audioContext.createGain() },
+        engineMixer,
+        sequencerGain,
+        analyser
+      });
+    });
+
+    // LFOs setup
+    lfoStates.forEach(lfoState => {
+        const lfo = audioContext.createOscillator();
+        const depth = audioContext.createGain();
+        lfo.type = lfoState.shape;
+        lfo.frequency.value = lfoState.rate;
+        depth.gain.value = lfoState.depth;
+        lfo.start();
+        lfo.connect(depth);
+        lfoNodesRef.current.set(lfoState.id, { lfo, depth });
+    });
+
+    // LFO Routing Busses Setup
+    const filterCutoffModBus = audioContext.createGain();
+    const filterResonanceModBus = audioContext.createGain();
+    const engineVolModBusses = new Map<string, GainNode>();
+
+    filterCutoffModBus.gain.value = 5000;
+    filterResonanceModBus.gain.value = 15;
+
+    filterCutoffModBus.connect(globalFilterNode.frequency);
+    filterResonanceModBus.connect(globalFilterNode.Q);
+    
+    engineStates.forEach(engine => {
+        const engineNodes = engineNodesRef.current.get(engine.id);
+        if (engineNodes) {
+            const bus = audioContext.createGain();
+            bus.gain.value = 0.5; // Modulate by +/- 50%
+            bus.connect(engineNodes.engineMixer.gain);
+            engineVolModBusses.set(engine.id, bus);
+        }
+    });
+    
+    lfoRoutingBussesRef.current = {
+        filterCutoffModBus,
+        filterResonanceModBus,
+        engineVolModBusses
+    };
+
+    setIsInitialized(true);
+  }, [engineStates, isInitialized, lfoStates]);
+
+  const loadSample = useCallback(async (engineId: string, file: File) => {
+    if (!audioContextRef.current.audioContext) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      if (e.target?.result instanceof ArrayBuffer) {
+        try {
+          const audioBuffer = await audioContextRef.current.audioContext!.decodeAudioData(e.target.result);
+          setSampleBuffers(prev => new Map(prev).set(engineId, audioBuffer));
+          setEngineStates(prev => prev.map(eng => eng.id === engineId ? { ...eng, sampler: {...eng.sampler, sampleName: file.name} } : eng));
+        } catch (err) {
+          console.error('Error decoding audio file:', err);
+        }
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }, [setEngineStates]);
+  
+  // Master volume and filter effect updates
+  useEffect(() => {
+    const { audioContext, masterGain } = audioContextRef.current;
+    if (!audioContext || !masterGain) return;
+    masterGain.gain.setTargetAtTime(masterVolume, audioContext.currentTime, 0.01);
+  }, [masterVolume, isInitialized]);
+  
+  useEffect(() => {
+    const filterNode = globalFilterNodeRef.current;
+    if (!filterNode || !audioContextRef.current.audioContext) return;
+    const { audioContext } = audioContextRef.current;
+    filterNode.type = globalFilterType;
+    filterNode.frequency.setTargetAtTime(globalFilterCutoff, audioContext.currentTime, 0.01);
+    filterNode.Q.setTargetAtTime(globalFilterResonance, audioContext.currentTime, 0.01);
+  }, [globalFilterCutoff, globalFilterResonance, globalFilterType, isInitialized]);
+
+  // Sequencer logic
+  useEffect(() => {
+    engineStates.forEach(engine => {
+      const pattern = rotatePattern(
+        generateEuclideanPattern(engine.sequencerSteps, engine.sequencerPulses),
+        engine.sequencerRotate
+      );
+      patternsRef.current.set(engine.id, pattern);
+    });
+  }, [engineStates]);
+
+  useEffect(() => {
+    if (!isTransportPlaying || !isInitialized) return;
+    const interval = (60 / linkStatus.bpm) / 4; // 16th note
+    stepTimeRef.current = audioContextRef.current.audioContext!.currentTime + interval;
+
+    const scheduler = () => {
+      while (stepTimeRef.current < audioContextRef.current.audioContext!.currentTime + 0.1) {
+        
+        engineStates.forEach(engine => {
+          const pattern = patternsRef.current.get(engine.id);
+          const engineNodes = engineNodesRef.current.get(engine.id);
+          if (pattern && engineNodes && engine.sequencerEnabled) {
+              const stepIndex = currentStep % pattern.length;
+              if (pattern[stepIndex] === 1) {
+                  engineNodes.sequencerGain.gain.setValueAtTime(1, stepTimeRef.current);
+                  engineNodes.sequencerGain.gain.setValueAtTime(0, stepTimeRef.current + interval * 0.9);
+              }
+          }
+        });
+
+        stepTimeRef.current += interval;
+      }
+      
+      const nextStep = (currentStep + 1);
+      setCurrentStep(nextStep);
+    };
+
+    const timerId = setInterval(scheduler, 25);
+    return () => clearInterval(timerId);
+  }, [isTransportPlaying, linkStatus.bpm, currentStep, engineStates, isInitialized]);
+
+  // Update engine layer audio nodes
+  useEffect(() => {
+    const { audioContext } = audioContextRef.current;
+    if (!audioContext || !isInitialized) return;
+
+    engineStates.forEach(engine => {
+      const engineNodes = engineNodesRef.current.get(engine.id);
+      if (!engineNodes) return;
+      
+      const { synth, noise, sampler } = engine;
+      const { synth: synthNodes, noise: noiseNodes, sampler: samplerNodes, engineMixer } = engineNodes;
+      
+      // Synth Layer
+      if (synth.enabled) {
+          if (!synthNodes.sourceNode) {
+              synthNodes.sourceNode = audioContext.createOscillator();
+              synthNodes.sourceNode.connect(synthNodes.volumeGain).connect(engineMixer);
+              synthNodes.sourceNode.start();
+          }
+          (synthNodes.sourceNode as OscillatorNode).type = synth.oscillatorType;
+          (synthNodes.sourceNode as OscillatorNode).frequency.setTargetAtTime(synth.frequency, audioContext.currentTime, 0.01);
+          synthNodes.volumeGain.gain.setTargetAtTime(synth.volume, audioContext.currentTime, 0.01);
+      } else if (synthNodes.sourceNode) {
+          synthNodes.sourceNode.stop();
+          synthNodes.sourceNode.disconnect();
+          synthNodes.sourceNode = undefined;
+      }
+
+      // Noise Layer
+      if (noise.enabled) {
+          if (!noiseNodes.sourceNode) {
+              const bufferSize = audioContext.sampleRate * 2; // 2 seconds of noise
+              const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+              const output = buffer.getChannelData(0);
+              let lastOut = 0;
+              for (let i = 0; i < bufferSize; i++) {
+                let sample;
+                switch (noise.noiseType) {
+                    case 'white': sample = Math.random() * 2 - 1; break;
+                    case 'pink': 
+                        const b0 = 0.99886 * lastOut + (Math.random() * 2 - 1) * 0.0555179;
+                        const b1 = 0.99332 * lastOut + (Math.random() * 2 - 1) * 0.0750759;
+                        const b2 = 0.96900 * lastOut + (Math.random() * 2 - 1) * 0.1538520;
+                        lastOut = b0 + b1 + b2 + (Math.random() * 2 - 1) * 0.01;
+                        sample = lastOut * 0.11;
+                        break;
+                    case 'brown':
+                        const brown = lastOut + (Math.random() * 2 - 1) * 0.02;
+                        lastOut = brown;
+                        sample = brown * 3.5;
+                        break;
+                    default: sample = Math.random() * 2 - 1;
+                }
+                output[i] = sample;
+              }
+              const noiseSource = audioContext.createBufferSource();
+              noiseSource.buffer = buffer;
+              noiseSource.loop = true;
+              noiseSource.connect(noiseNodes.volumeGain).connect(engineMixer);
+              noiseSource.start();
+              noiseNodes.sourceNode = noiseSource;
+          }
+          noiseNodes.volumeGain.gain.setTargetAtTime(noise.volume, audioContext.currentTime, 0.01);
+      } else if (noiseNodes.sourceNode) {
+          noiseNodes.sourceNode.stop();
+          noiseNodes.sourceNode.disconnect();
+          noiseNodes.sourceNode = undefined;
+      }
+
+      // Sampler Layer
+      const sampleBuffer = sampleBuffers.get(engine.id);
+      if (sampler.enabled && sampleBuffer) {
+        if(!samplerNodes.sourceNode) {
+            const sampleSource = audioContext.createBufferSource();
+            sampleSource.buffer = sampleBuffer;
+            sampleSource.loop = true;
+            sampleSource.connect(samplerNodes.volumeGain).connect(engineMixer);
+            sampleSource.start();
+            samplerNodes.sourceNode = sampleSource;
+        }
+        (samplerNodes.sourceNode as AudioBufferSourceNode).playbackRate.value = Math.pow(2, sampler.transpose / 12);
+        samplerNodes.volumeGain.gain.setTargetAtTime(sampler.volume, audioContext.currentTime, 0.01);
+      } else if(samplerNodes.sourceNode) {
+        samplerNodes.sourceNode.stop();
+        samplerNodes.sourceNode.disconnect();
+        samplerNodes.sourceNode = undefined;
+      }
+
+    });
+  }, [engineStates, isInitialized, sampleBuffers]);
+
+  // LFO parameter updates
+    useEffect(() => {
+        if (!audioContextRef.current.audioContext || !isInitialized) return;
+        const { audioContext } = audioContextRef.current;
+
+        const syncRateToHz = (rate: string, bpm: number) => {
+            const beatsPerSecond = bpm / 60;
+            return beatsPerSecond * eval(rate);
+        };
+
+        lfoStates.forEach(lfoState => {
+            const nodes = lfoNodesRef.current.get(lfoState.id);
+            if (nodes) {
+                const { lfo, depth } = nodes;
+                lfo.type = lfoState.shape;
+                depth.gain.setTargetAtTime(lfoState.depth, audioContext.currentTime, 0.01);
+                
+                const rate = lfoState.sync
+                    ? syncRateToHz(lfoState.syncRate, linkStatus.bpm)
+                    : lfoState.rate;
+                lfo.frequency.setTargetAtTime(rate, audioContext.currentTime, 0.01);
+            }
+        });
+    }, [lfoStates, isInitialized, linkStatus.bpm]);
+
+    // LFO Routing
+    useEffect(() => {
+        if (!audioContextRef.current.audioContext || !isInitialized || !lfoRoutingBussesRef.current) return;
+
+        const busses = lfoRoutingBussesRef.current;
+        const engineIdMap: { [key in keyof LFOState['routing']]?: string } = {
+            engine1Vol: 'engine1',
+            engine2Vol: 'engine2',
+            engine3Vol: 'engine3',
+        };
+
+        lfoStates.forEach(lfoState => {
+            const lfoNodes = lfoNodesRef.current.get(lfoState.id);
+            if (!lfoNodes) return;
+            const { depth: lfoOutputGain } = lfoNodes;
+
+            const updateConnection = (shouldConnect: boolean, destination: AudioNode) => {
+                try {
+                    if (shouldConnect) {
+                        lfoOutputGain.connect(destination);
+                    } else {
+                        lfoOutputGain.disconnect(destination);
+                    }
+                } catch (e) {
+                    // Ignore errors from disconnecting a non-connected node
+                }
+            };
+
+            updateConnection(lfoState.routing.filterCutoff, busses.filterCutoffModBus);
+            updateConnection(lfoState.routing.filterResonance, busses.filterResonanceModBus);
+
+            Object.entries(engineIdMap).forEach(([routingKey, engineId]) => {
+                const bus = busses.engineVolModBusses.get(engineId!);
+                if (bus) {
+                    updateConnection(lfoState.routing[routingKey as keyof LFOState['routing']], bus);
+                }
+            });
+        });
+    }, [lfoStates, isInitialized]);
+
+    // Master Effects Chain
+    useEffect(() => {
+        if (!audioContextRef.current.audioContext || !isInitialized || !globalFilterNodeRef.current || !audioContextRef.current.masterGain) return;
+        const { audioContext, masterGain } = audioContextRef.current;
+        const filterNode = globalFilterNodeRef.current;
+
+        // Disconnect previous chain
+        let lastNode: AudioNode = filterNode;
+        lastNode.disconnect();
+
+        // Clear old nodes
+        masterEffectsChainRef.current.forEach(node => {
+            if ('disconnect' in node) node.disconnect();
+        });
+        masterEffectsChainRef.current = [];
+
+        // Build new chain
+        masterEffects.forEach(effect => {
+            if (!effect.enabled) return;
+
+            let effectNode: AudioNode | null = null;
+            switch(effect.type) {
+                case 'distortion':
+                    const distortion = audioContext.createWaveShaper();
+                    const amount = effect.params.distortion?.amount ?? 0.5;
+                    const k = amount * 100;
+                    const n_samples = 44100;
+                    const curve = new Float32Array(n_samples);
+                    const deg = Math.PI / 180;
+                    for (let i = 0; i < n_samples; ++i) {
+                        const x = i * 2 / n_samples - 1;
+                        curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+                    }
+                    distortion.curve = curve;
+                    distortion.oversample = '4x';
+                    effectNode = distortion;
+                    break;
+                case 'delay':
+                    const delay = audioContext.createDelay(2.0);
+                    const feedback = audioContext.createGain();
+                    const mix = audioContext.createGain();
+                    
+                    delay.delayTime.value = effect.params.delay?.time ?? 0.5;
+                    feedback.gain.value = effect.params.delay?.feedback ?? 0.5;
+                    mix.gain.value = effect.params.delay?.mix ?? 0.5;
+
+                    const dry = audioContext.createGain();
+                    dry.gain.value = 1.0 - mix.gain.value;
+
+                    lastNode.connect(delay);
+                    lastNode.connect(dry);
+                    delay.connect(feedback).connect(delay);
+                    delay.connect(mix);
+
+                    const wetDryMixer = audioContext.createGain();
+                    dry.connect(wetDryMixer);
+                    mix.connect(wetDryMixer);
+                    
+                    effectNode = wetDryMixer;
+                    masterEffectsChainRef.current.push(delay, feedback, mix, dry);
+                    break;
+                case 'reverb':
+                    const decay = effect.params.reverb?.decay ?? 2;
+                    const mixValue = effect.params.reverb?.mix ?? 0.5;
+                    const reverb = audioContext.createConvolver();
+                    
+                    const rate = audioContext.sampleRate;
+                    const length = rate * decay;
+                    const impulse = audioContext.createBuffer(2, length, rate);
+                    const impulseL = impulse.getChannelData(0);
+                    const impulseR = impulse.getChannelData(1);
+
+                    for (let i = 0; i < length; i++) {
+                        impulseL[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.5);
+                        impulseR[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.5);
+                    }
+                    reverb.buffer = impulse;
+
+                    const reverbMix = audioContext.createGain();
+                    reverbMix.gain.value = mixValue;
+                    const reverbDry = audioContext.createGain();
+                    reverbDry.gain.value = 1 - mixValue;
+                    
+                    lastNode.connect(reverb);
+                    lastNode.connect(reverbDry);
+
+                    const reverbMixer = audioContext.createGain();
+                    reverb.connect(reverbMix).connect(reverbMixer);
+                    reverbDry.connect(reverbMixer);
+
+                    effectNode = reverbMixer;
+                    masterEffectsChainRef.current.push(reverb, reverbMix, reverbDry);
+                    break;
+            }
+
+            if (effectNode) {
+                lastNode.connect(effectNode);
+                lastNode = effectNode;
+                masterEffectsChainRef.current.push(effectNode);
+            }
+        });
+        
+        lastNode.connect(masterGain);
+
+    }, [masterEffects, isInitialized]);
+
+  return { isInitialized, initializeAudio, currentStep, loadSample, engineNodesRef };
+};
+
+
+
+const App = () => {
+  const [isReady, setIsReady] = useState(false);
+  const [masterVolume, setMasterVolume] = useState(0.7);
+  const [globalFilterCutoff, setGlobalFilterCutoff] = useState(12000);
+  const [globalFilterResonance, setGlobalFilterResonance] = useState(1);
+  const [globalFilterType, setGlobalFilterType] = useState<FilterType>('lowpass');
+  
+  const createInitialLFOState = (id: string, name: string): LFOState => ({
+    id,
+    name,
+    rate: 5,
+    depth: 0.5,
+    shape: 'sine',
+    sync: false,
+    syncRate: '1/4',
+    routing: {
+        filterCutoff: false,
+        filterResonance: false,
+        engine1Vol: false,
+        engine2Vol: false,
+        engine3Vol: false,
+    }
+  });
+
+  const [lfoStates, setLfoStates] = useState<LFOState[]>([
+    createInitialLFOState('lfo1', 'LFO 1'),
+    createInitialLFOState('lfo2', 'LFO 2'),
+    createInitialLFOState('lfo3', 'LFO 3'),
+  ]);
+
+  const [engineStates, setEngineStates] = useState<EngineState[]>([
+    { id: 'engine1', name: 'Engine 1', isAiControlled: false, sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 4, sequencerRotate: 0, effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }, synth: { enabled: true, volume: 0.7, frequency: 440, oscillatorType: 'sine', solfeggioFrequency: '' }, noise: { enabled: false, volume: 0.5, noiseType: 'white' }, sampler: { enabled: false, volume: 1, sampleName: null, transpose: 0 }},
+    { id: 'engine2', name: 'Engine 2', isAiControlled: false, sequencerEnabled: true, sequencerSteps: 12, sequencerPulses: 3, sequencerRotate: 0, effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }, synth: { enabled: false, volume: 0.7, frequency: 220, oscillatorType: 'square', solfeggioFrequency: '' }, noise: { enabled: true, volume: 0.1, noiseType: 'pink' }, sampler: { enabled: false, volume: 1, sampleName: null, transpose: 0 }},
+    { id: 'engine3', name: 'Engine 3', isAiControlled: false, sequencerEnabled: true, sequencerSteps: 7, sequencerPulses: 2, sequencerRotate: 0, effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }, synth: { enabled: false, volume: 0.7, frequency: 880, oscillatorType: 'sawtooth', solfeggioFrequency: '' }, noise: { enabled: false, volume: 0.5, noiseType: 'brown' }, sampler: { enabled: true, volume: 1, sampleName: null, transpose: 0 }}
+  ]);
+  const [linkStatus, setLinkStatus] = useState<LinkStatus>({ isEnabled: false, bpm: 120, peers: 0 });
+  const [isTransportPlaying, setIsTransportPlaying] = useState(false);
+  const linkRef = useRef<any>(null);
+
+  const [isAiJamEnabled, setIsAiJamEnabled] = useState(false);
+  const [aiJamInterval, setAiJamInterval] = useState(10);
+  const [isAiJamLoading, setIsAiJamLoading] = useState(false);
+  const [masterEffects, setMasterEffects] = useState<MasterEffect[]>([]);
+
+  const { isInitialized, initializeAudio, currentStep, loadSample, engineNodesRef } = useAudio(
+    engineStates,
+    setEngineStates,
+    masterVolume,
+    globalFilterCutoff,
+    globalFilterResonance,
+    globalFilterType,
+    lfoStates,
+    masterEffects,
+    linkStatus,
+    isTransportPlaying,
+  );
+
+  const handleEngineUpdate = (engineId: string, updates: Partial<EngineState>) => {
+    setEngineStates(prev => prev.map(e => e.id === engineId ? { ...e, ...updates } : e));
+  };
+  
+  const handleEngineLayerUpdate = <K extends keyof Omit<EngineState, 'id' | 'name' | 'isAiControlled'>>(
+    engineId: string,
+    layer: K,
+    updates: Partial<EngineState[K]>
+  ) => {
+    setEngineStates(prev => prev.map(e => e.id === engineId ? { ...e, [layer]: { ...e[layer], ...updates } } : e));
+  };
+
+  const handleLfoUpdate = (lfoId: string, updates: Partial<LFOState>) => {
+    setLfoStates(prevLfos =>
+        prevLfos.map(lfo =>
+            lfo.id === lfoId ? { ...lfo, ...updates, ...updates.routing ? {routing: {...lfo.routing, ...updates.routing}} : {} } : lfo
+        )
+    );
+  };
+  
+  const handleToggleAiControl = (engineId: string) => {
+      setEngineStates(prev => prev.map(e => e.id === engineId ? { ...e, isAiControlled: !e.isAiControlled } : e));
+  };
+
+  const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | 'master' | 'lfo' | string) => {
+    const randomizeEngine = (engine: EngineState, randMode: RandomizeMode): EngineState => {
+      const solfeggio = randMode === 'solfeggio' ? getRandomElement(solfeggioFrequencies) : null;
+      return {
+        ...engine,
+        sequencerSteps: getRandomInt(4, 32),
+        sequencerPulses: getRandomInt(1, 8),
+        sequencerRotate: getRandomInt(0, 31),
+        synth: {
+          ...engine.synth,
+          enabled: getRandomBool(0.8),
+          volume: getRandom(0.2, 0.8),
+          frequency: solfeggio ? solfeggio.value : getRandom(80, 1000),
+          oscillatorType: getRandomElement(oscillatorTypes),
+          solfeggioFrequency: solfeggio ? String(solfeggio.value) : '',
+        },
+        noise: {
+            ...engine.noise,
+            enabled: getRandomBool(0.4),
+            volume: getRandom(0.01, 0.3),
+            noiseType: getRandomElement(noiseTypes),
+        },
+        sampler: {
+            ...engine.sampler,
+            enabled: getRandomBool(0.3),
+            transpose: getRandomInt(-12, 12),
+            volume: getRandom(0.5, 1.0),
+        }
+      };
+    };
+
+    const randomizeLfo = (lfo: LFOState, randMode: RandomizeMode): LFOState => {
+        return {
+            ...lfo,
+            rate: getRandom(0.1, 20),
+            depth: getRandom(0, 1),
+            shape: getRandomElement(lfoShapes),
+            sync: getRandomBool(0.3),
+            syncRate: getRandomElement(lfoSyncRates),
+            routing: {
+                filterCutoff: getRandomBool(0.2),
+                filterResonance: getRandomBool(0.2),
+                engine1Vol: getRandomBool(0.2),
+                engine2Vol: getRandomBool(0.2),
+                engine3Vol: getRandomBool(0.2),
+            }
+        };
+    };
+
+    const randomizeMasterFilter = () => {
+        setGlobalFilterType(getRandomElement(filterTypes));
+        setGlobalFilterCutoff(getRandom(500, 15000));
+        setGlobalFilterResonance(getRandom(0, 15));
+    };
+
+    if (scope === 'global') {
+      setEngineStates(prev => prev.map(e => randomizeEngine(e, mode)));
+      setLfoStates(prev => prev.map(lfo => randomizeLfo(lfo, mode)));
+      randomizeMasterFilter();
+    } else if (scope === 'master') {
+      randomizeMasterFilter();
+    } else if (scope === 'lfo') {
+      setLfoStates(prev => prev.map(lfo => randomizeLfo(lfo, mode)));
+    } else if (scope.startsWith('engine')) {
+      setEngineStates(prev => prev.map(e => e.id === scope ? randomizeEngine(e, mode) : e));
+    } else if (scope.startsWith('lfo')) {
+      setLfoStates(prev => prev.map(lfo => lfo.id === scope ? randomizeLfo(lfo, mode) : lfo));
+    }
+
+  }, []);
+
+  useEffect(() => {
+      if (!window.AbletonLink) return;
+      // The UMD build for AbletonLink might be exposing the class on a .default property
+      const AbletonLinkClass = (window.AbletonLink as any).default || window.AbletonLink;
+      const link = new AbletonLinkClass();
+      linkRef.current = link;
+      link.on('enabled', (isEnabled: boolean) => setLinkStatus(s => ({ ...s, isEnabled })));
+      link.on('bpm', (bpm: number) => setLinkStatus(s => ({ ...s, bpm })));
+      link.on('numPeers', (peers: number) => setLinkStatus(s => ({ ...s, peers })));
+      return () => { link.disable(); };
+  }, []);
+  
+  const toggleLink = () => {
+      if (!linkRef.current) return;
+      if (linkRef.current.isEnabled) linkRef.current.disable();
+      else linkRef.current.enable();
+  };
+  const setBPM = (bpm: number) => {
+      if (!linkRef.current) return;
+      if (!linkRef.current.isEnabled) {
+          linkRef.current.bpm = bpm;
+          setLinkStatus(s => ({...s, bpm}));
+      }
+  };
+
+  const handleToggleTransport = () => {
+      setIsTransportPlaying(p => !p);
+  };
+  
+  const ai = useMemo(() => process.env.API_KEY ? new GoogleGenAI({ apiKey: process.env.API_KEY }) : null, []);
+
+  const runAiJam = useCallback(async () => {
+    if (!ai) return;
+    setIsAiJamLoading(true);
+
+    const controlledEngines = engineStates.filter(e => e.isAiControlled);
+    if (controlledEngines.length === 0) {
+        setIsAiJamLoading(false);
+        return;
+    }
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: `The current state of a polyrhythmic synthesizer is: ${JSON.stringify(engineStates)}. You are an AI Jam Assistant. Your task is to modify the parameters for the AI-controlled engines: ${controlledEngines.map(e => e.name).join(', ')}. Make creative, subtle, and musically interesting changes. Respond ONLY with a JSON object containing the modified engine states.`,
+            config: {
+                 responseMimeType: "application/json",
+                 responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            id: { type: Type.STRING },
+                            sequencerSteps: { type: Type.INTEGER },
+                            sequencerPulses: { type: Type.INTEGER },
+                            sequencerRotate: { type: Type.INTEGER },
+                            synth: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    volume: { type: Type.NUMBER },
+                                    frequency: { type: Type.NUMBER },
+                                    oscillatorType: { type: Type.STRING }
+                                }
+                            }
+                        }
+                    }
+                 }
+            },
+        });
+        
+        const aiStates = JSON.parse(response.text) as Partial<EngineState>[];
+        setEngineStates(currentStates => currentStates.map(engine => {
+            if (engine.isAiControlled) {
+                const aiUpdate = aiStates.find(s => s.id === engine.id);
+                if (aiUpdate) {
+                    return {
+                        ...engine,
+                        ...aiUpdate,
+                        synth: { ...engine.synth, ...aiUpdate.synth }
+                    };
+                }
+            }
+            return engine;
+        }));
+
+    } catch(e) {
+        console.error("AI Jam Error:", e);
+    } finally {
+        setIsAiJamLoading(false);
+    }
+  }, [ai, engineStates]);
+
+  useEffect(() => {
+      if (isAiJamEnabled && !isAiJamLoading) {
+          const timerId = setInterval(runAiJam, aiJamInterval * 1000);
+          return () => clearInterval(timerId);
+      }
+  }, [isAiJamEnabled, aiJamInterval, isAiJamLoading, runAiJam]);
+
+
+  if (!isReady) {
+    return (
+      <div className="init-overlay">
+        <button onClick={() => { initializeAudio(); setIsReady(true); }}>Start Synthesizer</button>
+      </div>
+    );
+  }
+
+  const masterAnalyser = engineNodesRef.current.get('engine1')?.analyser; // Just using engine1 for master vis
+
+  return (
+    <div className="app-container">
+      <TopBar
+        masterVolume={masterVolume}
+        setMasterVolume={setMasterVolume}
+        linkStatus={linkStatus}
+        toggleLink={toggleLink}
+        setBPM={setBPM}
+        isTransportPlaying={isTransportPlaying}
+        onToggleTransport={handleToggleTransport}
+      />
+      <div className="main-grid">
+        <GenerativeTools
+            onRandomize={handleRandomize}
+            isAiJamEnabled={isAiJamEnabled}
+            setIsAiJamEnabled={setIsAiJamEnabled}
+            aiJamInterval={aiJamInterval}
+            setAiJamInterval={setAiJamInterval}
+            isAiJamLoading={isAiJamLoading}
+        />
+        <div className="master-visualizer-container">
+            {masterAnalyser && <Visualizer analyserNode={masterAnalyser} type="frequency" />}
+        </div>
+        <div className="channels-container">
+          {engineStates.map(engine => (
+            <EngineControls
+              key={engine.id}
+              engine={engine}
+              onUpdate={handleEngineUpdate}
+              onLayerUpdate={handleEngineLayerUpdate}
+              onLoadSample={loadSample}
+              onRandomize={(mode) => handleRandomize(mode, engine.id)}
+              onToggleAiControl={handleToggleAiControl}
+              analyserNode={engineNodesRef.current.get(engine.id)?.analyser}
+              currentStep={currentStep}
+              isTransportPlaying={isTransportPlaying}
+            />
+          ))}
+        </div>
+        <div className="lfo-grid-container">
+            {lfoStates.map((lfo) => (
+                <LFOControls
+                    key={lfo.id}
+                    lfoState={lfo}
+                    onUpdate={(updates) => handleLfoUpdate(lfo.id, updates)}
+                    linkStatus={linkStatus}
+                    onRandomize={(mode) => handleRandomize(mode, lfo.id)}
+                />
+            ))}
+        </div>
+        <MasterFilterControls
+            globalFilterCutoff={globalFilterCutoff}
+            setGlobalFilterCutoff={setGlobalFilterCutoff}
+            globalFilterResonance={globalFilterResonance}
+            setGlobalFilterResonance={setGlobalFilterResonance}
+            globalFilterType={globalFilterType}
+            setGlobalFilterType={setGlobalFilterType}
+            onRandomize={(mode) => handleRandomize(mode, 'master')}
+        />
+        <MasterEffects effects={masterEffects} setEffects={setMasterEffects} />
       </div>
     </div>
   );
 };
 
-const MasterControls: React.FC<MasterControlsProps> = (props) => {
-    return (
-        <div className="control-group master-container">
-            <div className="control-group-header">
-                <h2>Master</h2>
-                <div className="randomizer-buttons-group">
-                    <button title="Chaos Randomize" onClick={() => props.onRandomize('chaos')}>🎲</button>
-                </div>
-            </div>
-            <div className="control-row">
-                <label>Transport</label>
-                <button onClick={props.onToggleTransport} className={props.isTransportPlaying ? 'active' : ''}>
-                    {props.isTransportPlaying ? 'Stop' : 'Play'}
-                </button>
-            </div>
-             <div className="control-row">
-                <label>Master Volume</label>
-                <div className="control-value-wrapper">
-                  <input type="range" min="0" max="1" step="0.01" value={props.masterVolume} onChange={(e) => props.setMasterVolume(parseFloat(e.target.value))} />
-                  <span>{props.masterVolume.toFixed(2)}</span>
-                </div>
-            </div>
-            <div className="control-row">
-                <label>Filter Type</label>
-                <select value={props.globalFilterType} onChange={(e) => props.setGlobalFilterType(e.target.value as FilterType)}>
-                    {filterTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-            </div>
-             <div className="control-row">
-                <label>Filter Cutoff</label>
-                <div className="control-value-wrapper">
-                  <input type="range" min="20" max="20000" step="1" value={props.globalFilterCutoff} onChange={(e) => props.setGlobalFilterCutoff(parseFloat(e.target.value))} />
-                  <span>{Math.round(props.globalFilterCutoff)} Hz</span>
-                </div>
-            </div>
-             <div className="control-row">
-                <label>Filter Resonance</label>
-                <div className="control-value-wrapper">
-                  <input type="range" min="0" max="20" step="0.1" value={props.globalFilterResonance} onChange={(e) => props.setGlobalFilterResonance(parseFloat(e.target.value))} />
-                  <span>{props.globalFilterResonance.toFixed(1)}</span>
-                </div>
-            </div>
-            <div className="control-row">
-                <label>BPM</label>
-                <div className="control-value-wrapper">
-                  <input type="range" min="60" max="240" step="1" value={props.linkStatus.bpm} onChange={(e) => props.setBPM(parseInt(e.target.value, 10))} disabled={props.linkStatus.isEnabled} />
-                  <span>{props.linkStatus.bpm}</span>
-                </div>
-            </div>
-             <div className="control-row">
-                <label>Ableton Link</label>
-                <button onClick={props.toggleLink} className={props.linkStatus.isEnabled ? 'active' : ''}>
-                    {props.linkStatus.isEnabled ? `On (${props.linkStatus.peers} peers)` : 'Off'}
-                </button>
-            </div>
-        </div>
-    );
-};
-
-const LFOControls: React.FC<LFOControlsProps> = ({lfoState, setLFOState, linkStatus, onRandomize}) => {
-    const handleUpdate = (updates: Partial<LFOState>) => {
-        setLFOState(prevState => ({...prevState, ...updates}));
-    };
-
-    const formatRoutingLabel = (key: string) => {
-      return key
-          .replace(/([A-Z])/g, ' $1')
-          .replace(/([0-9])([A-Za-z])/g, '$1 $2')
-          .replace(/^./, str => str.toUpperCase());
-    };
-
-    return (
-         <div className="control-group lfo-container">
-            <div className="control-group-header">
-                <h2>LFO</h2>
-                <div className="randomizer-buttons-group">
-                    <button title="Chaos Randomize" onClick={() => onRandomize('chaos')}>🎲</button>
-                </div>
-            </div>
-             <div className="control-row">
-                <label>Shape</label>
-                <select value={lfoState.shape} onChange={e => handleUpdate({ shape: e.target.value as LFO_Shape })}>
-                    {lfoShapes.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-            </div>
-            <div className="control-row">
-              <label>Sync</label>
-              <button onClick={() => handleUpdate({ sync: !lfoState.sync })} className={lfoState.sync ? 'active' : ''}>
-                  {lfoState.sync ? 'On' : 'Off'}
-              </button>
-            </div>
-            {lfoState.sync ? (
-              <div className="control-row">
-                  <label>Sync Rate</label>
-                  <select value={lfoState.syncRate} onChange={e => handleUpdate({ syncRate: e.target.value })}>
-                      {lfoSyncRates.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
-              </div>
-            ) : (
-              <div className="control-row">
-                  <label>Rate</label>
-                    <div className="control-value-wrapper">
-                      <input type="range" min="0.1" max="20" step="0.1" value={lfoState.rate} onChange={e => handleUpdate({ rate: parseFloat(e.target.value) })} />
-                      <span>{lfoState.rate.toFixed(1)} Hz</span>
-                  </div>
-              </div>
-            )}
-             <div className="control-row">
-                <label>Depth</label>
-                <div className="control-value-wrapper">
-                  <input type="range" min="0" max="1" step="0.01" value={lfoState.depth} onChange={e => handleUpdate({ depth: parseFloat(e.target.value) })} />
-                  <span>{lfoState.depth.toFixed(2)}</span>
-                </div>
-            </div>
-            <div className="routing-section">
-                <h4>Routing</h4>
-                {Object.keys(lfoState.routing).map(key => (
-                    <div className="control-row checkbox-row" key={key}>
-                        <label htmlFor={`lfo-route-${key}`}>{formatRoutingLabel(key)}</label>
-                        <input
-                            type="checkbox"
-                            id={`lfo-route-${key}`}
-                            checked={lfoState.routing[key as keyof LFOState['routing']]}
-                            onChange={e => handleUpdate({ routing: { ...lfoState.routing, [key]: e.target.checked } })}
-                        />
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-};
-const Randomizer: React.FC<RandomizerProps> = ({ onRandomize }) => {
-    return (
-         <div className="control-group randomizer-container">
-            <div className="control-group-header">
-                <h2>Randomizer</h2>
-            </div>
-             <div className="control-row">
-                <button className="small" onClick={() => onRandomize('chaos', 'global')}>Global Chaos</button>
-                <button className="small" onClick={() => onRandomize('solfeggio', 'global')}>Global Musical</button>
-            </div>
-        </div>
-    );
-};
-
-const initialEngines: EngineState[] = [
-    {
-        id: '1', name: 'Engine 1',
-        synth: { enabled: true, volume: 0.7, frequency: 528, oscillatorType: 'sawtooth', solfeggioFrequency: '528' },
-        noise: { enabled: false, volume: 0.5, noiseType: 'white' },
-        sampler: { enabled: false, volume: 0.8, sampleName: null, transpose: 0 },
-        sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 4, sequencerRotate: 0,
-        effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }
-    },
-    {
-        id: '2', name: 'Engine 2',
-        synth: { enabled: false, volume: 0.7, frequency: 417, oscillatorType: 'sine', solfeggioFrequency: '417' },
-        noise: { enabled: true, volume: 0.3, noiseType: 'pink' },
-        sampler: { enabled: false, volume: 0.8, sampleName: null, transpose: 0 },
-        sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 8, sequencerRotate: 8,
-        effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }
-    },
-    {
-        id: '3', name: 'Engine 3',
-        synth: { enabled: false, volume: 0.7, frequency: 639, oscillatorType: 'square', solfeggioFrequency: '639' },
-        noise: { enabled: false, volume: 0.5, noiseType: 'brown' },
-        sampler: { enabled: true, volume: 0.8, sampleName: null, transpose: 0 },
-        sequencerEnabled: false, sequencerSteps: 8, sequencerPulses: 3, sequencerRotate: 0,
-        effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }
-    },
-];
-
-// --- Main App Component ---
-const App = () => {
-    const [engines, setEngines] = useState<EngineState[]>(initialEngines);
-    const [masterVolume, setMasterVolume] = useState(0.8);
-    const [linkStatus, setLinkStatus] = useState<LinkStatus>({ isEnabled: false, bpm: 120, peers: 0 });
-    const [lfoState, setLFOState] = useState<LFOState>({ rate: 5, depth: 0.5, shape: 'sine', sync: false, syncRate: '1/4', routing: { filterCutoff: false, filterResonance: false, engine1Vol: false, engine2Vol: false, engine3Vol: false } });
-    const [globalFilterCutoff, setGlobalFilterCutoff] = useState(12000);
-    const [globalFilterResonance, setGlobalFilterResonance] = useState(1);
-    const [globalFilterType, setGlobalFilterType] = useState<FilterType>('lowpass');
-    
-    const [isAudioInitialized, setIsAudioInitialized] = useState(false);
-    const [isTransportPlaying, setIsTransportPlaying] = useState(false);
-    const [currentStep, setCurrentStep] = useState(0);
-
-    const audioContextRef = useRef<AudioContext | null>(null);
-    const masterGainRef = useRef<GainNode | null>(null);
-    const masterFilterRef = useRef<BiquadFilterNode | null>(null);
-    const masterAnalyserRef = useRef<AnalyserNode | null>(null);
-    const audioNodesRef = useRef<Map<string, EngineAudioNodes>>(new Map());
-    const [decodedSamples, setDecodedSamples] = useState<Map<string, AudioBuffer>>(new Map());
-    const [noiseBuffers, setNoiseBuffers] = useState<Map<NoiseType, AudioBuffer>>(new Map());
-
-    const lfoOscillatorRef = useRef<OscillatorNode | null>(null);
-    const lfoGainRef = useRef<GainNode | null>(null);
-    const lfoRoutingNodesRef = useRef<LfoRoutingNodes | null>(null);
-
-    const linkRef = useRef<any>(null);
-    
-    const schedulerTimerRef = useRef<number | null>(null);
-    const nextStepTimeRef = useRef(0);
-    const currentStepRef = useRef(0);
-
-
-    const generateNoiseSamples = useCallback(async (context: AudioContext): Promise<Map<NoiseType, AudioBuffer>> => {
-        const bufferSize = context.sampleRate * 2; // 2 seconds
-        const buffers = new Map<NoiseType, AudioBuffer>();
-        const noiseGen = (genFn:()=>number) => {
-            const buffer = context.createBuffer(1, bufferSize, context.sampleRate);
-            const data = buffer.getChannelData(0);
-            for (let i = 0; i < bufferSize; i++) data[i] = genFn();
-            return buffer;
-        }
-        buffers.set('white', noiseGen(() => Math.random() * 2 - 1));
-        let lastOut = 0;
-        buffers.set('brown', noiseGen(() => (lastOut = (lastOut + (0.02 * (Math.random() * 2 - 1))) / 1.02 * 3.5, lastOut)));
-        let b = [0,0,0,0,0,0,0];
-        buffers.set('pink', noiseGen(() => {
-            const white = Math.random() * 2 - 1;
-            b[0] = 0.99886*b[0] + white*0.0555179; b[1] = 0.99332*b[1] + white*0.0750759;
-            b[2] = 0.96900*b[2] + white*0.1538520; b[3] = 0.86650*b[3] + white*0.3104856;
-            b[4] = 0.55000*b[4] + white*0.5329522; b[5] = -0.7616*b[5] - white*0.0168980;
-            const pink = (b[0]+b[1]+b[2]+b[3]+b[4]+b[5]+b[6] + white*0.5362) * 0.11;
-            b[6] = white * 0.115926; return pink;
-        }));
-        return buffers;
-    }, []);
-
-
-    const initAudio = useCallback(async () => {
-        if (isAudioInitialized) return;
-        const context = new (window.AudioContext || (window as any).webkitAudioContext)();
-        await context.resume();
-        audioContextRef.current = context;
-        masterGainRef.current = context.createGain();
-        masterFilterRef.current = context.createBiquadFilter();
-        masterAnalyserRef.current = context.createAnalyser();
-        masterAnalyserRef.current.smoothingTimeConstant = 0.3;
-        masterFilterRef.current.connect(masterGainRef.current);
-        masterGainRef.current.connect(masterAnalyserRef.current);
-        masterAnalyserRef.current.connect(context.destination);
-        
-        lfoOscillatorRef.current = context.createOscillator();
-        lfoGainRef.current = context.createGain();
-        lfoOscillatorRef.current.connect(lfoGainRef.current);
-        lfoOscillatorRef.current.start();
-        
-        const filterCutoffScaler = context.createGain();
-        const filterResonanceScaler = context.createGain();
-        filterCutoffScaler.gain.value = 0;
-        filterResonanceScaler.gain.value = 0;
-        lfoGainRef.current.connect(filterCutoffScaler);
-        lfoGainRef.current.connect(filterResonanceScaler);
-        filterCutoffScaler.connect(masterFilterRef.current.frequency);
-        filterResonanceScaler.connect(masterFilterRef.current.Q);
-        lfoRoutingNodesRef.current = { filterCutoffScaler, filterResonanceScaler };
-
-        if (linkRef.current) {
-            linkRef.current.startUpdate(context);
-        }
-
-        setNoiseBuffers(await generateNoiseSamples(context));
-        setIsAudioInitialized(true);
-    }, [isAudioInitialized, generateNoiseSamples]);
-
-    // Setup and update audio nodes
-    useEffect(() => {
-        if (!isAudioInitialized || !audioContextRef.current || !lfoGainRef.current) return;
-        const audioContext = audioContextRef.current;
-        engines.forEach(engine => {
-            let nodes = audioNodesRef.current.get(engine.id);
-            if (!nodes) {
-                const engineMixer = audioContext.createGain();
-                const sequencerGain = audioContext.createGain();
-                const lfoVolumeScaler = audioContext.createGain();
-                const analyser = audioContext.createAnalyser();
-
-                const synthNodes: LayerAudioNodes = { volumeGain: audioContext.createGain() };
-                const noiseNodes: LayerAudioNodes = { volumeGain: audioContext.createGain() };
-                const samplerNodes: LayerAudioNodes = { volumeGain: audioContext.createGain() };
-                
-                synthNodes.volumeGain.connect(engineMixer);
-                noiseNodes.volumeGain.connect(engineMixer);
-                samplerNodes.volumeGain.connect(engineMixer);
-
-                engineMixer.connect(sequencerGain);
-                sequencerGain.connect(analyser);
-                analyser.connect(masterFilterRef.current!);
-
-                lfoVolumeScaler.gain.value = 0;
-                lfoGainRef.current!.connect(lfoVolumeScaler);
-                // Note: LFO modulates the mixer, affecting overall engine volume
-                lfoVolumeScaler.connect(engineMixer.gain); 
-
-                nodes = { synth: synthNodes, noise: noiseNodes, sampler: samplerNodes, engineMixer, sequencerGain, analyser, lfoVolumeScaler };
-                audioNodesRef.current.set(engine.id, nodes);
-            }
-
-            // --- Synth Layer ---
-            if (engine.synth.enabled) {
-                if (!nodes.synth.sourceNode) {
-                    const oscillator = audioContext.createOscillator();
-                    oscillator.connect(nodes.synth.volumeGain);
-                    oscillator.start();
-                    nodes.synth.sourceNode = oscillator;
-                }
-                (nodes.synth.sourceNode as OscillatorNode).type = engine.synth.oscillatorType;
-                (nodes.synth.sourceNode as OscillatorNode).frequency.setTargetAtTime(engine.synth.frequency, audioContext.currentTime, 0.01);
-                nodes.synth.volumeGain.gain.setTargetAtTime(engine.synth.volume, audioContext.currentTime, 0.01);
-            } else if (nodes.synth.sourceNode) {
-                 (nodes.synth.sourceNode as OscillatorNode).disconnect();
-                 (nodes.synth.sourceNode as OscillatorNode).stop();
-                 delete nodes.synth.sourceNode;
-            }
-            
-            // --- Noise and Sampler Layers are handled during triggering ---
-            nodes.noise.volumeGain.gain.setTargetAtTime(engine.noise.volume, audioContext.currentTime, 0.01);
-            nodes.sampler.volumeGain.gain.setTargetAtTime(engine.sampler.volume, audioContext.currentTime, 0.01);
-            
-            nodes.sequencerGain.gain.setValueAtTime(0, audioContext.currentTime);
-        });
-    }, [isAudioInitialized, engines]);
-
-     // Master Clock and Sequencer Triggering
-    useEffect(() => {
-        const scheduleNotes = (beat: number, time: number) => {
-            setCurrentStep(beat % 16);
-            engines.forEach(engine => {
-                const nodes = audioNodesRef.current.get(engine.id);
-                if (!engine.sequencerEnabled || !nodes) return;
-                
-                const pattern = rotatePattern(generateEuclideanPattern(engine.sequencerSteps, engine.sequencerPulses), engine.sequencerRotate);
-                const stepInPattern = beat % engine.sequencerSteps;
-
-                if (pattern[stepInPattern] === 1) {
-                    const noteDuration = 0.2;
-                    // Trigger layers if they are enabled
-                    if (engine.noise.enabled && engine.noise.noiseType && noiseBuffers.has(engine.noise.noiseType)) {
-                        const source = audioContextRef.current!.createBufferSource();
-                        source.buffer = noiseBuffers.get(engine.noise.noiseType)!;
-                        source.connect(nodes.noise.volumeGain);
-                        source.start(time);
-                        source.stop(time + noteDuration);
-                    }
-                    if (engine.sampler.enabled && decodedSamples.has(engine.id)) {
-                        const source = audioContextRef.current!.createBufferSource();
-                        source.buffer = decodedSamples.get(engine.id)!;
-                        const rate = Math.pow(2, engine.sampler.transpose / 12);
-                        source.playbackRate.value = rate;
-                        source.connect(nodes.sampler.volumeGain);
-                        source.start(time);
-                        source.stop(time + noteDuration);
-                    }
-                    
-                    // Apply envelope to the entire engine mix
-                    nodes.sequencerGain.gain.cancelScheduledValues(time);
-                    nodes.sequencerGain.gain.setValueAtTime(0, time);
-                    nodes.sequencerGain.gain.linearRampToValueAtTime(1, time + 0.01);
-                    nodes.sequencerGain.gain.exponentialRampToValueAtTime(0.0001, time + noteDuration);
-                }
-            });
-        };
-
-        const scheduler = () => {
-            const context = audioContextRef.current!;
-            const link = linkRef.current;
-            const scheduleAheadTime = 0.1;
-
-            while (nextStepTimeRef.current < context.currentTime + scheduleAheadTime) {
-                let beat = 0;
-                if (linkStatus.isEnabled && link) {
-                    const sessionState = link.captureAppSessionState();
-                    const currentQuantum = 4.0;
-                    beat = Math.floor(sessionState.beatAtTime(nextStepTimeRef.current, currentQuantum) * 4);
-                } else {
-                    beat = currentStepRef.current;
-                }
-                
-                scheduleNotes(beat, nextStepTimeRef.current);
-
-                const sixteenthNoteDuration = 60.0 / linkStatus.bpm / 4.0;
-                nextStepTimeRef.current += sixteenthNoteDuration;
-                currentStepRef.current = (currentStepRef.current + 1) % 64;
-            }
-        };
-
-        if (isTransportPlaying && isAudioInitialized) {
-            const context = audioContextRef.current!;
-            if (linkStatus.isEnabled && linkRef.current) {
-                const sessionState = linkRef.current.captureAppSessionState();
-                const currentQuantum = 4.0;
-                const currentBeat = sessionState.beatAtTime(context.currentTime, currentQuantum);
-                currentStepRef.current = Math.floor(currentBeat * 4);
-                const timeToNext16th = (Math.ceil(currentBeat * 4) / 4 - currentBeat) * (60.0 / linkStatus.bpm);
-                nextStepTimeRef.current = context.currentTime + timeToNext16th;
-            } else {
-                currentStepRef.current = 0;
-                nextStepTimeRef.current = context.currentTime;
-            }
-            if(schedulerTimerRef.current) clearInterval(schedulerTimerRef.current);
-            schedulerTimerRef.current = window.setInterval(scheduler, 25);
-        } else {
-            if (schedulerTimerRef.current) {
-                clearInterval(schedulerTimerRef.current);
-                schedulerTimerRef.current = null;
-            }
-        }
-        
-        return () => {
-            if (schedulerTimerRef.current) {
-                clearInterval(schedulerTimerRef.current);
-                schedulerTimerRef.current = null;
-            }
-        };
-    }, [isTransportPlaying, isAudioInitialized, linkStatus, engines, decodedSamples, noiseBuffers]);
-
-    // LFO Logic
-    useEffect(() => {
-        if (!isAudioInitialized || !lfoOscillatorRef.current || !lfoGainRef.current || !lfoRoutingNodesRef.current) return;
-        const audioContext = audioContextRef.current;
-        const now = audioContext.currentTime;
-
-        const shape = lfoState.shape;
-        lfoOscillatorRef.current.type = shape === 'ramp' ? 'sawtooth' : shape;
-        
-        let rate = lfoState.rate;
-        if(lfoState.sync) {
-            try {
-              const noteDuration = 60 / linkStatus.bpm;
-              // Safer evaluation
-              const syncRateParts = lfoState.syncRate.split('/');
-              const numerator = parseFloat(syncRateParts[0]);
-              const denominator = parseFloat(syncRateParts[1] || '1');
-              if (!isNaN(numerator) && !isNaN(denominator) && denominator !== 0) {
-                  const multiplier = numerator / denominator;
-                  rate = 1 / (noteDuration * multiplier);
-              }
-            } catch (e) {
-                console.error("Error calculating sync rate", e);
-                rate = 1.0; // fallback
-            }
-        }
-        lfoOscillatorRef.current.frequency.setTargetAtTime(rate, now, 0.01);
-        lfoGainRef.current.gain.setTargetAtTime(lfoState.depth, now, 0.01);
-
-        const { filterCutoffScaler, filterResonanceScaler } = lfoRoutingNodesRef.current;
-        filterCutoffScaler.gain.setTargetAtTime(lfoState.routing.filterCutoff ? 5000 : 0, now, 0.01);
-        filterResonanceScaler.gain.setTargetAtTime(lfoState.routing.filterResonance ? 10 : 0, now, 0.01);
-
-        engines.forEach((engine, index) => {
-            const engineKey = `engine${index+1}Vol` as keyof LFOState['routing'];
-            const nodes = audioNodesRef.current.get(engine.id);
-            if (nodes?.lfoVolumeScaler) {
-                nodes.lfoVolumeScaler.gain.setTargetAtTime(lfoState.routing[engineKey] ? 1 : 0, now, 0.01);
-            }
-        });
-
-    }, [lfoState, isAudioInitialized, linkStatus.bpm, engines]);
-
-
-    useEffect(() => {
-        if (!isAudioInitialized || !masterGainRef.current || !masterFilterRef.current) return;
-        const now = audioContextRef.current!.currentTime;
-        masterGainRef.current.gain.setTargetAtTime(masterVolume, now, 0.01);
-        masterFilterRef.current.type = globalFilterType;
-        masterFilterRef.current.frequency.setTargetAtTime(globalFilterCutoff, now, 0.01);
-        masterFilterRef.current.Q.setTargetAtTime(globalFilterResonance, now, 0.01);
-    }, [masterVolume, globalFilterCutoff, globalFilterResonance, globalFilterType, isAudioInitialized]);
-
-
-    useEffect(() => {
-        if (window.AbletonLink) {
-            const link = new window.AbletonLink();
-            linkRef.current = link;
-            link.on('tempo', (bpm: number) => setLinkStatus(p => ({ ...p, bpm: Math.round(bpm) })));
-            link.on('numPeers', (peers: number) => setLinkStatus(p => ({ ...p, peers })));
-            link.on('isLinkEnabled', (isEnabled: boolean) => setLinkStatus(p => ({ ...p, isEnabled })));
-            link.on('startPlaying', () => setIsTransportPlaying(true));
-            link.on('stopPlaying', () => setIsTransportPlaying(false));
-            return () => { if (linkRef.current) linkRef.current.enable(false); };
-        }
-    }, []);
-
-    const handleUpdateEngine = useCallback((engineId: string, updates: Partial<EngineState>) => {
-        setEngines(prevEngines => prevEngines.map(e => {
-            if (e.id === engineId) {
-                const newState = { ...e, ...updates };
-                if (updates.sequencerSteps !== undefined) {
-                    if (newState.sequencerPulses > updates.sequencerSteps) {
-                        newState.sequencerPulses = updates.sequencerSteps;
-                    }
-                    if (newState.sequencerRotate >= updates.sequencerSteps) {
-                        newState.sequencerRotate = Math.max(0, updates.sequencerSteps - 1);
-                    }
-                }
-                return newState;
-            }
-            return e;
-        }));
-    }, []);
-
-    // FIX: Changed to a function expression to avoid TSX parsing ambiguity with generics.
-    const handleUpdateEngineLayer = useCallback(function <K extends keyof Omit<EngineState, 'id' | 'name'>>(
-        engineId: string,
-        layer: K,
-        updates: Partial<EngineState[K]>
-    ) {
-        setEngines(prevEngines => prevEngines.map(e => {
-            if (e.id === engineId) {
-                const layerValue = e[layer];
-                if (typeof layerValue === 'object' && layerValue !== null) {
-                    return { ...e, [layer]: { ...layerValue, ...updates } };
-                }
-            }
-            return e;
-        }));
-    }, []);
-
-    const handleToggleTransport = useCallback(() => {
-      const newIsPlaying = !isTransportPlaying;
-      if (linkStatus.isEnabled && linkRef.current) {
-          linkRef.current.setIsPlaying(newIsPlaying);
-      }
-      setIsTransportPlaying(newIsPlaying);
-    }, [isTransportPlaying, linkStatus.isEnabled]);
-    
-    const handleLoadSample = useCallback(async (engineId: string, file: File) => {
-        if (!audioContextRef.current) return;
-        if (!file.type.startsWith('audio/')) {
-            alert('Invalid file type. Please load an audio file.');
-            return;
-        }
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-            setDecodedSamples(prev => new Map(prev).set(engineId, audioBuffer));
-            handleUpdateEngineLayer(engineId, 'sampler', { sampleName: file.name, enabled: true });
-        } catch (error) {
-            console.error("Failed to decode audio file:", error);
-            alert("Failed to load sample. Please check the file format.");
-        }
-    }, [handleUpdateEngineLayer]);
-
-    const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | 'master' | 'lfo' | string = 'global') => {
-        const randomizeEngine = (engine: EngineState, currentMode: RandomizeMode): EngineState => {
-            const steps = getRandomInt(4, 32);
-            const pulses = getRandomInt(1, steps);
-            const rotate = getRandomInt(0, steps - 1);
-
-            const randomFreq = getRandomElement(solfeggioFrequencies);
-
-            return {
-                ...engine,
-                sequencerEnabled: getRandomBool(0.8),
-                sequencerSteps: steps,
-                sequencerPulses: pulses,
-                sequencerRotate: rotate,
-                synth: {
-                    ...engine.synth,
-                    enabled: getRandomBool(0.7),
-                    volume: getRandom(0.4, 0.9),
-                    oscillatorType: getRandomElement(oscillatorTypes),
-                    frequency: currentMode === 'solfeggio' ? randomFreq.value : getRandom(100, 1500),
-                    solfeggioFrequency: currentMode === 'solfeggio' ? String(randomFreq.value) : engine.synth.solfeggioFrequency,
-                },
-                noise: {
-                    ...engine.noise,
-                    enabled: getRandomBool(0.5),
-                    volume: getRandom(0.2, 0.7),
-                    noiseType: getRandomElement(noiseTypes),
-                },
-                sampler: {
-                    ...engine.sampler,
-                    enabled: engine.sampler.sampleName ? getRandomBool(0.3) : false,
-                    volume: getRandom(0.5, 1.0),
-                    transpose: getRandomInt(-12, 12),
-                },
-                effects: {
-                    ...engine.effects,
-                    distortion: getRandom(0, 0.7),
-                    delayTime: getRandom(0, 1),
-                    delayFeedback: getRandom(0, 0.85),
-                }
-            };
-        };
-
-        if (scope === 'global' || scope === 'master') {
-            setGlobalFilterType(getRandomElement(filterTypes));
-            setGlobalFilterCutoff(getRandom(100, 10000));
-            setGlobalFilterResonance(getRandom(0.1, 15));
-            setMasterVolume(getRandom(0.5, 1.0));
-        }
-
-        if (scope === 'global' || scope === 'lfo') {
-            const newRouting: LFOState['routing'] = {
-                filterCutoff: getRandomBool(0.3),
-                filterResonance: getRandomBool(0.3),
-                engine1Vol: getRandomBool(0.3),
-                engine2Vol: getRandomBool(0.3),
-                engine3Vol: getRandomBool(0.3),
-            };
-            setLFOState({
-                shape: getRandomElement(lfoShapes),
-                sync: getRandomBool(0.5),
-                syncRate: getRandomElement(lfoSyncRates),
-                rate: getRandom(0.1, 20),
-                depth: getRandom(0.2, 1.0),
-                routing: newRouting,
-            });
-        }
-        
-        if (scope === 'global') {
-            setEngines(prev => prev.map(engine => randomizeEngine(engine, mode)));
-        } else if (scope !== 'master' && scope !== 'lfo') {
-            setEngines(prev => prev.map(engine => engine.id === scope ? randomizeEngine(engine, mode) : engine));
-        }
-
-    }, []);
-
-    const handleToggleLink = useCallback(() => { if (linkRef.current) linkRef.current.enable(!linkStatus.isEnabled); }, [linkStatus.isEnabled]);
-    const handleSetBPM = useCallback((bpm: number) => {
-        setLinkStatus(s => ({...s, bpm}));
-        if (linkRef.current && !linkStatus.isEnabled) linkRef.current.setTempo(bpm);
-    }, [linkStatus.isEnabled]);
-
-    return (
-        <div className="app-container">
-            {!isAudioInitialized && (
-                <div className="init-overlay">
-                    <button onClick={initAudio}>Initialize Audio Engine</button>
-                </div>
-            )}
-            <header className="header">
-                <h1>Poly-Rhythm Synth</h1>
-            </header>
-            <div className="main-grid">
-                {masterAnalyserRef.current && (
-                    <div className="master-visualizer-container">
-                        <Visualizer analyserNode={masterAnalyserRef.current} type="frequency" />
-                    </div>
-                )}
-                 <MasterControls
-                    masterVolume={masterVolume}
-                    setMasterVolume={setMasterVolume}
-                    linkStatus={linkStatus}
-                    toggleLink={handleToggleLink}
-                    setBPM={handleSetBPM}
-                    globalFilterCutoff={globalFilterCutoff}
-                    setGlobalFilterCutoff={setGlobalFilterCutoff}
-                    globalFilterResonance={globalFilterResonance}
-                    setGlobalFilterResonance={setGlobalFilterResonance}
-                    globalFilterType={globalFilterType}
-                    setGlobalFilterType={setGlobalFilterType}
-                    isTransportPlaying={isTransportPlaying}
-                    onToggleTransport={handleToggleTransport}
-                    onRandomize={(mode) => handleRandomize(mode, 'master')}
-                />
-                <div className="channels-container">
-                    {engines.map(engine => (
-                        <EngineControls
-                            key={engine.id}
-                            engine={engine}
-                            onUpdate={handleUpdateEngine}
-                            onLayerUpdate={handleUpdateEngineLayer}
-                            onLoadSample={handleLoadSample}
-                            onRandomize={(mode) => handleRandomize(mode, engine.id)}
-                            analyserNode={audioNodesRef.current.get(engine.id)?.analyser}
-                            currentStep={currentStep}
-                            isTransportPlaying={isTransportPlaying}
-                        />
-                    ))}
-                </div>
-                <LFOControls 
-                    lfoState={lfoState} 
-                    setLFOState={setLFOState} 
-                    linkStatus={linkStatus} 
-                    onRandomize={(mode) => handleRandomize(mode, 'lfo')}
-                />
-                <Randomizer onRandomize={handleRandomize} />
-            </div>
-        </div>
-    );
-};
-
 const container = document.getElementById('root');
-if (container) {
-    const root = createRoot(container);
-    root.render(<React.StrictMode><App /></React.StrictMode>);
-}
+const root = createRoot(container!);
+root.render(<App />);

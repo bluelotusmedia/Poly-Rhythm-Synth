@@ -37,7 +37,7 @@
       .app-container {
         display: flex;
         flex-direction: column;
-        gap: 2rem;
+        gap: 1.5rem;
         max-width: 1200px;
         margin: 0 auto;
       }
@@ -53,13 +53,39 @@
         text-transform: uppercase;
         font-weight: 300;
       }
+      .top-bar {
+        background-color: var(--surface-color);
+        border-radius: 8px;
+        padding: 1rem 1.5rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        border: 1px solid #2a2a2a;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1.5rem;
+      }
+      .top-bar-group {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+      }
+      .top-bar .control-row {
+        margin-bottom: 0;
+      }
+       .top-bar-group h2 {
+        margin: 0;
+        font-size: 1.2rem;
+        color: var(--primary-color);
+        font-weight: 400;
+       }
+
       .main-grid {
         display: grid;
         grid-template-areas:
-          "visualizer visualizer visualizer"
-          "master master master"
+          "generative visualizer visualizer"
           "channels channels channels"
-          "lfo lfo randomizer";
+          "lfo-grid lfo-grid lfo-grid"
+          "master-filter effects effects";
         grid-template-columns: 1fr 1fr 1fr;
         gap: 1.5rem;
       }
@@ -75,17 +101,23 @@
       .channels-container {
         grid-area: channels;
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        grid-template-columns: 1fr 1fr 1fr;
         gap: 1.5rem;
       }
-       .master-container {
-        grid-area: master;
+       .master-filter-container {
+        grid-area: master-filter;
        }
-       .lfo-container {
-          grid-area: lfo;
+       .master-effects-container {
+        grid-area: effects;
        }
-        .randomizer-container {
-            grid-area: randomizer;
+       .lfo-grid-container {
+          grid-area: lfo-grid;
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 1.5rem;
+       }
+        .generative-container {
+            grid-area: generative;
         }
 
       .control-group {
@@ -117,7 +149,7 @@
         display: flex;
         gap: 0.5rem;
       }
-      .randomizer-buttons-group button {
+      .randomizer-buttons-group button, .ai-toggle {
         background: none;
         border: 1px solid #444;
         color: var(--on-surface-color);
@@ -127,9 +159,13 @@
         border-radius: 4px;
         transition: background-color 0.2s, border-color 0.2s;
       }
-      .randomizer-buttons-group button:hover {
+      .randomizer-buttons-group button:hover, .ai-toggle:hover {
         background-color: #333;
         border-color: var(--secondary-color);
+      }
+      .ai-toggle.active {
+        border-color: var(--primary-color);
+        background-color: rgba(187, 134, 252, 0.2);
       }
       .control-row {
         display: flex;
@@ -335,6 +371,107 @@
       .power-toggle {
         padding: 0.3rem 0.6rem;
         font-size: 0.8rem;
+      }
+      
+      .generative-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .generative-controls .control-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+      }
+      .generative-controls .control-row button {
+        width: 100%;
+      }
+       .generative-controls .loading-indicator {
+        font-style: italic;
+        color: var(--secondary-color);
+        text-align: center;
+       }
+      
+      /* Master Effects Styles */
+      .master-effects-header {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+      }
+      .effects-chain {
+        display: flex;
+        gap: 1rem;
+        padding: 1rem;
+        min-height: 150px;
+        background-color: #161616;
+        border-radius: 6px;
+        overflow-x: auto;
+        align-items: flex-start;
+      }
+      .effects-chain-empty {
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        border: 2px dashed #333;
+        color: #555;
+        font-style: italic;
+      }
+      .effect-module {
+        background-color: #2a2a2a;
+        border-radius: 6px;
+        border: 1px solid #333;
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        flex-shrink: 0;
+        width: 250px;
+        cursor: grab;
+        transition: box-shadow 0.2s, border-color 0.2s;
+      }
+      .effect-module.dragging {
+        opacity: 0.5;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 15px rgba(187, 134, 252, 0.5);
+      }
+      .effect-module.drag-over {
+        border-left: 2px solid var(--secondary-color);
+      }
+      .effect-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #444;
+      }
+      .effect-header h4 {
+        margin: 0;
+        font-weight: 500;
+      }
+      .effect-header-buttons {
+        display: flex;
+        gap: 0.5rem;
+      }
+      .effect-header-buttons button {
+        padding: 0.2rem 0.4rem;
+        font-size: 0.8rem;
+      }
+       .remove-effect-btn {
+        background-color: #552222;
+        color: #ff9999;
+       }
+       .remove-effect-btn:hover {
+        background-color: #773333;
+       }
+      .effect-module .control-row {
+        margin-bottom: 0.25rem;
+      }
+      .effect-module input[type="range"] {
+        width: 120px;
+      }
+      .effect-module .control-value-wrapper span {
+        min-width: 50px;
       }
 
     </style>
