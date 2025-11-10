@@ -1,3 +1,5 @@
+
+
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -5,36 +7,44 @@ import { GoogleGenAI, Type } from "@google/genai";
 // --- Type Definitions ---
 type OscillatorType = 'sine' | 'square' | 'sawtooth' | 'triangle';
 type NoiseType = 'white' | 'pink' | 'brown';
-type ChannelType = 'synth' | 'sample' | 'noise';
-type LFO_Shape = 'sine' | 'square' | 'sawtooth' | 'triangle';
+type LFO_Shape = 'sine' | 'square' | 'sawtooth' | 'triangle' | 'ramp';
 type FilterType = 'lowpass' | 'highpass' | 'bandpass' | 'notch';
 type RandomizeMode = 'chaos' | 'solfeggio';
 
+// --- New Layered Architecture Types ---
+interface SynthLayerState {
+    enabled: boolean;
+    volume: number;
+    frequency: number;
+    oscillatorType: OscillatorType;
+    solfeggioFrequency: string;
+}
+interface NoiseLayerState {
+    enabled: boolean;
+    volume: number;
+    noiseType: NoiseType;
+}
+interface SamplerLayerState {
+    enabled: boolean;
+    volume: number;
+    sampleName: string | null;
+    transpose: number; // in semitones
+}
 interface EffectState {
   distortion: number; // 0 to 1
   delayTime: number; // in seconds
   delayFeedback: number; // 0 to 1
 }
-
-interface ChannelState {
+interface EngineState {
   id: string;
   name: string;
-  volume: number;
-  // Synth specific
-  frequency?: number;
-  oscillatorType?: OscillatorType;
-  solfeggioFrequency?: string;
-  // Sample specific
-  channelType: ChannelType;
-  sampleName?: string | null;
-  // Noise specific
-  noiseType?: NoiseType;
-  // Sequencer
+  synth: SynthLayerState;
+  noise: NoiseLayerState;
+  sampler: SamplerLayerState;
   sequencerEnabled: boolean;
   sequencerSteps: number;
   sequencerPulses: number;
   sequencerRotate: number;
-  // Effects
   effects: EffectState;
 }
 
@@ -47,22 +57,28 @@ interface LFOState {
     routing: {
         filterCutoff: boolean;
         filterResonance: boolean;
-        channel1Vol: boolean;
-        channel2Vol: boolean;
-        channel3Vol: boolean;
+        engine1Vol: boolean;
+        engine2Vol: boolean;
+        engine3Vol: boolean;
     }
 }
 
-interface AudioNodes {
-  oscillator?: OscillatorNode;
-  sourceGain: GainNode; // Used for sequencer note envelope
-  channelVolumeGain: GainNode; // Used for volume slider
-  lfoVolumeScaler: GainNode; // Used for LFO volume modulation
-  analyser: AnalyserNode;
-  // Effects chain
-  distortion?: WaveShaperNode;
-  delay?: DelayNode;
-  feedback?: GainNode;
+// --- New Audio Node Types ---
+interface LayerAudioNodes {
+    sourceNode?: OscillatorNode | AudioBufferSourceNode;
+    volumeGain: GainNode;
+}
+interface EngineAudioNodes {
+    synth: LayerAudioNodes;
+    noise: LayerAudioNodes;
+    sampler: LayerAudioNodes;
+    engineMixer: GainNode;
+    sequencerGain: GainNode;
+    lfoVolumeScaler: GainNode;
+    analyser: AnalyserNode;
+    distortion?: WaveShaperNode;
+    delay?: DelayNode;
+    feedback?: GainNode;
 }
 
 interface LfoRoutingNodes {
@@ -81,8 +97,6 @@ interface LinkStatus {
 interface VisualizerProps {
   analyserNode: AnalyserNode;
   type: 'waveform' | 'frequency';
-  backgroundColor?: string;
-  strokeColor?: string | CanvasGradient;
 }
 
 interface CircularVisualizerSequencerProps {
@@ -94,11 +108,15 @@ interface CircularVisualizerSequencerProps {
     isTransportPlaying: boolean;
 }
 
-interface ChannelControlsProps {
-  channel: ChannelState;
-  onUpdate: (id: string, updates: Partial<ChannelState>) => void;
-  onToggleSequencer: (id: string) => void;
-  onLoadSample: (channelId: string, file: File) => void;
+interface EngineControlsProps {
+  engine: EngineState;
+  onUpdate: (engineId: string, updates: Partial<EngineState>) => void;
+  onLayerUpdate: <K extends keyof Omit<EngineState, 'id' | 'name'>>(
+    engineId: string,
+    layer: K,
+    updates: Partial<EngineState[K]>
+  ) => void;
+  onLoadSample: (engineId: string, file: File) => void;
   onRandomize: (mode: RandomizeMode) => void;
   analyserNode?: AnalyserNode;
   currentStep: number;
@@ -149,7 +167,7 @@ const solfeggioFrequencies = [
 ];
 
 const oscillatorTypes: OscillatorType[] = ['sine', 'square', 'sawtooth', 'triangle'];
-const lfoShapes: LFO_Shape[] = ['sine', 'square', 'sawtooth', 'triangle'];
+const lfoShapes: LFO_Shape[] = ['sine', 'square', 'sawtooth', 'ramp', 'triangle'];
 const filterTypes: FilterType[] = ['lowpass', 'highpass', 'bandpass', 'notch'];
 const lfoSyncRates = ['1/16', '1/8', '1/4', '1/2', '1'];
 const noiseTypes: NoiseType[] = ['white', 'pink', 'brown'];
@@ -181,15 +199,18 @@ const rotatePattern = (pattern: number[], rotation: number): number[] => {
     return [...pattern.slice(len - offset), ...pattern.slice(0, len - offset)];
 };
 
+const getRandom = (min: number, max: number) => Math.random() * (max - min) + min;
+const getRandomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+const getRandomBool = (probability = 0.5) => Math.random() < probability;
+// FIX: Changed to function declaration to avoid TSX parsing ambiguity with generics.
+function getRandomElement<T>(arr: readonly T[]): T {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
 
 // --- Components ---
 
-const Visualizer: React.FC<VisualizerProps> = ({
-  analyserNode,
-  type,
-  backgroundColor = 'transparent',
-  strokeColor = '#bb86fc',
-}) => {
+const Visualizer: React.FC<VisualizerProps> = ({ analyserNode, type }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -202,49 +223,26 @@ const Visualizer: React.FC<VisualizerProps> = ({
       if (!canvasCtx) return;
       
       const { width, height } = canvas;
-      canvasCtx.fillStyle = backgroundColor;
+      canvasCtx.fillStyle = 'transparent';
       canvasCtx.fillRect(0, 0, width, height);
 
-      if (type === 'waveform') {
-        analyserNode.fftSize = 2048;
-        const bufferLength = analyserNode.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        analyserNode.getByteTimeDomainData(dataArray);
-
-        canvasCtx.lineWidth = 2;
-        canvasCtx.strokeStyle = typeof strokeColor === 'string' ? strokeColor : '#bb86fc';
-        canvasCtx.beginPath();
-        const sliceWidth = (width * 1.0) / bufferLength;
-        let x = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          const v = dataArray[i] / 128.0;
-          const y = (v * height) / 2;
-          if (i === 0) {
-            canvasCtx.moveTo(x, y);
-          } else {
-            canvasCtx.lineTo(x, y);
-          }
-          x += sliceWidth;
-        }
-        canvasCtx.lineTo(width, height / 2);
-        canvasCtx.stroke();
-      } else { // frequency
+      if (type === 'frequency') {
         analyserNode.fftSize = 256;
         const bufferLength = analyserNode.frequencyBinCount;
         const dataArray = new Uint8Array(bufferLength);
         analyserNode.getByteFrequencyData(dataArray);
         
-        canvasCtx.lineWidth = 2;
         const barWidth = (width / bufferLength) * 2.5;
         let x = 0;
         for (let i = 0; i < bufferLength; i++) {
           const barHeight = dataArray[i];
-          if (strokeColor instanceof CanvasGradient) {
-             canvasCtx.fillStyle = strokeColor;
-          } else {
-             canvasCtx.fillStyle = 'rgb(' + (barHeight + 100) + ',50,50)';
-          }
-          canvasCtx.fillRect(x, height - barHeight / 2, barWidth, barHeight / 2);
+          const percent = barHeight / 255;
+          const hue = (i / bufferLength) * 360;
+          const saturation = 100;
+          const lightness = 50 + (percent * 25);
+          
+          canvasCtx.fillStyle = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+          canvasCtx.fillRect(x, height - (percent * height), barWidth, percent * height);
           x += barWidth + 1;
         }
       }
@@ -256,7 +254,7 @@ const Visualizer: React.FC<VisualizerProps> = ({
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [analyserNode, type, backgroundColor, strokeColor]);
+  }, [analyserNode, type]);
 
   return <canvas ref={canvasRef} className="visualizer" />;
 };
@@ -299,14 +297,13 @@ const CircularVisualizerSequencer: React.FC<CircularVisualizerSequencerProps> = 
                 ctx.fill();
             }
 
-            // Draw playhead
             if (isTransportPlaying) {
                 const stepInPattern = currentStep;
                 const angle = (stepInPattern / steps) * 2 * Math.PI - Math.PI / 2;
                 const x = centerX + radius * Math.cos(angle);
                 const y = centerY + radius * Math.sin(angle);
                 ctx.beginPath();
-                ctx.fillStyle = '#ffd700'; // Gold playhead
+                ctx.fillStyle = '#ffd700';
                 ctx.arc(x, y, 7, 0, 2 * Math.PI);
                 ctx.strokeStyle = 'white';
                 ctx.lineWidth = 2;
@@ -314,7 +311,6 @@ const CircularVisualizerSequencer: React.FC<CircularVisualizerSequencerProps> = 
                 ctx.fill();
             }
             
-            // Draw spectrum analyzer in the center
             analyserNode.fftSize = 256;
             const bufferLength = analyserNode.frequencyBinCount;
             const dataArray = new Uint8Array(bufferLength);
@@ -349,7 +345,7 @@ const CircularVisualizerSequencer: React.FC<CircularVisualizerSequencerProps> = 
 };
 
 
-const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, onToggleSequencer, onLoadSample, onRandomize, analyserNode, currentStep, isTransportPlaying }) => {
+const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLayerUpdate, onLoadSample, onRandomize, analyserNode, currentStep, isTransportPlaying }) => {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -358,18 +354,18 @@ const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, on
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault(); e.stopPropagation(); setIsDraggingOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onLoadSample(channel.id, e.dataTransfer.files[0]);
+      onLoadSample(engine.id, e.dataTransfer.files[0]);
       e.dataTransfer.clearData();
     }
   };
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files && e.target.files.length > 0) { onLoadSample(channel.id, e.target.files[0]); } };
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files && e.target.files.length > 0) { onLoadSample(engine.id, e.target.files[0]); } };
   const handleLoadClick = () => { fileInputRef.current?.click(); };
 
 
   return (
     <div className="control-group">
       <div className="control-group-header">
-        <h2>{channel.name}</h2>
+        <h2>{engine.name}</h2>
         <div className="randomizer-buttons-group">
           <button title="Chaos Randomize" onClick={() => onRandomize('chaos')}>🎲</button>
           <button title="Musical Randomize" onClick={() => onRandomize('solfeggio')}>🎵</button>
@@ -379,94 +375,136 @@ const ChannelControls: React.FC<ChannelControlsProps> = ({ channel, onUpdate, on
         <div className="channel-visualizer-container">
           <CircularVisualizerSequencer 
             analyserNode={analyserNode}
-            steps={channel.sequencerSteps}
-            pulses={channel.sequencerPulses}
-            rotate={channel.sequencerRotate}
-            currentStep={currentStep % channel.sequencerSteps}
+            steps={engine.sequencerSteps}
+            pulses={engine.sequencerPulses}
+            rotate={engine.sequencerRotate}
+            currentStep={currentStep % engine.sequencerSteps}
             isTransportPlaying={isTransportPlaying}
           />
         </div>
        )}
+        <div className="engine-layers-container">
+            {/* --- SYNTH LAYER --- */}
+            <div className="layer-group">
+                <div className="layer-header">
+                    <h4>Synth</h4>
+                    <button onClick={() => onLayerUpdate(engine.id, 'synth', { enabled: !engine.synth.enabled })} className={engine.synth.enabled ? 'active power-toggle' : 'power-toggle'}>
+                        {engine.synth.enabled ? 'On' : 'Off'}
+                    </button>
+                </div>
+                <div className="control-row">
+                    <label>Volume</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="0" max="1" step="0.01" value={engine.synth.volume} onChange={(e) => onLayerUpdate(engine.id, 'synth', { volume: parseFloat(e.target.value) })} />
+                        <span>{engine.synth.volume.toFixed(2)}</span>
+                    </div>
+                </div>
+                <div className="control-row">
+                    <label>Solfeggio</label>
+                    <select value={engine.synth.solfeggioFrequency} onChange={(e) => onLayerUpdate(engine.id, 'synth', { solfeggioFrequency: e.target.value, frequency: parseFloat(e.target.value) })}>
+                        {solfeggioFrequencies.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                    </select>
+                </div>
+                <div className="control-row">
+                    <label>Waveform</label>
+                    <select value={engine.synth.oscillatorType} onChange={(e) => onLayerUpdate(engine.id, 'synth', { oscillatorType: e.target.value as OscillatorType })}>
+                        {oscillatorTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+                    </select>
+                </div>
+            </div>
+            {/* --- NOISE LAYER --- */}
+            <div className="layer-group">
+                <div className="layer-header">
+                    <h4>Noise</h4>
+                    <button onClick={() => onLayerUpdate(engine.id, 'noise', { enabled: !engine.noise.enabled })} className={engine.noise.enabled ? 'active power-toggle' : 'power-toggle'}>
+                        {engine.noise.enabled ? 'On' : 'Off'}
+                    </button>
+                </div>
+                <div className="control-row">
+                    <label>Volume</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="0" max="1" step="0.01" value={engine.noise.volume} onChange={(e) => onLayerUpdate(engine.id, 'noise', { volume: parseFloat(e.target.value) })} />
+                        <span>{engine.noise.volume.toFixed(2)}</span>
+                    </div>
+                </div>
+                <div className="control-row">
+                    <label>Noise Type</label>
+                    <select value={engine.noise.noiseType} onChange={(e) => onLayerUpdate(engine.id, 'noise', { noiseType: e.target.value as NoiseType })}>
+                        {noiseTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+                    </select>
+                </div>
+            </div>
+            {/* --- SAMPLER LAYER --- */}
+            <div className="layer-group">
+                 <div className="layer-header">
+                    <h4>Sampler</h4>
+                    <button onClick={() => onLayerUpdate(engine.id, 'sampler', { enabled: !engine.sampler.enabled })} className={engine.sampler.enabled ? 'active power-toggle' : 'power-toggle'}>
+                        {engine.sampler.enabled ? 'On' : 'Off'}
+                    </button>
+                </div>
+                <div className="control-row">
+                    <label>Volume</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="0" max="1" step="0.01" value={engine.sampler.volume} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { volume: parseFloat(e.target.value) })} />
+                        <span>{engine.sampler.volume.toFixed(2)}</span>
+                    </div>
+                </div>
+                 <div 
+                    className={`drop-zone ${isDraggingOver ? 'drop-zone-active' : ''}`} 
+                    onDragOver={handleDragOver} 
+                    onDragLeave={handleDragLeave} 
+                    onDrop={handleDrop}
+                    onClick={handleLoadClick}
+                    style={{cursor: 'pointer'}}
+                    >
+                    <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{display: 'none'}} accept="audio/*" />
+                    {engine.sampler.sampleName ? 
+                        <div>
+                        <span>{engine.sampler.sampleName}</span>
+                        <span className="replace-sample-text">(Click or drop to replace)</span>
+                        </div>
+                        : <span>Drop file or click to load</span>
+                    }
+                </div>
+                <div className="control-row">
+                    <label>Transpose</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="-24" max="24" step="1" value={engine.sampler.transpose} onChange={(e) => onLayerUpdate(engine.id, 'sampler', { transpose: parseInt(e.target.value, 10) })} />
+                        <span>{engine.sampler.transpose} st</span>
+                    </div>
+                </div>
+            </div>
+        </div>
        <div className="control-row">
            <label>Enable Sequencer</label>
             <button 
-              onClick={() => onToggleSequencer(channel.id)} 
-              className={channel.sequencerEnabled ? 'active' : ''}
+              onClick={() => onUpdate(engine.id, { sequencerEnabled: !engine.sequencerEnabled })} 
+              className={engine.sequencerEnabled ? 'active' : ''}
             >
-              {channel.sequencerEnabled ? 'On' : 'Off'}
+              {engine.sequencerEnabled ? 'On' : 'Off'}
             </button>
       </div>
-      <div className="control-row">
-        <label htmlFor={`volume-${channel.id}`}>Volume</label>
+       <div className="control-row">
+        <label>Steps</label>
         <div className="control-value-wrapper">
-          <input type="range" id={`volume-${channel.id}`} min="0" max="1" step="0.01" value={channel.volume} onChange={(e) => onUpdate(channel.id, { volume: parseFloat(e.target.value) })} />
-          <span>{channel.volume.toFixed(2)}</span>
+          <input type="range" min="1" max="32" step="1" value={engine.sequencerSteps} onChange={(e) => onUpdate(engine.id, { sequencerSteps: parseInt(e.target.value, 10) })} />
+          <span>{engine.sequencerSteps}</span>
         </div>
       </div>
        <div className="control-row">
-        <label htmlFor={`steps-${channel.id}`}>Steps</label>
+        <label>Pulses</label>
         <div className="control-value-wrapper">
-          <input type="range" id={`steps-${channel.id}`} min="1" max="32" step="1" value={channel.sequencerSteps} onChange={(e) => onUpdate(channel.id, { sequencerSteps: parseInt(e.target.value, 10) })} />
-          <span>{channel.sequencerSteps}</span>
+          <input type="range" min="0" max={engine.sequencerSteps} step="1" value={engine.sequencerPulses} onChange={(e) => onUpdate(engine.id, { sequencerPulses: parseInt(e.target.value, 10) })} />
+          <span>{engine.sequencerPulses}</span>
         </div>
       </div>
        <div className="control-row">
-        <label htmlFor={`pulses-${channel.id}`}>Pulses</label>
+        <label>Rotate</label>
         <div className="control-value-wrapper">
-          <input type="range" id={`pulses-${channel.id}`} min="0" max={channel.sequencerSteps} step="1" value={channel.sequencerPulses} onChange={(e) => onUpdate(channel.id, { sequencerPulses: parseInt(e.target.value, 10) })} />
-          <span>{channel.sequencerPulses}</span>
+          <input type="range" min="0" max={engine.sequencerSteps - 1} step="1" value={engine.sequencerRotate} onChange={(e) => onUpdate(engine.id, { sequencerRotate: parseInt(e.target.value, 10) })} />
+          <span>{engine.sequencerRotate}</span>
         </div>
       </div>
-       <div className="control-row">
-        <label htmlFor={`rotate-${channel.id}`}>Rotate</label>
-        <div className="control-value-wrapper">
-          <input type="range" id={`rotate-${channel.id}`} min="0" max={channel.sequencerSteps - 1} step="1" value={channel.sequencerRotate} onChange={(e) => onUpdate(channel.id, { sequencerRotate: parseInt(e.target.value, 10) })} />
-          <span>{channel.sequencerRotate}</span>
-        </div>
-      </div>
-      {channel.channelType === 'synth' && (
-        <>
-          <div className="control-row">
-            <label htmlFor={`freq-${channel.id}`}>Solfeggio</label>
-            <select value={channel.solfeggioFrequency} onChange={(e) => onUpdate(channel.id, { solfeggioFrequency: e.target.value, frequency: parseFloat(e.target.value) })}>
-              {solfeggioFrequencies.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-            </select>
-          </div>
-          <div className="control-row">
-            <label htmlFor={`osc-type-${channel.id}`}>Waveform</label>
-            <select id={`osc-type-${channel.id}`} value={channel.oscillatorType} onChange={(e) => onUpdate(channel.id, { oscillatorType: e.target.value as OscillatorType })}>
-              {oscillatorTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-            </select>
-          </div>
-        </>
-      )}
-      {channel.channelType === 'noise' && (
-        <div className="control-row">
-          <label htmlFor={`noise-type-${channel.id}`}>Noise Type</label>
-          <select id={`noise-type-${channel.id}`} value={channel.noiseType} onChange={(e) => onUpdate(channel.id, { noiseType: e.target.value as NoiseType })}>
-            {noiseTypes.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-          </select>
-        </div>
-      )}
-       {channel.channelType === 'sample' && (
-         <div 
-           className={`drop-zone ${isDraggingOver ? 'drop-zone-active' : ''}`} 
-           onDragOver={handleDragOver} 
-           onDragLeave={handleDragLeave} 
-           onDrop={handleDrop}
-           onClick={handleLoadClick}
-           style={{cursor: 'pointer'}}
-         >
-           <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{display: 'none'}} accept="audio/*" />
-           {channel.sampleName ? 
-            <div>
-              <span>{channel.sampleName}</span>
-              <span className="replace-sample-text">(Click or drop to replace)</span>
-            </div>
-            : <span>Drop file or click to load</span>
-           }
-        </div>
-      )}
     </div>
   );
 };
@@ -478,7 +516,6 @@ const MasterControls: React.FC<MasterControlsProps> = (props) => {
                 <h2>Master</h2>
                 <div className="randomizer-buttons-group">
                     <button title="Chaos Randomize" onClick={() => props.onRandomize('chaos')}>🎲</button>
-                    <button title="Musical Randomize" onClick={() => props.onRandomize('solfeggio')}>🎵</button>
                 </div>
             </div>
             <div className="control-row">
@@ -488,36 +525,36 @@ const MasterControls: React.FC<MasterControlsProps> = (props) => {
                 </button>
             </div>
              <div className="control-row">
-                <label htmlFor="master-volume">Master Volume</label>
+                <label>Master Volume</label>
                 <div className="control-value-wrapper">
-                  <input type="range" id="master-volume" min="0" max="1" step="0.01" value={props.masterVolume} onChange={(e) => props.setMasterVolume(parseFloat(e.target.value))} />
+                  <input type="range" min="0" max="1" step="0.01" value={props.masterVolume} onChange={(e) => props.setMasterVolume(parseFloat(e.target.value))} />
                   <span>{props.masterVolume.toFixed(2)}</span>
                 </div>
             </div>
             <div className="control-row">
-                <label htmlFor="filter-type">Filter Type</label>
+                <label>Filter Type</label>
                 <select value={props.globalFilterType} onChange={(e) => props.setGlobalFilterType(e.target.value as FilterType)}>
                     {filterTypes.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
             </div>
              <div className="control-row">
-                <label htmlFor="filter-cutoff">Filter Cutoff</label>
+                <label>Filter Cutoff</label>
                 <div className="control-value-wrapper">
-                  <input type="range" id="filter-cutoff" min="20" max="20000" step="1" value={props.globalFilterCutoff} onChange={(e) => props.setGlobalFilterCutoff(parseFloat(e.target.value))} />
+                  <input type="range" min="20" max="20000" step="1" value={props.globalFilterCutoff} onChange={(e) => props.setGlobalFilterCutoff(parseFloat(e.target.value))} />
                   <span>{Math.round(props.globalFilterCutoff)} Hz</span>
                 </div>
             </div>
              <div className="control-row">
-                <label htmlFor="filter-resonance">Filter Resonance</label>
+                <label>Filter Resonance</label>
                 <div className="control-value-wrapper">
-                  <input type="range" id="filter-resonance" min="0" max="20" step="0.1" value={props.globalFilterResonance} onChange={(e) => props.setGlobalFilterResonance(parseFloat(e.target.value))} />
+                  <input type="range" min="0" max="20" step="0.1" value={props.globalFilterResonance} onChange={(e) => props.setGlobalFilterResonance(parseFloat(e.target.value))} />
                   <span>{props.globalFilterResonance.toFixed(1)}</span>
                 </div>
             </div>
             <div className="control-row">
-                <label htmlFor="bpm">BPM</label>
+                <label>BPM</label>
                 <div className="control-value-wrapper">
-                  <input type="range" id="bpm" min="60" max="240" step="1" value={props.linkStatus.bpm} onChange={(e) => props.setBPM(parseInt(e.target.value, 10))} disabled={props.linkStatus.isEnabled} />
+                  <input type="range" min="60" max="240" step="1" value={props.linkStatus.bpm} onChange={(e) => props.setBPM(parseInt(e.target.value, 10))} disabled={props.linkStatus.isEnabled} />
                   <span>{props.linkStatus.bpm}</span>
                 </div>
             </div>
@@ -549,7 +586,6 @@ const LFOControls: React.FC<LFOControlsProps> = ({lfoState, setLFOState, linkSta
                 <h2>LFO</h2>
                 <div className="randomizer-buttons-group">
                     <button title="Chaos Randomize" onClick={() => onRandomize('chaos')}>🎲</button>
-                    <button title="Musical Randomize" onClick={() => onRandomize('solfeggio')}>🎵</button>
                 </div>
             </div>
              <div className="control-row">
@@ -618,17 +654,39 @@ const Randomizer: React.FC<RandomizerProps> = ({ onRandomize }) => {
     );
 };
 
+const initialEngines: EngineState[] = [
+    {
+        id: '1', name: 'Engine 1',
+        synth: { enabled: true, volume: 0.7, frequency: 528, oscillatorType: 'sawtooth', solfeggioFrequency: '528' },
+        noise: { enabled: false, volume: 0.5, noiseType: 'white' },
+        sampler: { enabled: false, volume: 0.8, sampleName: null, transpose: 0 },
+        sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 4, sequencerRotate: 0,
+        effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }
+    },
+    {
+        id: '2', name: 'Engine 2',
+        synth: { enabled: false, volume: 0.7, frequency: 417, oscillatorType: 'sine', solfeggioFrequency: '417' },
+        noise: { enabled: true, volume: 0.3, noiseType: 'pink' },
+        sampler: { enabled: false, volume: 0.8, sampleName: null, transpose: 0 },
+        sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 8, sequencerRotate: 8,
+        effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }
+    },
+    {
+        id: '3', name: 'Engine 3',
+        synth: { enabled: false, volume: 0.7, frequency: 639, oscillatorType: 'square', solfeggioFrequency: '639' },
+        noise: { enabled: false, volume: 0.5, noiseType: 'brown' },
+        sampler: { enabled: true, volume: 0.8, sampleName: null, transpose: 0 },
+        sequencerEnabled: false, sequencerSteps: 8, sequencerPulses: 3, sequencerRotate: 0,
+        effects: { distortion: 0, delayTime: 0, delayFeedback: 0 }
+    },
+];
 
 // --- Main App Component ---
 const App = () => {
-    const [channels, setChannels] = useState<ChannelState[]>([
-        { id: '1', name: 'Synth 1', volume: 0.5, frequency: 528, oscillatorType: 'sawtooth', solfeggioFrequency: '528', channelType: 'synth', sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 4, sequencerRotate: 0, effects: { distortion: 0, delayTime: 0, delayFeedback: 0 } },
-        { id: '2', name: 'Noise OSC', volume: 0.3, channelType: 'noise', noiseType: 'white', sequencerEnabled: true, sequencerSteps: 16, sequencerPulses: 8, sequencerRotate: 8, effects: { distortion: 0, delayTime: 0, delayFeedback: 0 } },
-        { id: '3', name: 'Sampler', volume: 0.8, channelType: 'sample', sampleName: null, sequencerEnabled: false, sequencerSteps: 8, sequencerPulses: 3, sequencerRotate: 0, effects: { distortion: 0, delayTime: 0, delayFeedback: 0 } },
-    ]);
+    const [engines, setEngines] = useState<EngineState[]>(initialEngines);
     const [masterVolume, setMasterVolume] = useState(0.8);
     const [linkStatus, setLinkStatus] = useState<LinkStatus>({ isEnabled: false, bpm: 120, peers: 0 });
-    const [lfoState, setLFOState] = useState<LFOState>({ rate: 5, depth: 0.5, shape: 'sine', sync: false, syncRate: '1/4', routing: { filterCutoff: false, filterResonance: false, channel1Vol: false, channel2Vol: false, channel3Vol: false } });
+    const [lfoState, setLFOState] = useState<LFOState>({ rate: 5, depth: 0.5, shape: 'sine', sync: false, syncRate: '1/4', routing: { filterCutoff: false, filterResonance: false, engine1Vol: false, engine2Vol: false, engine3Vol: false } });
     const [globalFilterCutoff, setGlobalFilterCutoff] = useState(12000);
     const [globalFilterResonance, setGlobalFilterResonance] = useState(1);
     const [globalFilterType, setGlobalFilterType] = useState<FilterType>('lowpass');
@@ -641,7 +699,7 @@ const App = () => {
     const masterGainRef = useRef<GainNode | null>(null);
     const masterFilterRef = useRef<BiquadFilterNode | null>(null);
     const masterAnalyserRef = useRef<AnalyserNode | null>(null);
-    const audioNodesRef = useRef<Map<string, AudioNodes>>(new Map());
+    const audioNodesRef = useRef<Map<string, EngineAudioNodes>>(new Map());
     const [decodedSamples, setDecodedSamples] = useState<Map<string, AudioBuffer>>(new Map());
     const [noiseBuffers, setNoiseBuffers] = useState<Map<NoiseType, AudioBuffer>>(new Map());
 
@@ -651,22 +709,10 @@ const App = () => {
 
     const linkRef = useRef<any>(null);
     
-    // Refs for scheduling to avoid re-renders and stale closures
     const schedulerTimerRef = useRef<number | null>(null);
     const nextStepTimeRef = useRef(0);
     const currentStepRef = useRef(0);
 
-
-    const masterVisualizerGradient = useMemo(() => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return '#fff';
-        const gradient = ctx.createLinearGradient(0, 0, 300, 0);
-        gradient.addColorStop(0, '#bb86fc');
-        gradient.addColorStop(0.5, '#f079d6');
-        gradient.addColorStop(1, '#03dac6');
-        return gradient;
-    }, []);
 
     const generateNoiseSamples = useCallback(async (context: AudioContext): Promise<Map<NoiseType, AudioBuffer>> => {
         const bufferSize = context.sampleRate * 2; // 2 seconds
@@ -696,15 +742,16 @@ const App = () => {
     const initAudio = useCallback(async () => {
         if (isAudioInitialized) return;
         const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+        await context.resume();
         audioContextRef.current = context;
         masterGainRef.current = context.createGain();
         masterFilterRef.current = context.createBiquadFilter();
         masterAnalyserRef.current = context.createAnalyser();
+        masterAnalyserRef.current.smoothingTimeConstant = 0.3;
         masterFilterRef.current.connect(masterGainRef.current);
         masterGainRef.current.connect(masterAnalyserRef.current);
         masterAnalyserRef.current.connect(context.destination);
         
-        // LFO Setup
         lfoOscillatorRef.current = context.createOscillator();
         lfoGainRef.current = context.createGain();
         lfoOscillatorRef.current.connect(lfoGainRef.current);
@@ -720,6 +767,9 @@ const App = () => {
         filterResonanceScaler.connect(masterFilterRef.current.Q);
         lfoRoutingNodesRef.current = { filterCutoffScaler, filterResonanceScaler };
 
+        if (linkRef.current) {
+            linkRef.current.startUpdate(context);
+        }
 
         setNoiseBuffers(await generateNoiseSamples(context));
         setIsAudioInitialized(true);
@@ -729,77 +779,96 @@ const App = () => {
     useEffect(() => {
         if (!isAudioInitialized || !audioContextRef.current || !lfoGainRef.current) return;
         const audioContext = audioContextRef.current;
-        channels.forEach(channel => {
-            let nodes = audioNodesRef.current.get(channel.id);
+        engines.forEach(engine => {
+            let nodes = audioNodesRef.current.get(engine.id);
             if (!nodes) {
-                const sourceGain = audioContext.createGain();
-                const channelVolumeGain = audioContext.createGain();
+                const engineMixer = audioContext.createGain();
+                const sequencerGain = audioContext.createGain();
                 const lfoVolumeScaler = audioContext.createGain();
                 const analyser = audioContext.createAnalyser();
+
+                const synthNodes: LayerAudioNodes = { volumeGain: audioContext.createGain() };
+                const noiseNodes: LayerAudioNodes = { volumeGain: audioContext.createGain() };
+                const samplerNodes: LayerAudioNodes = { volumeGain: audioContext.createGain() };
                 
-                sourceGain.connect(channelVolumeGain);
-                channelVolumeGain.connect(analyser);
+                synthNodes.volumeGain.connect(engineMixer);
+                noiseNodes.volumeGain.connect(engineMixer);
+                samplerNodes.volumeGain.connect(engineMixer);
+
+                engineMixer.connect(sequencerGain);
+                sequencerGain.connect(analyser);
                 analyser.connect(masterFilterRef.current!);
 
-                // LFO connection
                 lfoVolumeScaler.gain.value = 0;
                 lfoGainRef.current!.connect(lfoVolumeScaler);
-                lfoVolumeScaler.connect(channelVolumeGain.gain);
+                // Note: LFO modulates the mixer, affecting overall engine volume
+                lfoVolumeScaler.connect(engineMixer.gain); 
 
-                nodes = { sourceGain, channelVolumeGain, analyser, lfoVolumeScaler };
-                audioNodesRef.current.set(channel.id, nodes);
+                nodes = { synth: synthNodes, noise: noiseNodes, sampler: samplerNodes, engineMixer, sequencerGain, analyser, lfoVolumeScaler };
+                audioNodesRef.current.set(engine.id, nodes);
             }
 
-            if (channel.channelType === 'synth') {
-                if (!nodes.oscillator) {
-                    nodes.oscillator = audioContext.createOscillator();
-                    nodes.oscillator.connect(nodes.sourceGain);
-                    nodes.oscillator.start();
+            // --- Synth Layer ---
+            if (engine.synth.enabled) {
+                if (!nodes.synth.sourceNode) {
+                    const oscillator = audioContext.createOscillator();
+                    oscillator.connect(nodes.synth.volumeGain);
+                    oscillator.start();
+                    nodes.synth.sourceNode = oscillator;
                 }
-                nodes.oscillator.type = channel.oscillatorType!;
-                nodes.oscillator.frequency.setTargetAtTime(channel.frequency!, audioContext.currentTime, 0.01);
-            } else {
-                 if (nodes.oscillator) {
-                    nodes.oscillator.disconnect();
-                    nodes.oscillator.stop();
-                    delete nodes.oscillator;
-                }
+                (nodes.synth.sourceNode as OscillatorNode).type = engine.synth.oscillatorType;
+                (nodes.synth.sourceNode as OscillatorNode).frequency.setTargetAtTime(engine.synth.frequency, audioContext.currentTime, 0.01);
+                nodes.synth.volumeGain.gain.setTargetAtTime(engine.synth.volume, audioContext.currentTime, 0.01);
+            } else if (nodes.synth.sourceNode) {
+                 (nodes.synth.sourceNode as OscillatorNode).disconnect();
+                 (nodes.synth.sourceNode as OscillatorNode).stop();
+                 delete nodes.synth.sourceNode;
             }
-
-            nodes.channelVolumeGain.gain.setTargetAtTime(channel.volume, audioContext.currentTime, 0.01);
-            nodes.sourceGain.gain.setValueAtTime(0, audioContext.currentTime);
+            
+            // --- Noise and Sampler Layers are handled during triggering ---
+            nodes.noise.volumeGain.gain.setTargetAtTime(engine.noise.volume, audioContext.currentTime, 0.01);
+            nodes.sampler.volumeGain.gain.setTargetAtTime(engine.sampler.volume, audioContext.currentTime, 0.01);
+            
+            nodes.sequencerGain.gain.setValueAtTime(0, audioContext.currentTime);
         });
-    }, [isAudioInitialized, channels]);
+    }, [isAudioInitialized, engines]);
 
      // Master Clock and Sequencer Triggering
     useEffect(() => {
         const scheduleNotes = (beat: number, time: number) => {
-            setCurrentStep(beat % 16); // For UI display
-            channels.forEach(channel => {
-                const nodes = audioNodesRef.current.get(channel.id);
-                if (!channel.sequencerEnabled || !nodes) return;
+            setCurrentStep(beat % 16);
+            engines.forEach(engine => {
+                const nodes = audioNodesRef.current.get(engine.id);
+                if (!engine.sequencerEnabled || !nodes) return;
                 
-                const pattern = rotatePattern(generateEuclideanPattern(channel.sequencerSteps, channel.sequencerPulses), channel.sequencerRotate);
-                const stepInPattern = beat % channel.sequencerSteps;
+                const pattern = rotatePattern(generateEuclideanPattern(engine.sequencerSteps, engine.sequencerPulses), engine.sequencerRotate);
+                const stepInPattern = beat % engine.sequencerSteps;
 
                 if (pattern[stepInPattern] === 1) {
-                    if (channel.channelType === 'sample' || channel.channelType === 'noise') {
-                         let buffer: AudioBuffer | undefined;
-                         if (channel.channelType === 'sample') buffer = decodedSamples.get(channel.id);
-                         else if (channel.channelType === 'noise' && channel.noiseType) buffer = noiseBuffers.get(channel.noiseType);
-                        
-                         if (buffer) {
-                            const source = audioContextRef.current!.createBufferSource();
-                            source.buffer = buffer;
-                            source.connect(nodes.sourceGain);
-                            source.start(time);
-                         }
+                    const noteDuration = 0.2;
+                    // Trigger layers if they are enabled
+                    if (engine.noise.enabled && engine.noise.noiseType && noiseBuffers.has(engine.noise.noiseType)) {
+                        const source = audioContextRef.current!.createBufferSource();
+                        source.buffer = noiseBuffers.get(engine.noise.noiseType)!;
+                        source.connect(nodes.noise.volumeGain);
+                        source.start(time);
+                        source.stop(time + noteDuration);
                     }
-                    // Apply envelope to all types
-                    nodes.sourceGain.gain.cancelScheduledValues(time);
-                    nodes.sourceGain.gain.setValueAtTime(0, time);
-                    nodes.sourceGain.gain.linearRampToValueAtTime(1, time + 0.01);
-                    nodes.sourceGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.2);
+                    if (engine.sampler.enabled && decodedSamples.has(engine.id)) {
+                        const source = audioContextRef.current!.createBufferSource();
+                        source.buffer = decodedSamples.get(engine.id)!;
+                        const rate = Math.pow(2, engine.sampler.transpose / 12);
+                        source.playbackRate.value = rate;
+                        source.connect(nodes.sampler.volumeGain);
+                        source.start(time);
+                        source.stop(time + noteDuration);
+                    }
+                    
+                    // Apply envelope to the entire engine mix
+                    nodes.sequencerGain.gain.cancelScheduledValues(time);
+                    nodes.sequencerGain.gain.setValueAtTime(0, time);
+                    nodes.sequencerGain.gain.linearRampToValueAtTime(1, time + 0.01);
+                    nodes.sequencerGain.gain.exponentialRampToValueAtTime(0.0001, time + noteDuration);
                 }
             });
         };
@@ -807,7 +876,7 @@ const App = () => {
         const scheduler = () => {
             const context = audioContextRef.current!;
             const link = linkRef.current;
-            const scheduleAheadTime = 0.1; // seconds
+            const scheduleAheadTime = 0.1;
 
             while (nextStepTimeRef.current < context.currentTime + scheduleAheadTime) {
                 let beat = 0;
@@ -823,7 +892,7 @@ const App = () => {
 
                 const sixteenthNoteDuration = 60.0 / linkStatus.bpm / 4.0;
                 nextStepTimeRef.current += sixteenthNoteDuration;
-                currentStepRef.current = (currentStepRef.current + 1) % 64; // Assuming 4 bars max sequence
+                currentStepRef.current = (currentStepRef.current + 1) % 64;
             }
         };
 
@@ -841,7 +910,7 @@ const App = () => {
                 nextStepTimeRef.current = context.currentTime;
             }
             if(schedulerTimerRef.current) clearInterval(schedulerTimerRef.current);
-            schedulerTimerRef.current = window.setInterval(scheduler, 25); // Run scheduler every 25ms
+            schedulerTimerRef.current = window.setInterval(scheduler, 25);
         } else {
             if (schedulerTimerRef.current) {
                 clearInterval(schedulerTimerRef.current);
@@ -855,7 +924,7 @@ const App = () => {
                 schedulerTimerRef.current = null;
             }
         };
-    }, [isTransportPlaying, isAudioInitialized, linkStatus, channels, decodedSamples, noiseBuffers]);
+    }, [isTransportPlaying, isAudioInitialized, linkStatus, engines, decodedSamples, noiseBuffers]);
 
     // LFO Logic
     useEffect(() => {
@@ -863,34 +932,42 @@ const App = () => {
         const audioContext = audioContextRef.current;
         const now = audioContext.currentTime;
 
-        lfoOscillatorRef.current.type = lfoState.shape;
+        const shape = lfoState.shape;
+        lfoOscillatorRef.current.type = shape === 'ramp' ? 'sawtooth' : shape;
         
         let rate = lfoState.rate;
         if(lfoState.sync) {
-            const noteDuration = 60 / linkStatus.bpm;
-            const syncRateParts = lfoState.syncRate.split('/').map(s => parseFloat(s.trim()));
-            const syncMultiplier = syncRateParts.length > 1 ? syncRateParts[0] / syncRateParts[1] : syncRateParts[0];
-            rate = 1 / (noteDuration * syncMultiplier);
+            try {
+              const noteDuration = 60 / linkStatus.bpm;
+              // Safer evaluation
+              const syncRateParts = lfoState.syncRate.split('/');
+              const numerator = parseFloat(syncRateParts[0]);
+              const denominator = parseFloat(syncRateParts[1] || '1');
+              if (!isNaN(numerator) && !isNaN(denominator) && denominator !== 0) {
+                  const multiplier = numerator / denominator;
+                  rate = 1 / (noteDuration * multiplier);
+              }
+            } catch (e) {
+                console.error("Error calculating sync rate", e);
+                rate = 1.0; // fallback
+            }
         }
         lfoOscillatorRef.current.frequency.setTargetAtTime(rate, now, 0.01);
         lfoGainRef.current.gain.setTargetAtTime(lfoState.depth, now, 0.01);
 
-        // --- ROUTING ---
         const { filterCutoffScaler, filterResonanceScaler } = lfoRoutingNodesRef.current;
         filterCutoffScaler.gain.setTargetAtTime(lfoState.routing.filterCutoff ? 5000 : 0, now, 0.01);
         filterResonanceScaler.gain.setTargetAtTime(lfoState.routing.filterResonance ? 10 : 0, now, 0.01);
 
-        // Channel Volumes
-        channels.forEach((channel, index) => {
-            const channelKey = `channel${index+1}Vol` as keyof LFOState['routing'];
-            const nodes = audioNodesRef.current.get(channel.id);
+        engines.forEach((engine, index) => {
+            const engineKey = `engine${index+1}Vol` as keyof LFOState['routing'];
+            const nodes = audioNodesRef.current.get(engine.id);
             if (nodes?.lfoVolumeScaler) {
-                // Modulate the main volume, not the note envelope
-                nodes.lfoVolumeScaler.gain.setTargetAtTime(lfoState.routing[channelKey] ? 1 : 0, now, 0.01);
+                nodes.lfoVolumeScaler.gain.setTargetAtTime(lfoState.routing[engineKey] ? 1 : 0, now, 0.01);
             }
         });
 
-    }, [lfoState, isAudioInitialized, linkStatus.bpm, channels]);
+    }, [lfoState, isAudioInitialized, linkStatus.bpm, engines]);
 
 
     useEffect(() => {
@@ -916,10 +993,10 @@ const App = () => {
         }
     }, []);
 
-    const handleUpdateChannel = useCallback((id: string, updates: Partial<ChannelState>) => {
-        setChannels(prevChannels => prevChannels.map(c => {
-            if (c.id === id) {
-                const newState = { ...c, ...updates };
+    const handleUpdateEngine = useCallback((engineId: string, updates: Partial<EngineState>) => {
+        setEngines(prevEngines => prevEngines.map(e => {
+            if (e.id === engineId) {
+                const newState = { ...e, ...updates };
                 if (updates.sequencerSteps !== undefined) {
                     if (newState.sequencerPulses > updates.sequencerSteps) {
                         newState.sequencerPulses = updates.sequencerSteps;
@@ -930,10 +1007,27 @@ const App = () => {
                 }
                 return newState;
             }
-            return c;
+            return e;
         }));
     }, []);
-    const handleToggleSequencer = useCallback((id: string) => setChannels(p => p.map(c => c.id === id ? { ...c, sequencerEnabled: !c.sequencerEnabled } : c)), []);
+
+    // FIX: Changed to a function expression to avoid TSX parsing ambiguity with generics.
+    const handleUpdateEngineLayer = useCallback(function <K extends keyof Omit<EngineState, 'id' | 'name'>>(
+        engineId: string,
+        layer: K,
+        updates: Partial<EngineState[K]>
+    ) {
+        setEngines(prevEngines => prevEngines.map(e => {
+            if (e.id === engineId) {
+                const layerValue = e[layer];
+                if (typeof layerValue === 'object' && layerValue !== null) {
+                    return { ...e, [layer]: { ...layerValue, ...updates } };
+                }
+            }
+            return e;
+        }));
+    }, []);
+
     const handleToggleTransport = useCallback(() => {
       const newIsPlaying = !isTransportPlaying;
       if (linkStatus.isEnabled && linkRef.current) {
@@ -942,7 +1036,7 @@ const App = () => {
       setIsTransportPlaying(newIsPlaying);
     }, [isTransportPlaying, linkStatus.isEnabled]);
     
-    const handleLoadSample = useCallback(async (channelId: string, file: File) => {
+    const handleLoadSample = useCallback(async (engineId: string, file: File) => {
         if (!audioContextRef.current) return;
         if (!file.type.startsWith('audio/')) {
             alert('Invalid file type. Please load an audio file.');
@@ -951,76 +1045,89 @@ const App = () => {
         try {
             const arrayBuffer = await file.arrayBuffer();
             const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-            setDecodedSamples(prev => new Map(prev).set(channelId, audioBuffer));
-            setChannels(prev => prev.map(ch => ch.id === channelId ? { ...ch, sampleName: file.name, sequencerEnabled: true } : ch));
+            setDecodedSamples(prev => new Map(prev).set(engineId, audioBuffer));
+            handleUpdateEngineLayer(engineId, 'sampler', { sampleName: file.name, enabled: true });
         } catch (error) {
             console.error("Failed to decode audio file:", error);
             alert("Failed to load sample. Please check the file format.");
         }
-    }, []);
+    }, [handleUpdateEngineLayer]);
 
     const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | 'master' | 'lfo' | string = 'global') => {
-        const random = (min: number, max: number, floor = false) => {
-            const val = Math.random() * (max - min) + min;
-            return floor ? Math.floor(val) : val;
-        };
+        const randomizeEngine = (engine: EngineState, currentMode: RandomizeMode): EngineState => {
+            const steps = getRandomInt(4, 32);
+            const pulses = getRandomInt(1, steps);
+            const rotate = getRandomInt(0, steps - 1);
 
-        if (scope === 'global' || scope === 'lfo') {
-            const newLFOState: LFOState = {
-                ...lfoState,
-                shape: lfoShapes[random(0, lfoShapes.length, true)],
-                rate: random(0.1, 20),
-                depth: random(0, 1),
-                sync: Math.random() > 0.5,
-                syncRate: lfoSyncRates[random(0, lfoSyncRates.length, true)],
-                routing: {
-                    filterCutoff: Math.random() > 0.5,
-                    filterResonance: Math.random() > 0.5,
-                    channel1Vol: Math.random() > 0.5,
-                    channel2Vol: Math.random() > 0.5,
-                    channel3Vol: Math.random() > 0.5,
+            const randomFreq = getRandomElement(solfeggioFrequencies);
+
+            return {
+                ...engine,
+                sequencerEnabled: getRandomBool(0.8),
+                sequencerSteps: steps,
+                sequencerPulses: pulses,
+                sequencerRotate: rotate,
+                synth: {
+                    ...engine.synth,
+                    enabled: getRandomBool(0.7),
+                    volume: getRandom(0.4, 0.9),
+                    oscillatorType: getRandomElement(oscillatorTypes),
+                    frequency: currentMode === 'solfeggio' ? randomFreq.value : getRandom(100, 1500),
+                    solfeggioFrequency: currentMode === 'solfeggio' ? String(randomFreq.value) : engine.synth.solfeggioFrequency,
+                },
+                noise: {
+                    ...engine.noise,
+                    enabled: getRandomBool(0.5),
+                    volume: getRandom(0.2, 0.7),
+                    noiseType: getRandomElement(noiseTypes),
+                },
+                sampler: {
+                    ...engine.sampler,
+                    enabled: engine.sampler.sampleName ? getRandomBool(0.3) : false,
+                    volume: getRandom(0.5, 1.0),
+                    transpose: getRandomInt(-12, 12),
+                },
+                effects: {
+                    ...engine.effects,
+                    distortion: getRandom(0, 0.7),
+                    delayTime: getRandom(0, 1),
+                    delayFeedback: getRandom(0, 0.85),
                 }
             };
-            setLFOState(newLFOState);
-        }
+        };
 
         if (scope === 'global' || scope === 'master') {
-            setGlobalFilterCutoff(random(100, 15000));
-            setGlobalFilterResonance(random(0, 20));
-            setGlobalFilterType(filterTypes[random(0, filterTypes.length, true)]);
+            setGlobalFilterType(getRandomElement(filterTypes));
+            setGlobalFilterCutoff(getRandom(100, 10000));
+            setGlobalFilterResonance(getRandom(0.1, 15));
+            setMasterVolume(getRandom(0.5, 1.0));
         }
 
-        if (scope === 'global' || channels.some(c => c.id === scope)) {
-            setChannels(prevChannels => prevChannels.map(c => {
-                if (scope === 'global' || c.id === scope) {
-                    const steps = random(4, 32, true);
-                    const solfeggioFrequency = solfeggioFrequencies[random(0, solfeggioFrequencies.length, true)];
-                    return {
-                        ...c,
-                        volume: random(0.2, 0.9),
-                        sequencerEnabled: Math.random() > 0.3,
-                        sequencerSteps: steps,
-                        sequencerPulses: random(1, steps, true),
-                        sequencerRotate: random(0, steps - 1, true),
-                        oscillatorType: oscillatorTypes[random(0, oscillatorTypes.length, true)],
-                        noiseType: noiseTypes[random(0, noiseTypes.length, true)],
-                        frequency: mode === 'solfeggio' 
-                            ? solfeggioFrequency.value
-                            : random(100, 1000),
-                        solfeggioFrequency: mode === 'solfeggio'
-                            ? solfeggioFrequency.value.toString()
-                            : c.solfeggioFrequency,
-                        effects: {
-                            distortion: random(0, 0.8),
-                            delayTime: random(0, 1),
-                            delayFeedback: random(0, 0.9)
-                        }
-                    };
-                }
-                return c;
-            }));
+        if (scope === 'global' || scope === 'lfo') {
+            const newRouting: LFOState['routing'] = {
+                filterCutoff: getRandomBool(0.3),
+                filterResonance: getRandomBool(0.3),
+                engine1Vol: getRandomBool(0.3),
+                engine2Vol: getRandomBool(0.3),
+                engine3Vol: getRandomBool(0.3),
+            };
+            setLFOState({
+                shape: getRandomElement(lfoShapes),
+                sync: getRandomBool(0.5),
+                syncRate: getRandomElement(lfoSyncRates),
+                rate: getRandom(0.1, 20),
+                depth: getRandom(0.2, 1.0),
+                routing: newRouting,
+            });
         }
-    }, [channels, lfoState]);
+        
+        if (scope === 'global') {
+            setEngines(prev => prev.map(engine => randomizeEngine(engine, mode)));
+        } else if (scope !== 'master' && scope !== 'lfo') {
+            setEngines(prev => prev.map(engine => engine.id === scope ? randomizeEngine(engine, mode) : engine));
+        }
+
+    }, []);
 
     const handleToggleLink = useCallback(() => { if (linkRef.current) linkRef.current.enable(!linkStatus.isEnabled); }, [linkStatus.isEnabled]);
     const handleSetBPM = useCallback((bpm: number) => {
@@ -1041,7 +1148,7 @@ const App = () => {
             <div className="main-grid">
                 {masterAnalyserRef.current && (
                     <div className="master-visualizer-container">
-                        <Visualizer analyserNode={masterAnalyserRef.current} type="frequency" strokeColor={masterVisualizerGradient} />
+                        <Visualizer analyserNode={masterAnalyserRef.current} type="frequency" />
                     </div>
                 )}
                  <MasterControls
@@ -1061,15 +1168,15 @@ const App = () => {
                     onRandomize={(mode) => handleRandomize(mode, 'master')}
                 />
                 <div className="channels-container">
-                    {channels.map(channel => (
-                        <ChannelControls
-                            key={channel.id}
-                            channel={channel}
-                            onUpdate={handleUpdateChannel}
-                            onToggleSequencer={handleToggleSequencer}
+                    {engines.map(engine => (
+                        <EngineControls
+                            key={engine.id}
+                            engine={engine}
+                            onUpdate={handleUpdateEngine}
+                            onLayerUpdate={handleUpdateEngineLayer}
                             onLoadSample={handleLoadSample}
-                            onRandomize={(mode) => handleRandomize(mode, channel.id)}
-                            analyserNode={audioNodesRef.current.get(channel.id)?.analyser}
+                            onRandomize={(mode) => handleRandomize(mode, engine.id)}
+                            analyserNode={audioNodesRef.current.get(engine.id)?.analyser}
                             currentStep={currentStep}
                             isTransportPlaying={isTransportPlaying}
                         />

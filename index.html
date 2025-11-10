@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -74,7 +75,7 @@
       .channels-container {
         grid-area: channels;
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
         gap: 1.5rem;
       }
        .master-container {
@@ -285,6 +286,36 @@
       .checkbox-row label {
         flex-grow: 1;
       }
+
+      /* New Engine/Layer Styles */
+      .engine-layers-container {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        margin-bottom: 1.5rem;
+      }
+      .layer-group {
+        background-color: #2c2c2c;
+        border-radius: 6px;
+        padding: 1rem;
+        border: 1px solid #3a3a3a;
+      }
+      .layer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.75rem;
+      }
+      .layer-header h4 {
+        margin: 0;
+        font-size: 1rem;
+        color: var(--on-surface-color);
+      }
+      .power-toggle {
+        padding: 0.3rem 0.6rem;
+        font-size: 0.8rem;
+      }
+
     </style>
   <script type="importmap">
 {
