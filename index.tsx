@@ -64,6 +64,7 @@ interface EngineState {
   synth: SynthLayerState;
   noise: NoiseLayerState;
   sampler: SamplerLayerState;
+  midiControlled: boolean;
   sequencerEnabled: boolean;
   sequencerSteps: number;
   sequencerPulses: number;
@@ -113,6 +114,8 @@ interface EngineAudioNodes {
     sampler: LayerAudioNodes;
     engineMixer: GainNode;
     sequencerGain: GainNode;
+    midiInputGain: GainNode;
+    finalOutput: GainNode;
     analyser: AnalyserNode;
     distortion?: WaveShaperNode;
     delay?: DelayNode;
@@ -137,6 +140,11 @@ interface LfoRoutingBusses {
     engineModBusses: Map<string, EngineModBusses>;
 }
 
+interface ActiveVoice {
+    sourceNodes: (OscillatorNode | AudioBufferSourceNode)[];
+    velocityGain: GainNode;
+    noiseNodes?: (AudioBufferSourceNode | GainNode)[];
+}
 
 // --- Component Props ---
 interface VisualizerProps {
@@ -176,6 +184,10 @@ interface TopBarProps {
     setBPM: (bpm: number) => void;
     isTransportPlaying: boolean;
     onToggleTransport: () => void;
+    midiInputs: MIDIInput[];
+    selectedMidiInputId: string | null;
+    onMidiInputChange: (id: string) => void;
+    midiActivity: boolean;
 }
 
 interface FilterState {
@@ -309,6 +321,63 @@ const getNoteFromScale = (rootFreq: number, ratios: number[], octaves: number) =
     return rootFreq * ratio * Math.pow(2, octave);
 };
 
+const midiNoteToFrequency = (note: number, tuning: TuningSystem): number => {
+    switch (tuning) {
+        case '440_ET':
+            return 440 * Math.pow(2, (note - 69) / 12);
+        case '432_ET':
+            return 432 * Math.pow(2, (note - 69) / 12);
+        
+        case 'just_intonation_440':
+        case 'just_intonation_432':
+        case 'pythagorean_440':
+        case 'pythagorean_432': {
+            const rootA = tuning.endsWith('432') ? 432 : 440;
+            const ratios = tuning.startsWith('just') ? justIntonationRatios : pythagoreanRatios;
+            const c4RootFreq = rootA / ratios[5]; // A4 is the 6th degree of C maj (5/3 or 27/16)
+            
+            const octave = Math.floor(note / 12) - 5; // Octave relative to C4 (MIDI note 60)
+            const semi = note % 12;
+            
+            const cMajorScaleSteps = [0, 2, 4, 5, 7, 9, 11];
+            let scaleDegreeIndex = -1;
+            let currentSemi = semi;
+            while(scaleDegreeIndex === -1 && currentSemi >= 0) {
+                scaleDegreeIndex = cMajorScaleSteps.indexOf(currentSemi);
+                if (scaleDegreeIndex === -1) currentSemi--;
+            }
+            if (scaleDegreeIndex === -1) scaleDegreeIndex = 0; // fallback
+            
+            const ratio = ratios[scaleDegreeIndex];
+            return c4RootFreq * ratio * Math.pow(2, octave);
+        }
+
+        case 'solfeggio': {
+             const octave = Math.floor(note / 12) - 4; 
+             const semi = note % 12;
+             const solfeggioBase = [396, 417, 528, 639, 741, 852, 963, 174, 285];
+             const noteIndex = Math.floor(semi / 12 * solfeggioBase.length);
+             return solfeggioBase[noteIndex] * Math.pow(2, octave);
+        }
+        case 'wholesome_scale': { // G Major
+            const gMajorScaleSteps = [0, 2, 4, 5, 7, 9, 11]; // relative to G
+            const noteInG = note - 67; // MIDI G4
+            const octave = Math.floor(noteInG / 12);
+            const semi = (noteInG % 12 + 12) % 12;
+
+            let scaleDegreeIndex = -1;
+            let currentSemi = semi;
+            while(scaleDegreeIndex === -1 && currentSemi >= 0) {
+                scaleDegreeIndex = gMajorScaleSteps.indexOf(currentSemi);
+                 if (scaleDegreeIndex === -1) currentSemi--;
+            }
+            if (scaleDegreeIndex === -1) scaleDegreeIndex = 0;
+            return wholesomeScaleFrequencies[scaleDegreeIndex] * Math.pow(2, octave);
+        }
+        default:
+             return 440 * Math.pow(2, (note - 69) / 12);
+    }
+};
 
 // --- Components ---
 
@@ -731,7 +800,15 @@ const EngineControls: React.FC<EngineControlsProps> = ({ engine, onUpdate, onLay
   return (
     <div className="control-group engine-controls">
         <div className="control-group-header">
-            <h2>{engine.name}</h2>
+            <div className="engine-title-group">
+                <h2>{engine.name}</h2>
+                <button
+                    className={`midi-toggle small ${engine.midiControlled ? 'active' : ''}`}
+                    onClick={() => onUpdate(engine.id, { midiControlled: !engine.midiControlled })}
+                >
+                    MIDI
+                </button>
+            </div>
             <div className="randomizer-buttons-group">
                 <button className="icon-button" title="Chaos Randomize" onClick={() => onRandomize('chaos', engine.id)}><ChaosIcon /></button>
                 <button className="icon-button" title="Harmonic Randomize" onClick={() => onRandomize('harmonic', engine.id)}><HarmonicIcon /></button>
@@ -829,7 +906,8 @@ const FilterRoutingSwitch: React.FC<{
 };
 
 const TopBar: React.FC<TopBarProps> = ({
-    masterVolume, setMasterVolume, bpm, setBPM, isTransportPlaying, onToggleTransport
+    masterVolume, setMasterVolume, bpm, setBPM, isTransportPlaying, onToggleTransport,
+    midiInputs, selectedMidiInputId, onMidiInputChange, midiActivity
 }) => {
     const [inputValue, setInputValue] = useState(bpm.toFixed(2));
     const isFocusedRef = useRef(false);
@@ -905,6 +983,14 @@ const TopBar: React.FC<TopBarProps> = ({
                 <button onClick={onToggleTransport} className={isTransportPlaying ? 'active' : ''}>
                     {isTransportPlaying ? 'Stop' : 'Play'}
                 </button>
+            </div>
+            <div className="top-bar-group">
+                <label>MIDI Input</label>
+                <div className="midi-indicator" style={{ backgroundColor: midiActivity ? 'var(--secondary-color)' : '#333' }} />
+                <select value={selectedMidiInputId ?? ''} onChange={e => onMidiInputChange(e.target.value)}>
+                    <option value="">No Device</option>
+                    {midiInputs.map(input => <option key={input.id} value={input.id}>{input.name}</option>)}
+                </select>
             </div>
         </div>
     );
@@ -1337,7 +1423,10 @@ const useAudio = (
   lfoStates: LFOState[],
   masterEffects: MasterEffect[],
   bpm: number,
-  isTransportPlaying: boolean
+  isTransportPlaying: boolean,
+  harmonicTuningSystem: TuningSystem,
+  selectedMidiInputId: string | null,
+  setMidiActivity: (active: boolean) => void
 ) => {
   const audioContextRef = useRef<{ audioContext: AudioContext | null, masterGain: GainNode | null }>({ audioContext: null, masterGain: null });
   const engineNodesRef = useRef<Map<string, EngineAudioNodes>>(new Map());
@@ -1352,6 +1441,7 @@ const useAudio = (
   const leftAnalyserRef = useRef<AnalyserNode | null>(null);
   const rightAnalyserRef = useRef<AnalyserNode | null>(null);
   const splitterRef = useRef<ChannelSplitterNode | null>(null);
+  const activeVoicesRef = useRef<Map<string, Map<number, ActiveVoice>>>(new Map());
 
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
@@ -1359,6 +1449,16 @@ const useAudio = (
 
   const patternsRef = useRef<Map<string, number[]>>(new Map());
   const stepTimeRef = useRef(0);
+  const midiActivityTimerRef = useRef<number | null>(null);
+  
+  // Create refs for state that's used in callbacks, to keep callbacks stable
+  const engineStatesRef = useRef(engineStates);
+  engineStatesRef.current = engineStates;
+  const harmonicTuningSystemRef = useRef(harmonicTuningSystem);
+  harmonicTuningSystemRef.current = harmonicTuningSystem;
+  const sampleBuffersRef = useRef(sampleBuffers);
+  sampleBuffersRef.current = sampleBuffers;
+
 
   const initializeAudio = useCallback(() => {
     if (isInitialized) return;
@@ -1390,20 +1490,33 @@ const useAudio = (
     filterMergerRef.current = audioContext.createGain();
 
     engineStates.forEach(engine => {
-      const engineMixer = audioContext.createGain();
+      const engineMixer = audioContext.createGain(); // For continuous sources
+      const finalOutput = audioContext.createGain(); // To combine MIDI and Sequencer
       const sequencerGain = audioContext.createGain();
+      const midiInputGain = audioContext.createGain();
       const analyser = audioContext.createAnalyser();
 
-      engineMixer.connect(sequencerGain).connect(analyser).connect(filterSplitterRef.current!);
+      // Path for sequenced sound (continuous sources -> mixer -> sequencer gate)
+      engineMixer.connect(sequencerGain);
+      sequencerGain.connect(finalOutput);
+      // Path for MIDI sound
+      midiInputGain.connect(finalOutput);
+      // Combined output path
+      finalOutput.connect(analyser);
+      finalOutput.connect(filterSplitterRef.current!);
+
 
       engineNodesRef.current.set(engine.id, {
         synth: { volumeGain: audioContext.createGain() },
         noise: { volumeGain: audioContext.createGain() },
         sampler: { volumeGain: audioContext.createGain() },
         engineMixer,
+        finalOutput,
         sequencerGain,
+        midiInputGain,
         analyser
       });
+      activeVoicesRef.current.set(engine.id, new Map());
     });
 
     lfoStates.forEach(lfoState => {
@@ -1422,7 +1535,7 @@ const useAudio = (
         const volBus = audioContext.createGain();
         volBus.gain.value = 0.5; // Neutral point
         const engineNodes = engineNodesRef.current.get(engine.id);
-        if (engineNodes) volBus.connect(engineNodes.engineMixer.gain);
+        if (engineNodes) volBus.connect(engineNodes.finalOutput.gain);
         
         const synthFreqBus = audioContext.createGain();
         synthFreqBus.gain.value = 2000; // Modulation range in Hz
@@ -1459,6 +1572,150 @@ const useAudio = (
     reader.readAsArrayBuffer(file);
   }, [setEngineStates]);
   
+  const handleNoteOn = useCallback((note: number, velocity: number, engineId: string) => {
+    const { audioContext } = audioContextRef.current;
+    const engine = engineStatesRef.current.find(e => e.id === engineId);
+    const engineNodes = engineNodesRef.current.get(engineId);
+    const engineVoices = activeVoicesRef.current.get(engineId);
+    if (!audioContext || !engine || !engineNodes || !engineVoices || engineVoices.has(note)) return;
+
+    const freq = midiNoteToFrequency(note, harmonicTuningSystemRef.current);
+    const velocityGain = audioContext.createGain();
+    velocityGain.gain.setValueAtTime(velocity / 127, audioContext.currentTime);
+    velocityGain.connect(engineNodes.midiInputGain);
+    
+    const sourceNodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
+    const noiseNodes: (AudioBufferSourceNode | GainNode)[] = [];
+
+    if (engine.synth.enabled) {
+        const osc = audioContext.createOscillator();
+        osc.type = engine.synth.oscillatorType;
+        osc.frequency.setValueAtTime(freq, audioContext.currentTime);
+        osc.connect(velocityGain);
+        osc.start();
+        sourceNodes.push(osc);
+    }
+    if (engine.noise.enabled && engine.noise.volume > 0) {
+        const bufferSize = audioContext.sampleRate * 2;
+        const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+        const output = buffer.getChannelData(0); let lastOut = 0;
+        for (let i = 0; i < bufferSize; i++) {
+            let s; switch (engine.noise.noiseType) {
+                case 'white': s = Math.random() * 2 - 1; break;
+                case 'pink': {
+                    const b0 = 0.99886 * lastOut + (Math.random() * 2 - 1) * 0.0555179;
+                    const b1 = 0.99332 * lastOut + (Math.random() * 2 - 1) * 0.0750759;
+                    const b2 = 0.969 * lastOut + (Math.random() * 2 - 1) * 0.153852;
+                    lastOut = b0 + b1 + b2 + (Math.random() * 2 - 1) * 0.01;
+                    s = lastOut * 0.11;
+                    if (s > 1) s = 1; if (s < -1) s = -1;
+                    break;
+                }
+                case 'brown': {
+                   const br = lastOut + (Math.random() * 2 - 1) * 0.02;
+                   lastOut = br;
+                   s = br * 3.5;
+                   if (s > 1) s = 1; if (s < -1) s = -1;
+                   break;
+                }
+                default: s = Math.random() * 2-1;
+            } output[i] = s;
+        }
+        const noiseSource = audioContext.createBufferSource();
+        noiseSource.buffer = buffer;
+        noiseSource.loop = true;
+
+        const noiseVolumeGain = audioContext.createGain();
+        noiseVolumeGain.gain.setValueAtTime(engine.noise.volume, audioContext.currentTime);
+        noiseSource.connect(noiseVolumeGain).connect(velocityGain);
+        noiseSource.start();
+        sourceNodes.push(noiseSource);
+        noiseNodes.push(noiseSource, noiseVolumeGain);
+    }
+    const sampleBuffer = sampleBuffersRef.current.get(engineId);
+    if (engine.sampler.enabled && sampleBuffer) {
+        const sampleSource = audioContext.createBufferSource();
+        sampleSource.buffer = sampleBuffer;
+        
+        const c4Freq = midiNoteToFrequency(60, '440_ET');
+        const semitones = 12 * Math.log2(freq / c4Freq);
+        sampleSource.detune.setValueAtTime(semitones * 100 + engine.sampler.transpose * 100, audioContext.currentTime);
+
+        sampleSource.connect(velocityGain);
+        sampleSource.start();
+        sourceNodes.push(sampleSource);
+    }
+
+    if (sourceNodes.length > 0) {
+        engineVoices.set(note, { sourceNodes, velocityGain, noiseNodes });
+    }
+
+  }, []);
+  
+  const handleNoteOff = useCallback((note: number, engineId: string) => {
+    const { audioContext } = audioContextRef.current;
+    const engineVoices = activeVoicesRef.current.get(engineId);
+    if (!audioContext || !engineVoices || !engineVoices.has(note)) return;
+
+    const { sourceNodes, velocityGain, noiseNodes } = engineVoices.get(note)!;
+    const stopTime = audioContext.currentTime + 0.1;
+    velocityGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.02);
+
+    sourceNodes.forEach(node => {
+        try { node.stop(stopTime); } catch(e) {}
+    });
+    
+    setTimeout(() => {
+        sourceNodes.forEach(node => node.disconnect());
+        noiseNodes?.forEach(node => node.disconnect());
+        velocityGain.disconnect();
+    }, 200);
+
+    engineVoices.delete(note);
+  }, []);
+
+  const midiMessageHandler = useCallback((message: MIDIMessageEvent) => {
+    if (midiActivityTimerRef.current) clearTimeout(midiActivityTimerRef.current);
+    setMidiActivity(true);
+    midiActivityTimerRef.current = window.setTimeout(() => setMidiActivity(false), 50);
+
+    const [command, note, velocity] = message.data;
+    const cmd = command & 0xF0; // Get command type, ignoring channel
+
+    if (cmd === 0x90 && velocity > 0) { // Note On on any channel
+        engineStatesRef.current.forEach(engine => {
+            if (engine.midiControlled) handleNoteOn(note, velocity, engine.id);
+        });
+    } else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) { // Note Off on any channel
+         engineStatesRef.current.forEach(engine => {
+            if (engine.midiControlled) handleNoteOff(note, engine.id);
+        });
+    }
+  }, [handleNoteOn, handleNoteOff, setMidiActivity]);
+
+  // MIDI Handling Effect
+  useEffect(() => {
+    let activeInput: MIDIInput | null = null;
+
+    if (selectedMidiInputId && navigator.requestMIDIAccess) {
+        navigator.requestMIDIAccess().then(access => {
+            const selectedInput = access.inputs.get(selectedMidiInputId);
+            if (selectedInput) {
+                activeInput = selectedInput;
+                activeInput.addEventListener('midimessage', midiMessageHandler);
+            }
+        });
+    }
+
+    // Cleanup function
+    return () => {
+        // `activeInput` from the previous render is captured in this closure
+        if (activeInput) {
+            activeInput.removeEventListener('midimessage', midiMessageHandler);
+        }
+    }
+  }, [selectedMidiInputId, midiMessageHandler]);
+
   useEffect(() => {
     const { audioContext, masterGain } = audioContextRef.current;
     if (!audioContext || !masterGain) return;
@@ -1774,6 +2031,7 @@ interface MorphState {
 
 const createInitialEngineState = (id: string, name: string): EngineState => ({
     id, name, sequencerEnabled: false, sequencerSteps: 16, sequencerPulses: 4, sequencerRotate: 0,
+    midiControlled: false,
     effects: { distortion: 0, delayTime: 0, delayFeedback: 0 },
     synth: { enabled: false, volume: 0.7, frequency: 440, oscillatorType: 'sine', solfeggioFrequency: '' },
     noise: { enabled: false, volume: 0.5, noiseType: 'white' },
@@ -1789,7 +2047,9 @@ const App = () => {
   const [filterRouting, setFilterRouting] = useState<FilterRouting>('series');
   const [harmonicTuningSystem, setHarmonicTuningSystem] = useState<TuningSystem>('440_ET');
   const [bottomTab, setBottomTab] = useState<'lfos' | 'matrix'>('lfos');
-
+  const [midiInputs, setMidiInputs] = useState<MIDIInput[]>([]);
+  const [selectedMidiInputId, setSelectedMidiInputId] = useState<string | null>(null);
+  const [midiActivity, setMidiActivity] = useState(false);
   
   const createInitialLFOState = (id: string, name: string): LFOState => ({
     id, name, rate: 5, depth: 0.5, shape: 'sine', sync: false, syncRate: '1/4',
@@ -1808,7 +2068,7 @@ const App = () => {
   ]);
 
   const [engineStates, setEngineStates] = useState<EngineState[]>([
-    { ...createInitialEngineState('engine1', 'Engine 1'), sequencerEnabled: true, synth: {...createInitialEngineState('','').synth, enabled: true} },
+    { ...createInitialEngineState('engine1', 'Engine 1'), sequencerEnabled: true, midiControlled: true, synth: {...createInitialEngineState('','').synth, enabled: true} },
     { ...createInitialEngineState('engine2', 'Engine 2'), sequencerEnabled: true, noise: {...createInitialEngineState('','').noise, enabled: true, volume: 0.1} },
     { ...createInitialEngineState('engine3', 'Engine 3'), sequencerEnabled: true, sampler: {...createInitialEngineState('','').sampler, enabled: true} }
   ]);
@@ -1822,9 +2082,24 @@ const App = () => {
   const lastMorphStepRef = useRef(-1);
 
   const { isInitialized, initializeAudio, currentStep, loadSample, engineNodesRef, masterAnalyserRef, leftAnalyserRef, rightAnalyserRef } = useAudio(
-    engineStates, setEngineStates, masterVolume, filter1, filter2, filterRouting, lfoStates, masterEffects, bpm, isTransportPlaying,
+    engineStates, setEngineStates, masterVolume, filter1, filter2, filterRouting, lfoStates, masterEffects, bpm, isTransportPlaying, harmonicTuningSystem, selectedMidiInputId, setMidiActivity
   );
   
+  useEffect(() => {
+    if (!navigator.requestMIDIAccess) return;
+    navigator.requestMIDIAccess({ sysex: false }).then((access) => {
+        const inputs = Array.from(access.inputs.values());
+        setMidiInputs(inputs);
+        if (inputs.length > 0) {
+            setSelectedMidiInputId(inputs[0].id);
+        }
+        access.onstatechange = (event) => {
+            const updatedInputs = Array.from(access.inputs.values());
+            setMidiInputs(updatedInputs);
+        };
+    }).catch(err => console.error("Could not access MIDI devices.", err));
+  }, []);
+
   const cancelMorph = useCallback(() => {
     setMorph(prev => ({ ...prev, isActive: false, start: null, target: null }));
     lastMorphStepRef.current = -1;
@@ -2249,6 +2524,10 @@ const App = () => {
           setBPM={setBpm}
           isTransportPlaying={isTransportPlaying}
           onToggleTransport={handleToggleTransport}
+          midiInputs={midiInputs}
+          selectedMidiInputId={selectedMidiInputId}
+          onMidiInputChange={setSelectedMidiInputId}
+          midiActivity={midiActivity}
         />
         <div className="main-grid">
             <div className="full-width-container">

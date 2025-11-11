@@ -53,6 +53,7 @@
         justify-content: space-between;
         align-items: center;
         gap: 1.5rem;
+        flex-wrap: wrap;
       }
       .top-bar-group {
         display: flex;
@@ -545,6 +546,31 @@
         background-color: var(--background-color);
         border-radius: 4px;
         margin-bottom: 1rem;
+      }
+      
+      /* MIDI Styles */
+      .midi-indicator {
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          background-color: #333;
+          border: 1px solid #555;
+          transition: background-color 0.05s;
+          margin-right: -0.75rem;
+      }
+      
+      .engine-title-group {
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+      }
+       .midi-toggle {
+          background-color: var(--surface-color-light);
+          color: var(--on-surface-color);
+          border: 1px solid var(--disabled-color);
+      }
+      .midi-toggle.active {
+          border-color: var(--secondary-color);
       }
 
     </style>
