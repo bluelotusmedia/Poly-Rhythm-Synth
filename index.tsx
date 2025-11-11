@@ -208,15 +208,6 @@ interface TopBarProps {
     selectedMidiInputId: string | null;
     onMidiInputChange: (id: string) => void;
     midiActivity: boolean;
-    voicingMode: VoicingMode;
-    setVoicingMode: (mode: VoicingMode) => void;
-    glideTime: number;
-    setGlideTime: (time: number) => void;
-    isGlideSynced: boolean;
-    setIsGlideSynced: (synced: boolean) => void;
-    glideSyncRateIndex: number;
-    setGlideSyncRateIndex: (index: number) => void;
-    glideSyncRates: string[];
     // Presets
     presets: Record<string, any>;
     selectedPreset: string;
@@ -228,6 +219,27 @@ interface TopBarProps {
     selectedAudioOutputId: string;
     onAudioOutputChange: (id: string) => void;
 }
+
+interface MainControlPanelProps {
+    onRandomize: (mode: RandomizeMode, scope: 'global' | 'routing') => void;
+    onIntelligentRandomize: (scope: 'global' | 'routing') => void;
+    isMorphEnabled: boolean;
+    setIsMorphEnabled: (enabled: boolean) => void;
+    morphDuration: number;
+    setMorphDuration: (duration: number) => void;
+    harmonicTuningSystem: TuningSystem;
+    setHarmonicTuningSystem: (system: TuningSystem) => void;
+    voicingMode: VoicingMode;
+    setVoicingMode: (mode: VoicingMode) => void;
+    glideTime: number;
+    setGlideTime: (time: number) => void;
+    isGlideSynced: boolean;
+    setIsGlideSynced: (synced: boolean) => void;
+    glideSyncRateIndex: number;
+    setGlideSyncRateIndex: (index: number) => void;
+    glideSyncRates: string[];
+}
+
 
 interface FilterState {
     cutoff: number;
@@ -249,18 +261,6 @@ interface LFOControlsProps {
     onRandomize: (mode: RandomizeMode, scope: string) => void;
     onIntelligentRandomize: (scope: string) => void;
 }
-
-interface GenerativeToolsProps {
-    onRandomize: (mode: RandomizeMode, scope: 'global') => void;
-    onIntelligentRandomize: (scope: 'global') => void;
-    isMorphEnabled: boolean;
-    setIsMorphEnabled: (enabled: boolean) => void;
-    morphDuration: number;
-    setMorphDuration: (duration: number) => void;
-    harmonicTuningSystem: TuningSystem;
-    setHarmonicTuningSystem: (system: TuningSystem) => void;
-}
-
 
 interface MasterEffectsProps {
     effects: MasterEffect[];
@@ -288,6 +288,15 @@ interface RoutingMatrixProps {
     onLfoUpdate: (lfoId: string, updates: Partial<LFOState>) => void;
     engineStates: EngineState[];
     onEngineUpdate: (engineId: string, updates: Partial<EngineState>) => void;
+}
+
+interface BottomTabsProps {
+    lfoStates: LFOState[];
+    handleLfoUpdate: (lfoId: string, updates: Partial<LFOState>) => void;
+    engineStates: EngineState[];
+    handleEngineUpdate: (engineId: string, updates: Partial<EngineState>) => void;
+    onRandomize: (mode: RandomizeMode, scope: string) => void;
+    onIntelligentRandomize: (scope: string) => void;
 }
 
 
@@ -945,8 +954,6 @@ const FilterRoutingSwitch: React.FC<{
 const TopBar: React.FC<TopBarProps> = ({
     masterVolume, setMasterVolume, bpm, setBPM, isTransportPlaying, onToggleTransport,
     midiInputs, selectedMidiInputId, onMidiInputChange, midiActivity,
-    voicingMode, setVoicingMode, glideTime, setGlideTime, isGlideSynced, setIsGlideSynced,
-    glideSyncRateIndex, setGlideSyncRateIndex, glideSyncRates,
     presets, selectedPreset, onLoadPreset, onSavePreset, onDeletePreset,
     audioOutputs, selectedAudioOutputId, onAudioOutputChange,
 }) => {
@@ -983,14 +990,6 @@ const TopBar: React.FC<TopBarProps> = ({
         }
     };
     
-    const handleGlideChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (isGlideSynced) {
-            setGlideSyncRateIndex(Number(e.target.value));
-        } else {
-            setGlideTime(Number(e.target.value));
-        }
-    }
-
     return (
         <div className="top-bar">
             <div className="top-bar-group">
@@ -1050,30 +1049,6 @@ const TopBar: React.FC<TopBarProps> = ({
                     {isTransportPlaying ? 'Stop' : 'Play'}
                 </button>
             </div>
-             <div className="top-bar-group">
-                <label>Voicing</label>
-                <div className="voicing-switch">
-                    <button className={voicingMode === 'poly' ? 'active' : ''} onClick={() => setVoicingMode('poly')}>Poly</button>
-                    <button className={voicingMode === 'mono' ? 'active' : ''} onClick={() => setVoicingMode('mono')}>Mono</button>
-                    <button className={voicingMode === 'legato' ? 'active' : ''} onClick={() => setVoicingMode('legato')}>Legato</button>
-                </div>
-                 <div className="control-value-wrapper">
-                    <label>Glide</label>
-                    <input
-                        type="range"
-                        min={isGlideSynced ? 0 : 0.001}
-                        max={isGlideSynced ? glideSyncRates.length - 1 : 2}
-                        step={isGlideSynced ? 1 : 0.001}
-                        value={isGlideSynced ? glideSyncRateIndex : glideTime}
-                        onChange={handleGlideChange}
-                        style={{width: '80px'}}
-                    />
-                    <button onClick={() => setIsGlideSynced(!isGlideSynced)} className={`small ${isGlideSynced ? 'active' : ''}`}>Sync</button>
-                    <span style={{minWidth: '50px'}}>
-                        {isGlideSynced ? glideSyncRates[glideSyncRateIndex] : `${(glideTime*1000).toFixed(0)}ms`}
-                    </span>
-                 </div>
-            </div>
             <div className="top-bar-group">
                 <label>MIDI Input</label>
                 <div className="midi-indicator" style={{ backgroundColor: midiActivity ? 'var(--secondary-color)' : '#333' }} />
@@ -1082,6 +1057,96 @@ const TopBar: React.FC<TopBarProps> = ({
                     {midiInputs.map(input => <option key={input.id} value={input.id}>{input.name}</option>)}
                 </select>
             </div>
+        </div>
+    );
+};
+
+const MainControlPanel: React.FC<MainControlPanelProps> = ({
+    onRandomize, onIntelligentRandomize, isMorphEnabled, setIsMorphEnabled, morphDuration, setMorphDuration,
+    harmonicTuningSystem, setHarmonicTuningSystem, voicingMode, setVoicingMode, glideTime, setGlideTime,
+    isGlideSynced, setIsGlideSynced, glideSyncRateIndex, setGlideSyncRateIndex, glideSyncRates
+}) => {
+    const handleGlideChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (isGlideSynced) {
+            setGlideSyncRateIndex(Number(e.target.value));
+        } else {
+            setGlideTime(Number(e.target.value));
+        }
+    };
+    
+    return (
+        <div className="main-control-panel">
+            <div className="sub-control-group">
+                <div className="control-row">
+                    <label>Randomize All</label>
+                    <div className="randomizer-buttons-group">
+                         <button className="icon-button" onClick={() => onRandomize('chaos', 'global')} title="Chaos Randomize"><ChaosIcon /></button>
+                         <button className="icon-button" onClick={() => onRandomize('harmonic', 'global')} title="Harmonic Randomize"><HarmonicIcon /></button>
+                         <button className="icon-button" onClick={() => onRandomize('rhythmic', 'global')} title="Rhythmic Randomize"><RhythmicIcon /></button>
+                         <button className="icon-button ai-button" onClick={() => onIntelligentRandomize('global')} title="Intelligent Randomize"><AIIcon /></button>
+                    </div>
+                </div>
+                 <div className="control-row">
+                    <label>Morph</label>
+                    <button onClick={() => setIsMorphEnabled(!isMorphEnabled)} className={`small ${isMorphEnabled ? 'active' : ''}`}>
+                        {isMorphEnabled ? 'ON' : 'OFF'}
+                    </button>
+                    {isMorphEnabled && (
+                        <div className="control-value-wrapper">
+                            <input
+                                type="range" min="1" max="64" step="1"
+                                value={morphDuration}
+                                onChange={e => setMorphDuration(Number(e.target.value))}
+                                style={{width: '80px'}}
+                            />
+                            <span>{morphDuration} steps</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+             <div className="sub-control-group">
+                <div className="control-row">
+                    <label>Harmonic Mode</label>
+                    <select value={harmonicTuningSystem} onChange={e => setHarmonicTuningSystem(e.target.value as TuningSystem)}>
+                        <option value="440_ET">440Hz Equal Temperament</option>
+                        <option value="432_ET">432Hz Equal Temperament</option>
+                        <option value="just_intonation_440">Just Intonation (A4=440)</option>
+                        <option value="just_intonation_432">Just Intonation (A4=432)</option>
+                        <option value="pythagorean_440">Pythagorean (A4=440)</option>
+                        <option value="pythagorean_432">Pythagorean (A4=432)</option>
+                        <option value="solfeggio">Solfeggio</option>
+                        <option value="wholesome_scale">Wholesome Scale (G Major)</option>
+                    </select>
+                </div>
+             </div>
+             <div className="sub-control-group">
+                <label>Voicing</label>
+                <div className="voicing-switch">
+                    <button className={voicingMode === 'poly' ? 'active' : ''} onClick={() => setVoicingMode('poly')}>Poly</button>
+                    <button className={voicingMode === 'mono' ? 'active' : ''} onClick={() => setVoicingMode('mono')}>Mono</button>
+                    <button className={voicingMode === 'legato' ? 'active' : ''} onClick={() => setVoicingMode('legato')}>Legato</button>
+                </div>
+            </div>
+             <div className="sub-control-group">
+                <div className="control-row">
+                    <label>Glide</label>
+                    <div className="control-value-wrapper">
+                        <input
+                            type="range"
+                            min={isGlideSynced ? 0 : 0.001}
+                            max={isGlideSynced ? glideSyncRates.length - 1 : 2}
+                            step={isGlideSynced ? 1 : 0.001}
+                            value={isGlideSynced ? glideSyncRateIndex : glideTime}
+                            onChange={handleGlideChange}
+                            style={{width: '100px'}}
+                        />
+                        <button onClick={() => setIsGlideSynced(!isGlideSynced)} className={`small ${isGlideSynced ? 'active' : ''}`}>Sync</button>
+                        <span style={{minWidth: '50px'}}>
+                            {isGlideSynced ? glideSyncRates[glideSyncRateIndex] : `${(glideTime*1000).toFixed(0)}ms`}
+                        </span>
+                    </div>
+                </div>
+             </div>
         </div>
     );
 };
@@ -1455,82 +1520,41 @@ const MasterEffects: React.FC<MasterEffectsProps> = ({ effects, setEffects, onRa
     );
 };
 
-const TuningSelector: React.FC<{
-    harmonicTuningSystem: TuningSystem,
-    setHarmonicTuningSystem: (system: TuningSystem) => void,
-}> = ({ harmonicTuningSystem, setHarmonicTuningSystem }) => {
+const BottomTabs: React.FC<BottomTabsProps> = ({ lfoStates, handleLfoUpdate, engineStates, handleEngineUpdate, onRandomize, onIntelligentRandomize }) => {
+    const [activeTab, setActiveTab] = useState<'lfos' | 'matrix'>('lfos');
+    
     return (
-        <div className="tuning-selector">
-            <div className="control-row">
-                <label>Harmonic Mode</label>
-                <select value={harmonicTuningSystem} onChange={e => setHarmonicTuningSystem(e.target.value as TuningSystem)}>
-                    <option value="440_ET">440Hz Equal Temperament</option>
-                    <option value="432_ET">432Hz Equal Temperament</option>
-                    <option value="just_intonation_440">Just Intonation (A4=440)</option>
-                    <option value="just_intonation_432">Just Intonation (A4=432)</option>
-                    <option value="pythagorean_440">Pythagorean (A4=440)</option>
-                    <option value="pythagorean_432">Pythagorean (A4=432)</option>
-                    <option value="solfeggio">Solfeggio</option>
-                    <option value="wholesome_scale">Wholesome Scale (G Major)</option>
-                </select>
-            </div>
-        </div>
-    );
-};
-
-
-const GenerativeTools: React.FC<GenerativeToolsProps> = ({
-    onRandomize, onIntelligentRandomize, isMorphEnabled, setIsMorphEnabled, morphDuration, setMorphDuration,
-    harmonicTuningSystem, setHarmonicTuningSystem
-}) => {
-    return (
-        <div className="control-group generative-container">
-            <div className="control-group-header">
-                <h2>Generative Tools</h2>
-            </div>
-            <div className="generative-controls">
-                <div className="sub-control-group">
-                     <div className="control-row">
-                        <label>Randomize All</label>
-                        <div className="randomizer-buttons-group">
-                             <button className="icon-button" onClick={() => onRandomize('chaos', 'global')} title="Chaos Randomize"><ChaosIcon /></button>
-                             <button className="icon-button" onClick={() => onRandomize('harmonic', 'global')} title="Harmonic Randomize"><HarmonicIcon /></button>
-                             <button className="icon-button" onClick={() => onRandomize('rhythmic', 'global')} title="Rhythmic Randomize"><RhythmicIcon /></button>
-                             <button className="icon-button ai-button" onClick={() => onIntelligentRandomize('global')} title="Intelligent Randomize"><AIIcon /></button>
-                        </div>
-                    </div>
+        <div className="bottom-module-container">
+            <div className="bottom-module-header">
+                <div className="bottom-tab-nav">
+                    <button className={`bottom-tab-button ${activeTab === 'lfos' ? 'active' : ''}`} onClick={() => setActiveTab('lfos')}>LFOs</button>
+                    <button className={`bottom-tab-button ${activeTab === 'matrix' ? 'active' : ''}`} onClick={() => setActiveTab('matrix')}>Routing Matrix</button>
                 </div>
-                <div className="sub-control-group">
-                    <div className="control-row">
-                        <label>Morph Randomization</label>
-                        <button onClick={() => setIsMorphEnabled(!isMorphEnabled)} className={`small ${isMorphEnabled ? 'active' : ''}`}>
-                            {isMorphEnabled ? 'ON' : 'OFF'}
-                        </button>
+                 {activeTab === 'matrix' && (
+                    <div className="randomizer-buttons-group">
+                         <button className="icon-button" onClick={() => onRandomize('chaos', 'routing')} title="Chaos Randomize Routing"><ChaosIcon /></button>
+                         <button className="icon-button" onClick={() => onRandomize('harmonic', 'routing')} title="Harmonic Randomize Routing"><HarmonicIcon /></button>
+                         <button className="icon-button" onClick={() => onRandomize('rhythmic', 'routing')} title="Rhythmic Randomize Routing"><RhythmicIcon /></button>
+                         <button className="icon-button ai-button" onClick={() => onIntelligentRandomize('routing')} title="Intelligent Randomize Routing"><AIIcon /></button>
                     </div>
-                    {isMorphEnabled && (
-                        <div className="control-row">
-                            <label>Duration (steps)</label>
-                            <div className="control-value-wrapper">
-                                <input
-                                    type="range" min="1" max="64" step="1"
-                                    value={morphDuration}
-                                    onChange={e => setMorphDuration(Number(e.target.value))}
-                                />
-                                <span>{morphDuration}</span>
-                            </div>
-                        </div>
-                    )}
-                </div>
-                 <div className="sub-control-group">
-                    <TuningSelector
-                        harmonicTuningSystem={harmonicTuningSystem}
-                        setHarmonicTuningSystem={setHarmonicTuningSystem}
-                    />
-                 </div>
+                )}
             </div>
+           {activeTab === 'lfos' && (
+             <div className="lfo-grid-container">
+               {lfoStates.map(lfo => <LFOControls key={lfo.id} lfoState={lfo} onUpdate={(u) => handleLfoUpdate(lfo.id, u)} onRandomize={onRandomize} onIntelligentRandomize={onIntelligentRandomize} />)}
+             </div>
+           )}
+           {activeTab === 'matrix' && (
+              <RoutingMatrix
+                lfoStates={lfoStates}
+                onLfoUpdate={handleLfoUpdate}
+                engineStates={engineStates}
+                onEngineUpdate={handleEngineUpdate}
+              />
+           )}
         </div>
-    );
-};
+    )
+}
 
 
 // --- Main Audio Hook ---
@@ -2432,7 +2456,6 @@ const App = () => {
   const [filter2, setFilter2] = useState<FilterState>({ cutoff: 500, resonance: 1, type: 'highpass' });
   const [filterRouting, setFilterRouting] = useState<FilterRouting>('series');
   const [harmonicTuningSystem, setHarmonicTuningSystem] = useState<TuningSystem>('440_ET');
-  const [bottomTab, setBottomTab] = useState<'lfos' | 'matrix'>('lfos');
   const [midiInputs, setMidiInputs] = useState<MIDIInput[]>([]);
   const [selectedMidiInputId, setSelectedMidiInputId] = useState<string | null>(null);
   const [midiActivity, setMidiActivity] = useState(false);
@@ -2635,7 +2658,7 @@ const App = () => {
   const wrappedSetFilterRouting = handleStateChange(setFilterRouting);
   const wrappedSetHarmonicTuningSystem = handleStateChange(setHarmonicTuningSystem);
 
-  const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | string) => {
+  const handleRandomize = useCallback((mode: RandomizeMode, scope: 'global' | 'routing' | string) => {
     cancelMorph();
     const getHarmonicFreq = () => {
         const getRoot = (a4: number) => a4 * Math.pow(2, -9 / 12); // Get C4 from A4
@@ -2748,10 +2771,41 @@ const App = () => {
       return newEffect;
     };
 
+    const randomizeRouting = (source: 'lfo' | 'sequencer'): LFORoutingState => {
+        const newRouting = createInitialRoutingState();
+        const keys = Object.keys(newRouting) as (keyof LFORoutingState)[];
+        for (const key of keys) {
+            let probability = 0.08; // chaos
+            if (mode === 'harmonic') {
+                if (key.includes('Freq') || key.includes('Transpose') || key.includes('Grain')) {
+                    probability = source === 'lfo' ? 0.35 : 0.05;
+                } else {
+                    probability = 0.02;
+                }
+            } else if (mode === 'rhythmic') {
+                 if (key.includes('Vol') || key.includes('Cutoff') || key.includes('Density') || key.includes('Position')) {
+                    probability = source === 'sequencer' ? 0.45 : 0.2;
+                 } else {
+                    probability = 0.02;
+                 }
+            }
+            newRouting[key] = getRandomBool(probability);
+        }
+        return newRouting;
+    };
+    
+    const newLfoRoutings = lfoStates.map(lfo => (scope === 'global' || scope === 'routing') ? randomizeRouting('lfo') : lfo.routing);
+    const newEngineRoutings = engineStates.map(engine => (scope === 'global' || scope === 'routing') ? randomizeRouting('sequencer') : engine.routing);
 
     const snapshot: MorphSnapshot = {
-        engines: engineStates.map(e => (scope === 'global' || scope === e.id) ? randomizeEngine(e) : e),
-        lfos: lfoStates.map(l => (scope === 'global' || scope === l.id) ? randomizeLFO(l) : l),
+        engines: engineStates.map((e, i) => ({
+            ...( (scope === 'global' || scope === e.id) ? randomizeEngine(e) : e ),
+            routing: newEngineRoutings[i]
+        })),
+        lfos: lfoStates.map((l, i) => ({
+            ...( (scope === 'global' || scope === l.id) ? randomizeLFO(l) : l ),
+            routing: newLfoRoutings[i]
+        })),
         filter1: (scope === 'global' || scope === 'filter1') ? randomizeFilter(filter1) : filter1,
         filter2: (scope === 'global' || scope === 'filter2') ? randomizeFilter(filter2) : filter2,
         effects: masterEffects.map(ef => (scope === 'global' || scope === ef.id) ? randomizeMasterEffect(ef) : ef),
@@ -2791,13 +2845,18 @@ const App = () => {
             engines: engineStates, lfos: lfoStates, filter1, filter2,
             effects: masterEffects, masterVolume, bpm, filterRouting, harmonicTuningSystem,
         };
+        
+        let promptAction;
+        switch(scope) {
+            case 'global': promptAction = "create a completely new, musically interesting, and coherent patch."; break;
+            case 'routing': promptAction = "only modify the `routing` properties on the `lfos` and `engines` objects to create an interesting modulation setup. Keep all other parameters the same."; break;
+            default: promptAction = `only modify the parameters for the component with ID or name "${scope}".`; break;
+        }
+
         const prompt = `You are a world-class sound designer creating a patch for a sophisticated polyrhythmic software synthesizer.
         The user wants you to intelligently randomize parts of the current patch.
         Current patch state: ${JSON.stringify(currentSnapshot, null, 2)}
-        User's request: Randomize the "${scope}" section.
-        Your task is to generate a new, musically interesting, and coherent patch by modifying ONLY the requested scope.
-        - If scope is 'global', create a completely new sound.
-        - If scope is an engine, LFO, or filter, only modify that component's parameters.
+        Your task is to ${promptAction}
         - Be creative. Think about how parameters interact. For example, a fast LFO on a filter cutoff can create a wobble bass. A slow LFO on sample position can create evolving textures.
         - Ensure the output is valid JSON conforming to the provided schema. Do not include any commentary, just the JSON object.
         - Don't just pick random values; make thoughtful choices that result in a good sound. Create something beautiful, atmospheric, or powerfully rhythmic.
@@ -3085,15 +3144,6 @@ const App = () => {
         selectedMidiInputId={selectedMidiInputId}
         onMidiInputChange={setSelectedMidiInputId}
         midiActivity={midiActivity}
-        voicingMode={voicingMode}
-        setVoicingMode={setVoicingMode}
-        glideTime={glideTime}
-        setGlideTime={setGlideTime}
-        isGlideSynced={isGlideSynced}
-        setIsGlideSynced={setIsGlideSynced}
-        glideSyncRateIndex={glideSyncRateIndex}
-        setGlideSyncRateIndex={setGlideSyncRateIndex}
-        glideSyncRates={glideSyncRates}
         presets={presets}
         selectedPreset={selectedPreset}
         onLoadPreset={handleLoadPreset}
@@ -3103,6 +3153,26 @@ const App = () => {
         selectedAudioOutputId={selectedAudioOutputId}
         onAudioOutputChange={setSelectedAudioOutputId}
       />
+
+        <MainControlPanel
+            onRandomize={handleRandomize}
+            onIntelligentRandomize={handleIntelligentRandomize}
+            isMorphEnabled={isMorphEnabled}
+            setIsMorphEnabled={setIsMorphEnabled}
+            morphDuration={morphDuration}
+            setMorphDuration={setMorphDuration}
+            harmonicTuningSystem={harmonicTuningSystem}
+            setHarmonicTuningSystem={wrappedSetHarmonicTuningSystem}
+            voicingMode={voicingMode}
+            setVoicingMode={setVoicingMode}
+            glideTime={glideTime}
+            setGlideTime={setGlideTime}
+            isGlideSynced={isGlideSynced}
+            setIsGlideSynced={setIsGlideSynced}
+            glideSyncRateIndex={glideSyncRateIndex}
+            setGlideSyncRateIndex={setGlideSyncRateIndex}
+            glideSyncRates={glideSyncRates}
+        />
 
        <div className="main-grid">
          <div className="full-width-container master-visualizer-container">
@@ -3147,37 +3217,14 @@ const App = () => {
           <MasterEffects effects={masterEffects} setEffects={wrappedSetMasterEffects} onRandomize={handleRandomize} onIntelligentRandomize={handleIntelligentRandomize}/>
         </div>
         
-        <div className="bottom-module-container">
-          <div className="bottom-module-header">
-              <div className="bottom-tab-nav">
-                  <button className={`bottom-tab-button ${bottomTab === 'lfos' ? 'active' : ''}`} onClick={() => setBottomTab('lfos')}>LFOs & Generative</button>
-                  <button className={`bottom-tab-button ${bottomTab === 'matrix' ? 'active' : ''}`} onClick={() => setBottomTab('matrix')}>Routing Matrix</button>
-              </div>
-          </div>
-           {bottomTab === 'lfos' && (
-             <div className="lfo-grid-container">
-               {lfoStates.map(lfo => <LFOControls key={lfo.id} lfoState={lfo} onUpdate={(u) => handleLfoUpdate(lfo.id, u)} onRandomize={handleRandomize} onIntelligentRandomize={handleIntelligentRandomize} />)}
-               <GenerativeTools
-                  onRandomize={handleRandomize}
-                  onIntelligentRandomize={handleIntelligentRandomize}
-                  isMorphEnabled={isMorphEnabled}
-                  setIsMorphEnabled={setIsMorphEnabled}
-                  morphDuration={morphDuration}
-                  setMorphDuration={setMorphDuration}
-                  harmonicTuningSystem={harmonicTuningSystem}
-                  setHarmonicTuningSystem={wrappedSetHarmonicTuningSystem}
-               />
-             </div>
-           )}
-           {bottomTab === 'matrix' && (
-              <RoutingMatrix
-                lfoStates={lfoStates}
-                onLfoUpdate={handleLfoUpdate}
-                engineStates={engineStates}
-                onEngineUpdate={handleEngineUpdate}
-              />
-           )}
-        </div>
+        <BottomTabs
+            lfoStates={lfoStates}
+            handleLfoUpdate={handleLfoUpdate}
+            engineStates={engineStates}
+            handleEngineUpdate={handleEngineUpdate}
+            onRandomize={handleRandomize}
+            onIntelligentRandomize={handleIntelligentRandomize}
+        />
        </div>
     </div>
   );

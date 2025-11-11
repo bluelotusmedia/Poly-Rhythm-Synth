@@ -157,15 +157,38 @@
           grid-template-columns: 1fr 1fr 1fr;
           gap: 1.5rem;
        }
-        .generative-container { 
+        .main-control-panel { 
+          background-color: var(--surface-color);
+          border: 1px solid var(--surface-color-light);
+          border-radius: 8px;
+          padding: 1rem 1.5rem;
           display: flex; 
-          flex-direction: column;
+          flex-wrap: wrap;
+          justify-content: space-between;
+          align-items: center;
+          gap: 1.5rem;
         }
-        .generative-controls {
+        .main-control-panel .sub-control-group {
             display: flex;
-            justify-content: space-between;
-            gap: 2rem;
+            align-items: center;
+            gap: 1rem;
+            border-left: 1px solid var(--surface-color-light);
+            padding-left: 1.5rem;
         }
+        .main-control-panel .sub-control-group:first-child {
+            border-left: none;
+            padding-left: 0;
+        }
+        .main-control-panel .control-row {
+          margin-bottom: 0;
+        }
+        .main-control-panel label {
+          white-space: nowrap;
+        }
+        .main-control-panel .randomizer-buttons-group {
+          padding-left: 0.5rem;
+        }
+
 
       .control-group {
         background-color: var(--surface-color);
@@ -202,6 +225,7 @@
         align-items: center;
         margin-bottom: 0.85rem;
         min-height: 30px;
+        gap: 1rem;
       }
       label {
         font-size: 0.9rem;
@@ -425,6 +449,10 @@
        .remove-effect-btn:hover { background-color: #8b3e56; }
       
       /* Icon Buttons */
+      .randomizer-buttons-group {
+        display: flex;
+        gap: 0.5rem;
+      }
       .icon-button {
           background: none;
           border: 1px solid var(--surface-color-light);
@@ -436,8 +464,8 @@
           display: flex;
           justify-content: center;
           align-items: center;
-          width: 40px;
-          height: 40px;
+          width: 32px;
+          height: 32px;
       }
       .icon-button:hover {
           background-color: var(--surface-color-light);
