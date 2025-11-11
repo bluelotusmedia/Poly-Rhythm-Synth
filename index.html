@@ -52,13 +52,13 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 1.5rem;
+        gap: 1rem;
         flex-wrap: wrap;
       }
       .top-bar-group {
         display: flex;
         align-items: center;
-        gap: 1.5rem;
+        gap: 1rem;
       }
        .top-bar-group h2 {
         margin: 0;
@@ -264,6 +264,7 @@
         border: 1px solid var(--primary-color);
         border-radius: 4px;
         padding: 0.4rem;
+        max-width: 180px;
       }
        .init-overlay {
         position: fixed; top: 0; left: 0;
@@ -572,6 +573,51 @@
       .midi-toggle.active {
           border-color: var(--secondary-color);
       }
+      .seq-toggle {
+          background-color: var(--surface-color-light);
+          color: var(--on-surface-color);
+          border: 1px solid var(--disabled-color);
+      }
+      .seq-toggle.active {
+          border-color: var(--primary-color);
+      }
+
+
+      /* Voicing & Glide Styles */
+      .voicing-switch {
+        display: flex;
+        background-color: var(--surface-color-light);
+        border-radius: 6px;
+        padding: 4px;
+        height: fit-content;
+      }
+      .voicing-switch button {
+        background: none;
+        border: none;
+        color: #aaa;
+        padding: 0.3rem 0.8rem;
+        font-size: 0.8rem;
+        font-weight: bold;
+        cursor: pointer;
+        transition: all 0.2s;
+        border-radius: 4px;
+      }
+      .voicing-switch button.active {
+        background-color: var(--primary-color);
+        color: var(--on-surface-color);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+      }
+      
+      /* Preset & Output Styles */
+      .preset-buttons {
+          display: flex;
+          gap: 0.5rem;
+      }
+      .preset-buttons button {
+          font-size: 0.8rem;
+          padding: 0.3rem 0.6rem;
+      }
+
 
     </style>
   <script type="importmap">
