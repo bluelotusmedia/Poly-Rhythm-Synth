@@ -282,6 +282,13 @@ interface MainControlPanelProps {
     setScale: (scale: ScaleName) => void;
     transpose: number;
     setTranspose: (transpose: number) => void;
+    // New Auto-Random Props
+    isGlobalAutoRandomEnabled: boolean;
+    setIsGlobalAutoRandomEnabled: (enabled: boolean) => void;
+    globalAutoRandomInterval: number;
+    setGlobalAutoRandomInterval: (interval: number) => void;
+    globalAutoRandomMode: RandomizeMode;
+    setGlobalAutoRandomMode: (mode: RandomizeMode) => void;
 }
 
 
@@ -468,7 +475,21 @@ const getInitialLockState = (): LockState => {
         }])),
         filter1: { cutoff: false, resonance: false, type: false },
         filter2: { cutoff: false, resonance: false, type: false },
-        masterEffects: {} // Populated dynamically
+        masterEffects: Object.fromEntries(availableMasterEffects.map(type => {
+            const defaultParams = getDefaultEffectParams(type);
+            const paramLocks: { [key: string]: boolean | { [key: string]: boolean } } = {};
+            for (const paramGroup in defaultParams) {
+                if (defaultParams.hasOwnProperty(paramGroup)) {
+                    const params = defaultParams[paramGroup as keyof typeof defaultParams];
+                    if (typeof params === 'object' && params !== null) {
+                        paramLocks[paramGroup] = Object.keys(params).reduce((acc, key) => ({ ...acc, [key]: false }), {});
+                    } else {
+                        paramLocks[paramGroup] = false;
+                    }
+                }
+            }
+            return [type, paramLocks];
+        }))
     };
 };
 
@@ -892,7 +913,8 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
     isMorphSynced, setIsMorphSynced, morphSyncRateIndex, setMorphSyncRateIndex,
     harmonicTuningSystem, setHarmonicTuningSystem, voicingMode, setVoicingMode, glideTime, setGlideTime,
     isGlideSynced, setIsGlideSynced, glideSyncRateIndex, setGlideSyncRateIndex, glideSyncRates, syncRates,
-    scale, setScale, transpose, setTranspose
+    scale, setScale, transpose, setTranspose,
+    isGlobalAutoRandomEnabled, setIsGlobalAutoRandomEnabled, globalAutoRandomInterval, setGlobalAutoRandomInterval, globalAutoRandomMode, setGlobalAutoRandomMode
 }) => {
     return (
         <div className="main-control-panel">
@@ -934,6 +956,14 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
                          </select>
                      )}
                 </div>
+                <div className="control-row">
+                    <label>Global Randomize</label>
+                    <div className="randomizer-buttons-group">
+                        <button className="icon-button" onClick={() => onRandomize('chaos', 'global-immediate')} title="Global Chaos"><ChaosIcon /></button>
+                        <button className="icon-button" onClick={() => onRandomize('harmonic', 'global-immediate')} title="Global Harmonic"><HarmonicIcon /></button>
+                        <button className="icon-button" onClick={() => onRandomize('rhythmic', 'global-immediate')} title="Global Rhythmic"><RhythmicIcon /></button>
+                    </div>
+                </div>
             </div>
             <div className="sub-control-group">
                  <h2>Voicing & Glide</h2>
@@ -971,6 +1001,30 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
                         <input type="range" min="-24" max="24" step="1" value={transpose} onChange={e => setTranspose(parseInt(e.target.value))} />
                         <span>{transpose} st</span>
                     </div>
+                </div>
+            </div>
+            <div className="sub-control-group">
+                <h2>Auto-Random</h2>
+                <div className="control-row">
+                    <label>Enable</label>
+                    <button className={`small ${isGlobalAutoRandomEnabled ? 'active' : ''}`} onClick={() => setIsGlobalAutoRandomEnabled(!isGlobalAutoRandomEnabled)}>
+                        {isGlobalAutoRandomEnabled ? 'On' : 'Off'}
+                    </button>
+                </div>
+                <div className="control-row">
+                    <label>Interval</label>
+                    <div className="control-value-wrapper">
+                        <input type="range" min="1000" max="60000" step="1000" value={globalAutoRandomInterval} onChange={e => setGlobalAutoRandomInterval(parseInt(e.target.value))} disabled={!isGlobalAutoRandomEnabled} />
+                        <span>{globalAutoRandomInterval / 1000} s</span>
+                    </div>
+                </div>
+                <div className="control-row">
+                    <label>Mode</label>
+                    <select value={globalAutoRandomMode} onChange={e => setGlobalAutoRandomMode(e.target.value as RandomizeMode)} disabled={!isGlobalAutoRandomEnabled}>
+                        <option value="chaos">Chaos</option>
+                        <option value="harmonic">Harmonic</option>
+                        <option value="rhythmic">Rhythmic</option>
+                    </select>
                 </div>
             </div>
         </div>
@@ -1908,6 +1962,27 @@ const App: React.FC = () => {
     
     const [lockState, setLockState] = useState<LockState>(getInitialLockState());
 
+    // Global Auto-Random State
+    const [isGlobalAutoRandomEnabled, setIsGlobalAutoRandomEnabled] = useState(false);
+    const [globalAutoRandomInterval, setGlobalAutoRandomInterval] = useState(5000); // 5 seconds
+    const [globalAutoRandomMode, setGlobalAutoRandomMode] = useState<RandomizeMode>('chaos');
+
+    // Auto-randomization effect
+    useEffect(() => {
+        let intervalId: number;
+        if (isGlobalAutoRandomEnabled && isTransportPlaying) {
+            intervalId = setInterval(() => {
+                console.log(`Global auto-random triggered. Mode: ${globalAutoRandomMode}`);
+                handleRandomize(globalAutoRandomMode, 'global-immediate');
+            }, globalAutoRandomInterval);
+        }
+        return () => {
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+        };
+    }, [isGlobalAutoRandomEnabled, globalAutoRandomInterval, globalAutoRandomMode, handleRandomize, isTransportPlaying]);
+
     const handleToggleLock = useCallback((path: string) => {
         setLockState(prev => {
             const newState = JSON.parse(JSON.stringify(prev)); // Deep copy
@@ -1935,6 +2010,252 @@ const App: React.FC = () => {
     const handleLfoUpdate = useCallback((lfoId: string, updates: Partial<LFOState>) => {
       setLfos(prevLfos => prevLfos.map(l => l.id === lfoId ? { ...l, ...updates } : l));
     }, []);
+
+    const randomizeLFOsHarmonic = useCallback(() => {
+        setLfos(prevLfos => prevLfos.map(lfo => {
+            const locks = lockState.lfos[lfo.id];
+            let newLfo = { ...lfo };
+
+            if (!locks.rate) newLfo.rate = getRandom(0.1, 10); // Musically relevant LFO rates
+            if (!locks.depth) newLfo.depth = getRandom(0.1, 1.0);
+            if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
+            if (!locks.sync) newLfo.sync = getRandomBool(0.5);
+            if (newLfo.sync && !locks.syncRate) newLfo.syncRate = getRandomElement(lfoSyncRates);
+
+            return newLfo;
+        }));
+    }, [lockState, lfoShapes, lfoSyncRates]);
+
+    const randomizeFiltersHarmonic = useCallback(() => {
+        setFilter1State(prev => {
+            const locks = lockState.filter1;
+            let newFilter = { ...prev };
+            if (!locks.enabled) newFilter.enabled = getRandomBool();
+            if (!locks.cutoff) newFilter.cutoff = getRandom(100, 10000);
+            if (!locks.resonance) newFilter.resonance = getRandom(0, 10);
+            if (!locks.type) newFilter.type = getRandomElement(filterTypes);
+            return newFilter;
+        });
+        setFilter2State(prev => {
+            const locks = lockState.filter2;
+            let newFilter = { ...prev };
+            if (!locks.enabled) newFilter.enabled = getRandomBool();
+            if (!locks.cutoff) newFilter.cutoff = getRandom(100, 10000);
+            if (!locks.resonance) newFilter.resonance = getRandom(0, 10);
+            if (!locks.type) newFilter.type = getRandomElement(filterTypes);
+            return newFilter;
+        });
+    }, [lockState, filterTypes]);
+
+    const randomizeMasterEffectsHarmonic = useCallback(() => {
+        setMasterEffects(prevEffects => prevEffects.map(effect => {
+            const locks = lockState.masterEffects[effect.id];
+            if (!locks) return effect; // Should not happen if lockState is properly initialized
+
+            let newEffect = { ...effect };
+            let newParams = { ...effect.params };
+
+            switch (effect.type) {
+                case 'distortion':
+                    if (newParams.distortion && !locks.distortion?.amount) {
+                        newParams.distortion = { ...newParams.distortion, amount: getRandom(0.1, 0.8) };
+                    }
+                    break;
+                case 'delay':
+                    if (newParams.delay && !locks.delay?.time) {
+                        newParams.delay = { ...newParams.delay, time: getRandom(0.1, 1.0) };
+                    }
+                    if (newParams.delay && !locks.delay?.feedback) {
+                        newParams.delay = { ...newParams.delay, feedback: getRandom(0.2, 0.7) };
+                    }
+                    if (newParams.delay && !locks.delay?.mix) {
+                        newParams.delay = { ...newParams.delay, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'reverb':
+                    if (newParams.reverb && !locks.reverb?.decay) {
+                        newParams.reverb = { ...newParams.reverb, decay: getRandom(1, 5) };
+                    }
+                    if (newParams.reverb && !locks.reverb?.mix) {
+                        newParams.reverb = { ...newParams.reverb, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'chorus':
+                    if (newParams.chorus && !locks.chorus?.rate) {
+                        newParams.chorus = { ...newParams.chorus, rate: getRandom(0.5, 5) };
+                    }
+                    if (newParams.chorus && !locks.chorus?.depth) {
+                        newParams.chorus = { ...newParams.chorus, depth: getRandom(0.2, 0.8) };
+                    }
+                    if (newParams.chorus && !locks.chorus?.mix) {
+                        newParams.chorus = { ...newParams.chorus, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'flanger':
+                    if (newParams.flanger && !locks.flanger?.rate) {
+                        newParams.flanger = { ...newParams.flanger, rate: getRandom(0.1, 2) };
+                    }
+                    if (newParams.flanger && !locks.flanger?.depth) {
+                        newParams.flanger = { ...newParams.flanger, depth: getRandom(0.3, 0.9) };
+                    }
+                    if (newParams.flanger && !locks.flanger?.feedback) {
+                        newParams.flanger = { ...newParams.flanger, feedback: getRandom(0.3, 0.8) };
+                    }
+                    if (newParams.flanger && !locks.flanger?.mix) {
+                        newParams.flanger = { ...newParams.flanger, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'phaser':
+                    if (newParams.phaser && !locks.phaser?.rate) {
+                        newParams.phaser = { ...newParams.phaser, rate: getRandom(0.5, 4) };
+                    }
+                    if (newParams.phaser && !locks.phaser?.q) {
+                        newParams.phaser = { ...newParams.phaser, q: getRandom(5, 15) };
+                    }
+                    if (newParams.phaser && !locks.phaser?.mix) {
+                        newParams.phaser = { ...newParams.phaser, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'tremolo':
+                    if (newParams.tremolo && !locks.tremolo?.rate) {
+                        newParams.tremolo = { ...newParams.tremolo, rate: getRandom(1, 10) };
+                    }
+                    if (newParams.tremolo && !locks.tremolo?.depth) {
+                        newParams.tremolo = { ...newParams.tremolo, depth: getRandom(0.3, 0.9) };
+                    }
+                    if (newParams.tremolo && !locks.tremolo?.mix) {
+                        newParams.tremolo = { ...newParams.tremolo, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'eq':
+                    if (newParams.eq && !locks.eq?.bands) {
+                        newParams.eq = { bands: newParams.eq.bands.map(() => getRandomInt(-6, 6)) };
+                    }
+                    break;
+            }
+            return { ...newEffect, params: newParams };
+        }));
+    }, [lockState]);
+
+    const randomizeLFOsRhythmic = useCallback(() => {
+        setLfos(prevLfos => prevLfos.map(lfo => {
+            const locks = lockState.lfos[lfo.id];
+            let newLfo = { ...lfo };
+
+            // Rhythmic rates based on BPM
+            const rhythmicRates = lfoSyncRates.map(rate => {
+                const [numerator, denominator] = rate.split('/').map(Number);
+                return (bpm / 60) * (numerator / denominator);
+            });
+
+            if (!locks.rate) newLfo.rate = getRandomElement(rhythmicRates);
+            if (!locks.depth) newLfo.depth = getRandom(0.3, 0.9);
+            if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
+            if (!locks.sync) newLfo.sync = true; // Rhythmic implies sync
+            if (newLfo.sync && !locks.syncRate) newLfo.syncRate = getRandomElement(lfoSyncRates);
+
+            return newLfo;
+        }));
+    }, [lockState, bpm, lfoShapes, lfoSyncRates]);
+
+    const randomizeFiltersRhythmic = useCallback(() => {
+        setFilter1State(prev => {
+            const locks = lockState.filter1;
+            let newFilter = { ...prev };
+            if (!locks.enabled) newFilter.enabled = getRandomBool();
+            // Rhythmic cutoff: e.g., multiples of a base frequency related to BPM
+            if (!locks.cutoff) newFilter.cutoff = getRandomElement([125, 250, 500, 1000, 2000, 4000, 8000]);
+            if (!locks.resonance) newFilter.resonance = getRandom(0, 5);
+            if (!locks.type) newFilter.type = getRandomElement(filterTypes);
+            return newFilter;
+        });
+        setFilter2State(prev => {
+            const locks = lockState.filter2;
+            let newFilter = { ...prev };
+            if (!locks.enabled) newFilter.enabled = getRandomBool();
+            if (!locks.cutoff) newFilter.cutoff = getRandomElement([125, 250, 500, 1000, 2000, 4000, 8000]);
+            if (!locks.resonance) newFilter.resonance = getRandom(0, 5);
+            if (!locks.type) newFilter.type = getRandomElement(filterTypes);
+            return newFilter;
+        });
+    }, [lockState, filterTypes]);
+
+    const randomizeMasterEffectsRhythmic = useCallback(() => {
+        setMasterEffects(prevEffects => prevEffects.map(effect => {
+            const locks = lockState.masterEffects[effect.id];
+            if (!locks) return effect;
+
+            let newEffect = { ...effect };
+            let newParams = { ...effect.params };
+
+            // Rhythmic values for time-based parameters
+            const rhythmicTimes = delaySyncRates.map(rate => {
+                const [numerator, denominator] = rate.split('/').map(part => parseFloat(part.replace('d', '')));
+                const base = 60 / bpm;
+                if (rate.includes('d')) { // Dotted notes
+                    return base * (numerator / denominator) * 1.5;
+                }
+                return base * (numerator / denominator);
+            });
+
+            switch (effect.type) {
+                case 'delay':
+                    if (newParams.delay && !locks.delay?.time) {
+                        newParams.delay = { ...newParams.delay, time: getRandomElement(rhythmicTimes) };
+                    }
+                    if (newParams.delay && !locks.delay?.feedback) {
+                        newParams.delay = { ...newParams.delay, feedback: getRandom(0.2, 0.7) };
+                    }
+                    if (newParams.delay && !locks.delay?.mix) {
+                        newParams.delay = { ...newParams.delay, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                case 'tremolo':
+                    if (newParams.tremolo && !locks.tremolo?.rate) {
+                        newParams.tremolo = { ...newParams.tremolo, rate: getRandomElement(rhythmicTimes.filter(t => t > 0).map(t => 1/t)) }; // Convert time to rate
+                    }
+                    if (newParams.tremolo && !locks.tremolo?.depth) {
+                        newParams.tremolo = { ...newParams.tremolo, depth: getRandom(0.3, 0.9) };
+                    }
+                    if (newParams.tremolo && !locks.tremolo?.mix) {
+                        newParams.tremolo = { ...newParams.tremolo, mix: getRandom(0.3, 0.8) };
+                    }
+                    break;
+                // Other effects can have rhythmic elements too, e.g., chorus/flanger rate
+                case 'chorus':
+                    if (newParams.chorus && !locks.chorus?.rate) {
+                        newParams.chorus = { ...newParams.chorus, rate: getRandomElement(rhythmicTimes.filter(t => t > 0).map(t => 1/t)) };
+                    }
+                    break;
+                case 'flanger':
+                    if (newParams.flanger && !locks.flanger?.rate) {
+                        newParams.flanger = { ...newParams.flanger, rate: getRandomElement(rhythmicTimes.filter(t => t > 0).map(t => 1/t)) };
+                    }
+                    break;
+                case 'phaser':
+                    if (newParams.phaser && !locks.phaser?.rate) {
+                        newParams.phaser = { ...newParams.phaser, rate: getRandomElement(rhythmicTimes.filter(t => t > 0).map(t => 1/t)) };
+                    }
+                    break;
+                case 'distortion':
+                case 'reverb':
+                case 'eq':
+                    // For effects where rhythmic randomization is less direct,
+                    // we can still randomize other parameters if not locked.
+                    if (effect.type === 'distortion' && newParams.distortion && !locks.distortion?.amount) {
+                        newParams.distortion = { ...newParams.distortion, amount: getRandom(0.1, 0.8) };
+                    }
+                    if (effect.type === 'reverb' && newParams.reverb && !locks.reverb?.decay) {
+                        newParams.reverb = { ...newParams.reverb, decay: getRandom(1, 5) };
+                    }
+                    if (effect.type === 'eq' && newParams.eq && !locks.eq?.bands) {
+                        newParams.eq = { bands: newParams.eq.bands.map(() => getRandomInt(-6, 6)) };
+                    }
+                    break;
+            }
+            return { ...newEffect, params: newParams };
+        }));
+    }, [lockState, bpm, delaySyncRates]);
 
     const handleGenerateSequence = useCallback(async (engineId: string) => {
         const engine = engines.find(e => e.id === engineId);
@@ -2516,6 +2837,8 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
     }, [isMorphing, morphTime, isMorphSynced, morphSyncRateIndex, bpm, syncRates, lockState]);
 
 
+
+
     // Randomization Logic
 const availableTuningSystems: TuningSystem[] = [
     '440_ET', '432_ET', 'just_intonation_440', 'just_intonation_432',
@@ -2541,14 +2864,23 @@ const availableTuningSystems: TuningSystem[] = [
         }
 
         let newGlobalHarmonicTuningSystem = harmonicTuningSystem;
-        if (mode === 'harmonic' && scope === 'global') {
+        if (mode === 'harmonic' && scope === 'global-immediate') {
             newGlobalHarmonicTuningSystem = getRandomElement(availableTuningSystems);
             setHarmonicTuningSystem(newGlobalHarmonicTuningSystem);
+
+            // Call helper functions for other modules
+            randomizeLFOsHarmonic();
+            randomizeFiltersHarmonic();
+            randomizeMasterEffectsHarmonic();
+        } else if (mode === 'rhythmic' && scope === 'global-immediate') {
+            randomizeLFOsRhythmic();
+            randomizeFiltersRhythmic();
+            randomizeMasterEffectsRhythmic();
         }
 
         const createRandomizedState = () => {
             const newEngines = engines.map((engine): EngineState => {
-                 if (scope !== 'global' && scope !== engine.id) return engine;
+                 if (scope !== 'global' && scope !== 'global-immediate' && scope !== engine.id) return engine;
                  const locks = lockState.engines[engine.id];
                  
                  let sequencerParams: Partial<EngineState> = {};
@@ -2561,26 +2893,87 @@ const availableTuningSystems: TuningSystem[] = [
                     }
                  }
 
-                                  let newMelodicSequence: number[] = [];
-                                  let newSynthState: Partial<SynthLayerState> = { ...engine.synth }; // Start with current synth state
-                 
-                                  console.log("handleRandomize called. Mode:", mode, "Scope:", scope, "Harmonic Tuning System:", newGlobalHarmonicTuningSystem);
-                 
-                                  if (mode === 'harmonic' || mode === 'chaos') {
-                                     if (mode === 'harmonic') {
-                                         if (newGlobalHarmonicTuningSystem === 'maria_renold_I') {
-                                             const shuffledFrequencies = shuffleArray([...mariaRenoldFrequencies]);
-                                             for (let i = 0; i < engine.sequencerSteps; i++) {
-                                                 newMelodicSequence.push(shuffledFrequencies[i % shuffledFrequencies.length]);
-                                             }
-                                             console.log("Maria Renold I melodicSequence:", newMelodicSequence);
-                                         } else if (newGlobalHarmonicTuningSystem === 'none') {
-                                             for (let i = 0; i < engine.sequencerSteps; i++) {
-                                                 newMelodicSequence.push(getRandom(20, 20000));
-                                             }
-                                             console.log("None melodicSequence (random freqs):", newMelodicSequence);
-                                         } else {
-                                             // For other harmonic tuning systems, randomize a note within the scale
+                let newMelodicSequence: number[] = [];
+                let newSynthState: Partial<SynthLayerState> = { ...engine.synth };
+                let newNoiseState: Partial<NoiseLayerState> = { ...engine.noise };
+                let newSamplerState: Partial<SamplerLayerState> = { ...engine.sampler };
+                let newAdsrState: Partial<ADSRState> = { ...engine.adsr };
+
+                console.log("handleRandomize called. Mode:", mode, "Scope:", scope, "Harmonic Tuning System:", newGlobalHarmonicTuningSystem);
+
+                if (mode === 'harmonic' || mode === 'chaos') {
+                    if (mode === 'harmonic') {
+                        // Harmonic randomization for synth parameters
+                        if (!locks.synth.oscillatorType) newSynthState.oscillatorType = getRandomElement(oscillatorTypes);
+                        if (!locks.synth.volume) newSynthState.volume = getRandom(0.3, 0.8);
+                        if (!locks.adsr.attack) newAdsrState.attack = getRandom(0.01, 0.5);
+                        if (!locks.adsr.decay) newAdsrState.decay = getRandom(0.1, 1.0);
+                        if (!locks.adsr.sustain) newAdsrState.sustain = getRandom(0.5, 0.9);
+                        if (!locks.adsr.release) newAdsrState.release = getRandom(0.1, 1.5);
+
+                        if (newGlobalHarmonicTuningSystem === 'maria_renold_I') {
+                            const shuffledFrequencies = shuffleArray([...mariaRenoldFrequencies]);
+                            for (let i = 0; i < engine.sequencerSteps; i++) {
+                                newMelodicSequence.push(shuffledFrequencies[i % shuffledFrequencies.length]);
+                            }
+                            console.log("Maria Renold I melodicSequence:", newMelodicSequence);
+                        } else if (newGlobalHarmonicTuningSystem === 'none') {
+                            for (let i = 0; i < engine.sequencerSteps; i++) {
+                                newMelodicSequence.push(getRandom(20, 20000));
+                            }
+                            console.log("None melodicSequence (random freqs):", newMelodicSequence);
+                        } else {
+                            // For other harmonic tuning systems, randomize a note within the scale
+                            const rootFreq = (newGlobalHarmonicTuningSystem === 'solfeggio' || newGlobalHarmonicTuningSystem === 'wholesome_scale')
+                                ? 220 // Base frequency for solfeggio/wholesome
+                                : midiNoteToFrequency(60 + transpose, newGlobalHarmonicTuningSystem); // C4 + transpose
+
+                            const currentScale = musicalScales[scale];
+                            const ratios = (newGlobalHarmonicTuningSystem.startsWith('just')) ? justIntonationRatios :
+                                           (newGlobalHarmonicTuningSystem.startsWith('pythagorean')) ? pythagoreanRatios :
+                                           currentScale.map(semitone => Math.pow(2, semitone / 12)); // ET ratios
+
+                            for (let i = 0; i < engine.sequencerSteps; i++) {
+                                newMelodicSequence.push(getNoteFromScale(rootFreq, ratios, 3)); // 3 octaves
+                            }
+                        }
+                    } else if (mode === 'chaos') {
+                        // Chaos randomization for synth parameters
+                        if (!locks.synth.oscillatorType) newSynthState.oscillatorType = getRandomElement(oscillatorTypes);
+                        if (!locks.synth.volume) newSynthState.volume = getRandom(0.1, 1.0);
+                        if (!locks.noise.noiseType) newNoiseState.noiseType = getRandomElement(noiseTypes);
+                        if (!locks.noise.volume) newNoiseState.volume = getRandom(0.0, 0.5);
+                        if (!locks.sampler.transpose) newSamplerState.transpose = getRandomInt(-12, 12);
+                        if (!locks.adsr.attack) newAdsrState.attack = getRandom(0.001, 1.0);
+                        if (!locks.adsr.decay) newAdsrState.decay = getRandom(0.01, 2.0);
+                        if (!locks.adsr.sustain) newAdsrState.sustain = getRandom(0.0, 1.0);
+                        if (!locks.adsr.release) newAdsrState.release = getRandom(0.01, 3.0);
+
+                        for (let i = 0; i < engine.sequencerSteps; i++) {
+                            newMelodicSequence.push(getRandom(20, 20000));
+                        }
+                    }
+                } else if (mode === 'rhythmic') {
+                    // Rhythmic randomization for engine parameters
+                    if (!locks.synth.oscillatorType) newSynthState.oscillatorType = getRandomElement(oscillatorTypes);
+                    if (!locks.synth.volume) newSynthState.volume = getRandom(0.4, 0.9);
+                    if (!locks.noise.noiseType) newNoiseState.noiseType = getRandomElement(noiseTypes);
+                    if (!locks.noise.volume) newNoiseState.volume = getRandom(0.1, 0.4);
+                    if (!locks.sampler.transpose) newSamplerState.transpose = getRandomElement([-12, -7, 0, 7, 12]); // Rhythmic transpositions
+                    if (!locks.adsr.attack) newAdsrState.attack = getRandomElement([0.01, 0.05, 0.1, 0.2]);
+                    if (!locks.adsr.decay) newAdsrState.decay = getRandomElement([0.1, 0.2, 0.4, 0.8]);
+                    if (!locks.adsr.sustain) newAdsrState.sustain = getRandomElement([0.5, 0.7, 0.9, 1.0]);
+                    if (!locks.adsr.release) newAdsrState.release = getRandomElement([0.1, 0.5, 1.0, 2.0]);
+
+                    // Rhythmic melodic sequence (e.g., based on current scale but with rhythmic intervals)
+                    const rootFreq = midiNoteToFrequency(60 + transpose, harmonicTuningSystem);
+                    const currentScale = musicalScales[scale];
+                    const ratios = currentScale.map(semitone => Math.pow(2, semitone / 12));
+
+                    for (let i = 0; i < engine.sequencerSteps; i++) {
+                        newMelodicSequence.push(getNoteFromScale(rootFreq, ratios, 2)); // 2 octaves for rhythmic
+                    }
+                }
                                              for (let i = 0; i < engine.sequencerSteps; i++) {
                                                  const randomMidiNote = getRandomInt(40, 90); // A reasonable range for notes
                                                  newMelodicSequence.push(midiNoteToFrequency(randomMidiNote, newGlobalHarmonicTuningSystem));
@@ -2606,10 +2999,41 @@ const availableTuningSystems: TuningSystem[] = [
                                          : engine.synth.solfeggioFrequency;
                                   }
                  
+                                  let newNoiseState: Partial<NoiseLayerState> = { ...engine.noise };
+                                  if (mode === 'chaos' || mode === 'rhythmic' || mode === 'harmonic') {
+                                      newNoiseState.enabled = getRandomBool(0.5);
+                                      newNoiseState.volume = (locks.noise as any).volume ? engine.noise.volume : getRandom(0.1, 0.5);
+                                      newNoiseState.noiseType = (locks.noise as any).noiseType ? engine.noise.noiseType : getRandomElement(noiseTypes);
+                                  }
+
+                                  let newSamplerState: Partial<SamplerLayerState> = { ...engine.sampler };
+                                  if (mode === 'chaos' || mode === 'rhythmic' || mode === 'harmonic') {
+                                      newSamplerState.enabled = getRandomBool(0.5);
+                                      newSamplerState.volume = (locks.sampler as any).volume ? engine.sampler.volume : getRandom(0.1, 0.8);
+                                      newSamplerState.transpose = (locks.sampler as any).transpose ? engine.sampler.transpose : getRandomInt(-12, 12);
+                                      newSamplerState.granularModeEnabled = getRandomBool(0.3);
+                                      if (newSamplerState.granularModeEnabled) {
+                                          newSamplerState.grainSize = (locks.sampler as any).grainSize ? engine.sampler.grainSize : getRandom(0.01, 0.2);
+                                          newSamplerState.grainDensity = (locks.sampler as any).grainDensity ? engine.sampler.grainDensity : getRandomInt(5, 50);
+                                          newSamplerState.playbackPosition = (locks.sampler as any).playbackPosition ? engine.sampler.playbackPosition : getRandom(0, 1);
+                                          newSamplerState.positionJitter = (locks.sampler as any).positionJitter ? engine.sampler.positionJitter : getRandom(0, 0.5);
+                                      }
+                                  }
+
+                                  let newEngineEffects: Partial<EffectState> = { ...engine.effects };
+                                  if (mode === 'chaos' || mode === 'rhythmic' || mode === 'harmonic') {
+                                      newEngineEffects.distortion = getRandom(0, 1);
+                                      newEngineEffects.delayTime = getRandom(0.01, 1);
+                                      newEngineEffects.delayFeedback = getRandom(0, 0.8);
+                                  }
+                 
                                   return {
                                       ...engine,
                                       ...sequencerParams,
                                       synth: newSynthState, // Use the newSynthState
+                                      noise: newNoiseState,
+                                      sampler: newSamplerState,
+                                      effects: newEngineEffects,
                                       melodicSequence: newMelodicSequence.length > 0 ? newMelodicSequence : engine.melodicSequence, // Update melodic sequence
                                       routing: randomizeRouting(),
                                       adsr: {
@@ -2668,17 +3092,23 @@ const availableTuningSystems: TuningSystem[] = [
 
         const randomState = createRandomizedState();
 
-        if (scope === 'global') {
+        if (scope === 'global') { // For "Random Morph" buttons
             morphStartRef.current = { engines, filter1State, filter2State, lfos, masterEffects };
             morphTargetRef.current = randomState;
             morphStartTimeRef.current = Date.now();
             setIsMorphing(true);
-        } else {
-             setEngines(randomState.engines);
-             setFilter1State(randomState.filter1State);
-             setFilter2State(randomState.filter2State);
-             setLfos(randomState.lfos);
-             setMasterEffects(randomState.masterEffects);
+        } else if (scope === 'global-immediate') { // For new global randomize buttons
+            setEngines(randomState.engines);
+            setFilter1State(randomState.filter1State);
+            setFilter2State(randomState.filter2State);
+            setLfos(randomState.lfos);
+            setMasterEffects(randomState.masterEffects);
+        } else { // For per-module randomization
+             setEngines(prev => prev.map(e => e.id === scope ? randomState.engines.find(re => re.id === scope) || e : e));
+             setFilter1State(scope === 'filter1' ? randomState.filter1State : filter1State);
+             setFilter2State(scope === 'filter2' ? randomState.filter2State : filter2State);
+             setLfos(prev => prev.map(l => l.id === scope ? randomState.lfos.find(rl => rl.id === scope) || l : l));
+             setMasterEffects(prev => prev.map(me => me.id === scope ? randomState.masterEffects.find(rme => rme.id === scope) || me : me));
         }
     };
     
@@ -2757,6 +3187,12 @@ const availableTuningSystems: TuningSystem[] = [
                 setScale={setScale}
                 transpose={transpose}
                 setTranspose={setTranspose}
+                isGlobalAutoRandomEnabled={isGlobalAutoRandomEnabled}
+                setIsGlobalAutoRandomEnabled={setIsGlobalAutoRandomEnabled}
+                globalAutoRandomInterval={globalAutoRandomInterval}
+                setGlobalAutoRandomInterval={setGlobalAutoRandomInterval}
+                globalAutoRandomMode={globalAutoRandomMode}
+                setGlobalAutoRandomMode={setGlobalAutoRandomMode}
             />
             
             <div className="master-visualizer-container">
