@@ -2433,23 +2433,26 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
                 
                 // Lerp engines
                 newState.engines = morphStartRef.current.engines.map((startEngine: EngineState, i: number) => {
-                    const targetEngine = morphTargetRef.current.engines[i];
+                    const newSynth = {
+                        ...startEngine.synth,
+                        volume: lerp(startEngine.synth.volume, targetEngine.synth.volume, progress),
+                        frequency: (startEngine.synth.frequencyOverride && targetEngine.synth.frequencyOverride)
+                            ? lerp(startEngine.synth.frequency, targetEngine.synth.frequency, progress)
+                            : targetEngine.synth.frequency, // Snap to target frequency if overridden
+                        oscillatorType: progress < 1 ? startEngine.synth.oscillatorType : targetEngine.synth.oscillatorType, // Snap at end
+                        solfeggioFrequency: progress < 1 ? startEngine.synth.solfeggioFrequency : targetEngine.synth.solfeggioFrequency, // Snap at end
+                        frequencyOverride: progress < 1 ? startEngine.synth.frequencyOverride : targetEngine.synth.frequencyOverride, // Snap at end
+                    };
+
+                    const newMelodicSequence = progress < 1 ? startEngine.melodicSequence : targetEngine.melodicSequence; // Snap at end
+
                     return {
                         ...startEngine,
                         sequencerSteps: lockState.engines[startEngine.id].sequencerSteps ? startEngine.sequencerSteps : Math.round(lerp(startEngine.sequencerSteps, targetEngine.sequencerSteps, progress)),
                         sequencerPulses: lockState.engines[startEngine.id].sequencerPulses ? startEngine.sequencerPulses : Math.round(lerp(startEngine.sequencerPulses, targetEngine.sequencerPulses, progress)),
                         sequencerRotate: lockState.engines[startEngine.id].sequencerRotate ? startEngine.sequencerRotate : Math.round(lerp(startEngine.sequencerRotate, targetEngine.sequencerRotate, progress)),
-                        synth: { ...startEngine.synth, volume: lerp(startEngine.synth.volume, targetEngine.synth.volume, progress) },
-                        noise: { ...startEngine.noise, volume: lerp(startEngine.noise.volume, targetEngine.noise.volume, progress) },
-                        sampler: {
-                            ...startEngine.sampler,
-                            volume: lerp(startEngine.sampler.volume, targetEngine.sampler.volume, progress),
-                            transpose: lerp(startEngine.sampler.transpose, targetEngine.sampler.transpose, progress),
-                            grainSize: lerp(startEngine.sampler.grainSize, targetEngine.sampler.grainSize, progress),
-                            grainDensity: lerp(startEngine.sampler.grainDensity, targetEngine.sampler.grainDensity, progress),
-                            playbackPosition: lerp(startEngine.sampler.playbackPosition, targetEngine.sampler.playbackPosition, progress),
-                            positionJitter: lerp(startEngine.sampler.positionJitter, targetEngine.sampler.positionJitter, progress),
-                        },
+                        synth: newSynth,
+                        melodicSequence: newMelodicSequence,
                         adsr: {
                             ...startEngine.adsr,
                             attack: lerp(startEngine.adsr.attack, targetEngine.adsr.attack, progress),
