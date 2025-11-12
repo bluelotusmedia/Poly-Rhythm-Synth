@@ -2517,6 +2517,12 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
 
 
     // Randomization Logic
+const availableTuningSystems: TuningSystem[] = [
+    '440_ET', '432_ET', 'just_intonation_440', 'just_intonation_432',
+    'pythagorean_440', 'pythagorean_432', 'solfeggio', 'wholesome_scale',
+    'maria_renold_I', 'none'
+];
+
     const handleRandomize = (mode: RandomizeMode, scope: string) => {
         const randomizeRouting = () => {
             const newState = { ...DEFAULT_LFO_ROUTING_STATE };
@@ -2532,6 +2538,12 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
             setLfos(prev => prev.map(lfo => ({ ...lfo, routing: randomizeRouting() })));
             setEngines(prev => prev.map(engine => ({ ...engine, routing: randomizeRouting() })));
             return;
+        }
+
+        let newGlobalHarmonicTuningSystem = harmonicTuningSystem;
+        if (mode === 'harmonic' && scope === 'global') {
+            newGlobalHarmonicTuningSystem = getRandomElement(availableTuningSystems);
+            setHarmonicTuningSystem(newGlobalHarmonicTuningSystem);
         }
 
         const createRandomizedState = () => {
@@ -2552,17 +2564,17 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
                                   let newMelodicSequence: number[] = [];
                                   let newSynthState: Partial<SynthLayerState> = { ...engine.synth }; // Start with current synth state
                  
-                                  console.log("handleRandomize called. Mode:", mode, "Scope:", scope, "Harmonic Tuning System:", harmonicTuningSystem);
+                                  console.log("handleRandomize called. Mode:", mode, "Scope:", scope, "Harmonic Tuning System:", newGlobalHarmonicTuningSystem);
                  
                                   if (mode === 'harmonic' || mode === 'chaos') {
                                      if (mode === 'harmonic') {
-                                         if (harmonicTuningSystem === 'maria_renold_I') {
+                                         if (newGlobalHarmonicTuningSystem === 'maria_renold_I') {
                                              const shuffledFrequencies = shuffleArray([...mariaRenoldFrequencies]);
                                              for (let i = 0; i < engine.sequencerSteps; i++) {
                                                  newMelodicSequence.push(shuffledFrequencies[i % shuffledFrequencies.length]);
                                              }
                                              console.log("Maria Renold I melodicSequence:", newMelodicSequence);
-                                         } else if (harmonicTuningSystem === 'none') {
+                                         } else if (newGlobalHarmonicTuningSystem === 'none') {
                                              for (let i = 0; i < engine.sequencerSteps; i++) {
                                                  newMelodicSequence.push(getRandom(20, 20000));
                                              }
@@ -2571,7 +2583,7 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
                                              // For other harmonic tuning systems, randomize a note within the scale
                                              for (let i = 0; i < engine.sequencerSteps; i++) {
                                                  const randomMidiNote = getRandomInt(40, 90); // A reasonable range for notes
-                                                 newMelodicSequence.push(midiNoteToFrequency(randomMidiNote, harmonicTuningSystem));
+                                                 newMelodicSequence.push(midiNoteToFrequency(randomMidiNote, newGlobalHarmonicTuningSystem));
                                              }
                                              console.log("Other harmonic melodicSequence:", newMelodicSequence);
                                          }
@@ -2589,7 +2601,7 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
                                      newSynthState.enabled = getRandomBool(0.8);
                                      newSynthState.volume = (locks.synth as any).volume ? engine.synth.volume : getRandom(0.4, 0.9);
                                      newSynthState.oscillatorType = (locks.synth as any).oscillatorType ? engine.synth.oscillatorType : getRandomElement(oscillatorTypes);
-                                     newSynthState.solfeggioFrequency = (locks.synth as any).solfeggioFrequency || harmonicTuningSystem === 'solfeggio'
+                                     newSynthState.solfeggioFrequency = (locks.synth as any).solfeggioFrequency || newGlobalHarmonicTuningSystem === 'solfeggio'
                                          ? getRandomElement(solfeggioFrequenciesData).value.toString()
                                          : engine.synth.solfeggioFrequency;
                                   }
@@ -2624,13 +2636,13 @@ Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2
             
             const newFilter1 = (scope === 'global' || scope === 'filter1') ? { 
                 ...filter1State,
-                cutoff: lockState.filter1.cutoff ? filter1State.cutoff : (mode === 'harmonic' ? midiNoteToFrequency(getRandomInt(40, 90), harmonicTuningSystem) : getRandom(100, 10000)), 
+                cutoff: lockState.filter1.cutoff ? filter1State.cutoff : (mode === 'harmonic' ? midiNoteToFrequency(getRandomInt(40, 90), newGlobalHarmonicTuningSystem) : getRandom(100, 10000)), 
                 resonance: lockState.filter1.resonance ? filter1State.resonance : getRandom(0, 20), 
                 type: lockState.filter1.type ? filter1State.type : getRandomElement(filterTypes) 
             } : filter1State;
             const newFilter2 = (scope === 'global' || scope === 'filter2') ? { 
                 ...filter2State,
-                cutoff: lockState.filter2.cutoff ? filter2State.cutoff : (mode === 'harmonic' ? midiNoteToFrequency(getRandomInt(40, 90), harmonicTuningSystem) : getRandom(100, 15000)), 
+                cutoff: lockState.filter2.cutoff ? filter2State.cutoff : (mode === 'harmonic' ? midiNoteToFrequency(getRandomInt(40, 90), newGlobalHarmonicTuningSystem) : getRandom(100, 15000)), 
                 resonance: lockState.filter2.resonance ? filter2State.resonance : getRandom(0, 15), 
                 type: lockState.filter2.type ? filter2State.type : getRandomElement(filterTypes) 
             } : filter2State;
