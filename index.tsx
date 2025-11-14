@@ -4916,6 +4916,9 @@ const App: React.FC = () => {
     	            if (!effectNodes) {
     	                const input = audioContext.createGain();
     	                const output = audioContext.createGain();
+						if (dummyGainRef.current) {
+							output.connect(dummyGainRef.current);
+						}
     	                let nodes: any = {};
     	                 switch (effect.type) {
     	                    case 'distortion':
