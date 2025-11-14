@@ -5026,28 +5026,37 @@ const App: React.FC = () => {
     	
     	        audioNodesRef.current.forEach(nodes => nodes.finalOutput.connect(masterBus));
     	    
-    	        let lastNode: AudioNode = masterBus;
-
-    	        if (filter1State.enabled && filter2State.enabled) {
+    	        const lastFilterNode = (() => {
     	            if (filterRouting === 'series') {
-    	                masterBus.connect(f1);
-    	                f1.connect(f2);
-    	                lastNode = f2;
-    	            } else { // parallel
+    	                let node: AudioNode = masterBus;
+    	                if (filter1State.enabled) {
+    	                    node.connect(f1);
+    	                    node = f1;
+    	                }
+    	                if (filter2State.enabled) {
+    	                    node.connect(f2);
+    	                    node = f2;
+    	                }
+    	                return node;
+    	            } else { // Parallel
     	                const parallelOutput = audioContext.createGain();
-    	                masterBus.connect(f1);
-    	                masterBus.connect(f2);
-    	                f1.connect(parallelOutput);
-    	                f2.connect(parallelOutput);
-    	                lastNode = parallelOutput;
+    	                let isAnyFilterEnabled = false;
+    	                if (filter1State.enabled) {
+    	                    masterBus.connect(f1);
+    	                    f1.connect(parallelOutput);
+    	                    isAnyFilterEnabled = true;
+    	                }
+    	                if (filter2State.enabled) {
+    	                    masterBus.connect(f2);
+    	                    f2.connect(parallelOutput);
+    	                    isAnyFilterEnabled = true;
+    	                }
+    	                if (!isAnyFilterEnabled) {
+    	                    masterBus.connect(parallelOutput);
+    	                }
+    	                return parallelOutput;
     	            }
-    	        } else if (filter1State.enabled) {
-    	            masterBus.connect(f1);
-    	            lastNode = f1;
-    	        } else if (filter2State.enabled) {
-    	            masterBus.connect(f2);
-    	            lastNode = f2;
-    	        }
+    	        })();
     	
     	        const enabledEffects = masterEffects.filter(effect => effect.enabled);
     	        const finalEffectNode = enabledEffects.reduce((currentNode, effect) => {
@@ -5057,7 +5066,7 @@ const App: React.FC = () => {
     	                return effectNodes.output;
     	            }
     	            return currentNode;
-    	        }, lastNode);
+    	        }, lastFilterNode);
     	
     	        finalEffectNode.connect(masterVolumeNodeRef.current);
     	        masterVolumeNodeRef.current.connect(masterAnalyserNodeRef.current);
