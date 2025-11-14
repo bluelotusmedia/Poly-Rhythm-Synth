@@ -4886,14 +4886,12 @@ const App: React.FC = () => {
     		// This useEffect handles STRUCTURAL changes to the audio graph:
     		// creating/deleting nodes and connecting the final audio chain.
     		useEffect(() => {
-    	        if (!audioContext || !masterVolumeNodeRef.current || !filterNodesRef.current || !masterAnalyserNodeRef.current) return;
+    	        if (!audioContext || !masterVolumeNodeRef.current || !filterNodesRef.current || !masterAnalyserNodeRef.current || !masterBusRef.current) return;
     	    
-				masterVolumeNodeRef.current.disconnect();
-				if (!masterBusRef.current) {
-					masterBusRef.current = audioContext.createGain();
-				}
 				const masterBus = masterBusRef.current;
-
+    	        const f1 = filterNodesRef.current.filter1.node;
+    	        const f2 = filterNodesRef.current.filter2.node;
+    	    
     	        // 1. Create/Delete effect nodes based on structural changes
     	        const currentEffectIds = masterEffects.map(e => e.id);
     	        
@@ -5015,15 +5013,6 @@ const App: React.FC = () => {
     	        });
     	        
     	        // 2. Connect the entire audio graph
-    	        const f1 = filterNodesRef.current.filter1.node;
-    	        const f2 = filterNodesRef.current.filter2.node;
-    	    
-    			// Disconnect everything first to be safe
-    			masterBus.disconnect();
-    			f1.disconnect();
-    			f2.disconnect();
-    			audioNodesRef.current.forEach(nodes => nodes.finalOutput.disconnect());
-    	
     	        audioNodesRef.current.forEach(nodes => nodes.finalOutput.connect(masterBus));
     	    
     	        const lastFilterNode = (() => {
@@ -5073,6 +5062,7 @@ const App: React.FC = () => {
     	        masterAnalyserNodeRef.current.connect(audioContext.destination);
     	    
     	        return () => { // Cleanup on unmount or re-run
+					audioNodesRef.current.forEach(nodes => nodes.finalOutput.disconnect());
     	            masterBus.disconnect();
     	            f1.disconnect();
     	            f2.disconnect();
