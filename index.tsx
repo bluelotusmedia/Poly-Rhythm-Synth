@@ -4881,7 +4881,7 @@ const App: React.FC = () => {
     // This will only change if effects are added, removed, reordered, enabled/disabled,
     // or if a phaser's number of stages changes.
     		const masterEffectsChain = useMemo(() => {
-    			return masterEffects;
+    			return masterEffects.map(e => `${e.id}:${e.enabled}`).join(',');
     		}, [masterEffects]);
     		// This useEffect handles STRUCTURAL changes to the audio graph:
     		// creating/deleting nodes and connecting the final audio chain.
