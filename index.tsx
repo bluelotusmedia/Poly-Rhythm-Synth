@@ -3890,6 +3890,7 @@ const App: React.FC = () => {
 	} | null>(null);
 	const masterVolumeNodeRef = useRef<GainNode | null>(null);
 	const masterAnalyserNodeRef = useRef<AnalyserNode | null>(null);
+	const masterBusRef = useRef<GainNode | null>(null);
 	const lfoNodesRef = useRef<
 		Map<string, { lfoNode: OscillatorNode; depthGain: GainNode }>
 	>(new Map());
@@ -4887,6 +4888,11 @@ const App: React.FC = () => {
     		useEffect(() => {
     	        if (!audioContext || !masterVolumeNodeRef.current || !filterNodesRef.current || !masterAnalyserNodeRef.current) return;
     	    
+				if (!masterBusRef.current) {
+					masterBusRef.current = audioContext.createGain();
+				}
+				const masterBus = masterBusRef.current;
+
     	        // 1. Create/Delete effect nodes based on structural changes
     	        const currentEffectIds = masterEffects.map(e => e.id);
     	        
@@ -5005,7 +5011,6 @@ const App: React.FC = () => {
     	        });
     	        
     	        // 2. Connect the entire audio graph
-    	        const masterBus = audioContext.createGain();
     	        const f1 = filterNodesRef.current.filter1.node;
     	        const f2 = filterNodesRef.current.filter2.node;
     	    
