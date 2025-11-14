@@ -5064,6 +5064,7 @@ const App: React.FC = () => {
     	            f2.disconnect();
     	            effectNodesRef.current.forEach(fx => {
     	                fx.input.disconnect();
+						fx.output.disconnect();
     	            });
     	            masterVolumeNodeRef.current?.disconnect();
     	            masterAnalyserNodeRef.current?.disconnect();
