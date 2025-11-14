@@ -5017,44 +5017,49 @@ const App: React.FC = () => {
     	
     	        audioNodesRef.current.forEach(nodes => nodes.finalOutput.connect(masterBus));
     	    
-    	        let lastNode: AudioNode = masterBus;
-    	    
-    	        if (filterRouting === 'series') {
-    	            if (filter1State.enabled) { lastNode.connect(f1); lastNode = f1; }
-    	            if (filter2State.enabled) { lastNode.connect(f2); lastNode = f2; }
-    	        } else { // Parallel
-    	            const parallelOutput = audioContext.createGain();
-    				let isAnyFilterEnabled = false;
-    	
-    				if (filter1State.enabled) {
-    					masterBus.connect(f1);
-    					f1.connect(parallelOutput);
-    					isAnyFilterEnabled = true;
-    				}
-    				if (filter2State.enabled) {
-    					masterBus.connect(f2);
-    					f2.connect(parallelOutput);
-    					isAnyFilterEnabled = true;
-    				}
-    				
-    				if (!isAnyFilterEnabled) {
-    					masterBus.connect(parallelOutput);
-    				}
-    	            
-    				lastNode = parallelOutput;
-    	        }
-    	
-    	        masterEffects.forEach(effect => {
-    	            if (effect.enabled) {
-    	                const effectNodes = effectNodesRef.current.get(effect.id);
-    	                if (effectNodes) {
-    	                    lastNode.connect(effectNodes.input);
-    	                    lastNode = effectNodes.output;
+    	        const lastFilterNode = (() => {
+    	            if (filterRouting === 'series') {
+    	                let node: AudioNode = masterBus;
+    	                if (filter1State.enabled) {
+    	                    node.connect(f1);
+    	                    node = f1;
     	                }
+    	                if (filter2State.enabled) {
+    	                    node.connect(f2);
+    	                    node = f2;
+    	                }
+    	                return node;
+    	            } else { // Parallel
+    	                const parallelOutput = audioContext.createGain();
+    	                let isAnyFilterEnabled = false;
+    	                if (filter1State.enabled) {
+    	                    masterBus.connect(f1);
+    	                    f1.connect(parallelOutput);
+    	                    isAnyFilterEnabled = true;
+    	                }
+    	                if (filter2State.enabled) {
+    	                    masterBus.connect(f2);
+    	                    f2.connect(parallelOutput);
+    	                    isAnyFilterEnabled = true;
+    	                }
+    	                if (!isAnyFilterEnabled) {
+    	                    masterBus.connect(parallelOutput);
+    	                }
+    	                return parallelOutput;
     	            }
-    	        });
+    	        })();
     	
-    	        lastNode.connect(masterVolumeNodeRef.current);
+    	        const enabledEffects = masterEffects.filter(effect => effect.enabled);
+    	        const finalEffectNode = enabledEffects.reduce((currentNode, effect) => {
+    	            const effectNodes = effectNodesRef.current.get(effect.id);
+    	            if (effectNodes) {
+    	                currentNode.connect(effectNodes.input);
+    	                return effectNodes.output;
+    	            }
+    	            return currentNode;
+    	        }, lastFilterNode);
+    	
+    	        finalEffectNode.connect(masterVolumeNodeRef.current);
     	        masterVolumeNodeRef.current.connect(masterAnalyserNodeRef.current);
     	        masterAnalyserNodeRef.current.connect(audioContext.destination);
     	    
