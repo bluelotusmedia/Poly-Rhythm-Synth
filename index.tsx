@@ -4888,6 +4888,7 @@ const App: React.FC = () => {
     		useEffect(() => {
     	        if (!audioContext || !masterVolumeNodeRef.current || !filterNodesRef.current || !masterAnalyserNodeRef.current) return;
     	    
+				masterVolumeNodeRef.current.disconnect();
 				if (!masterBusRef.current) {
 					masterBusRef.current = audioContext.createGain();
 				}
