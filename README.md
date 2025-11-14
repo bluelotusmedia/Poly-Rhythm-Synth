@@ -8,6 +8,7 @@ Poly-Rhythm Synth is a powerful and versatile web-based synthesizer that special
     *   **Synth Layer:** Sine, square, sawtooth, and triangle oscillators.
     *   **Noise Layer:** White, pink, and brown noise.
     *   **Sampler Layer:** Load your own samples, record audio directly in the browser, or process live audio input. Features a granular synthesis mode with control over grain size, density, position, and jitter.
+    *   **ADSR Envelope:** Each engine has its own ADSR envelope for detailed amplitude shaping.
 *   **Euclidean Rhythm Sequencers:** Each engine has its own circular sequencer with live spectral audio feedback based on Euclidean algorithms, making it easy to generate complex and interesting polyrhythms. Control steps, pulses, and rotation.
 *   **Melodic Sequencing:** Each step in a sequence can be assigned a specific frequency, allowing for the creation of intricate melodies.
 *   **Advanced Modulation Matrix:**
@@ -47,7 +48,7 @@ Poly-Rhythm Synth is built with modern web technologies, ensuring a high-perform
     ```bash
     npm run dev
     ```
-    The application will be available at a local port (usually `http://localhost:5173` or similar).
+    The application will be available at a local port (usually `http://localhost:3000` or similar).
 
 ## Controls Overview
 

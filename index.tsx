@@ -1,3 +1,5 @@
+
+
 import React, {
 	useState,
 	useRef,
@@ -6,14 +8,13 @@ import React, {
 	useMemo,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { GoogleGenAI } from "@google/genai";
 
 // --- Type Definitions ---
 type OscillatorType = "sine" | "square" | "sawtooth" | "triangle";
 type NoiseType = "white" | "pink" | "brown";
 type LFO_Shape = "sine" | "square" | "sawtooth" | "triangle" | "ramp";
 type FilterType = "lowpass" | "highpass" | "bandpass" | "notch";
-type RandomizeMode = "chaos" | "harmonic" | "rhythmic";
+type RandomizeMode = "chaos" | "melodic" | "rhythmic";
 type EngineLayerType = "synth" | "noise" | "sampler";
 type DistortionMode = "overdrive" | "soft clip" | "hard clip" | "foldback";
 type FilterRouting = "series" | "parallel";
@@ -59,7 +60,6 @@ interface SynthLayerState {
 	frequency: number;
 	oscillatorType: OscillatorType;
 	solfeggioFrequency: string;
-	frequencyOverride: boolean;
 }
 interface NoiseLayerState {
 	enabled: boolean;
@@ -178,6 +178,14 @@ type TuningSystem =
 	| "none";
 
 // --- New Audio Node Types ---
+interface MasterEffectNodes {
+    id: string;
+    type: MasterEffectType;
+    input: AudioNode;
+    output: AudioNode;
+    nodes: any; // Store internal nodes like delay, feedback, etc.
+}
+
 interface LayerAudioNodes {
 	sourceNode?: OscillatorNode | AudioBufferSourceNode;
 	volumeGain: GainNode;
@@ -225,10 +233,13 @@ interface LfoRoutingBusses {
 }
 
 interface ActiveVoice {
+	noteId: string;
+	engineId: string;
 	sourceNodes: (OscillatorNode | AudioBufferSourceNode)[];
 	envelopeGain: GainNode;
-	noiseNodes?: (AudioBufferSourceNode | GainNode)[];
 	timeoutId?: number;
+    granularModeEnabled?: boolean;
+    nextGrainTime?: number;
 }
 
 // --- Component Props ---
@@ -260,8 +271,6 @@ interface EngineControlsProps {
 	onToggleLiveInput: (engineId: string, enabled: boolean) => void;
 	onRandomize: (mode: RandomizeMode, scope: string) => void;
 	onInitialize: (scope: string) => void;
-	onGenerateSequence: (engineId: string) => void;
-	isGenerating: boolean;
 	analyserNode?: AnalyserNode;
 	currentStep: number;
 	isTransportPlaying: boolean;
@@ -269,6 +278,8 @@ interface EngineControlsProps {
 	lockState: LockState;
 	onToggleLock: (path: string) => void;
 	harmonicTuningSystem: TuningSystem;
+	scaleFrequencies: { value: number; label: string }[];
+	onSnapToScale: (engineId: string) => void;
 }
 
 interface TopBarProps {
@@ -288,7 +299,8 @@ interface TopBarProps {
 }
 
 interface MainControlPanelProps {
-	onRandomize: (mode: RandomizeMode, scope: "global" | "routing") => void;
+	onRandomize: (mode: RandomizeMode, scope: string) => void;
+	onInitializeAll: () => void;
 	isMorphing: boolean;
 	morphTime: number;
 	setMorphTime: (duration: number) => void;
@@ -319,6 +331,10 @@ interface MainControlPanelProps {
 	setGlobalAutoRandomInterval: (interval: number) => void;
 	globalAutoRandomMode: RandomizeMode;
 	setGlobalAutoRandomMode: (mode: RandomizeMode) => void;
+	isAutoRandomSynced: boolean;
+	setIsAutoRandomSynced: (synced: boolean) => void;
+	autoRandomSyncRateIndex: number;
+	setAutoRandomSyncRateIndex: (index: number) => void;
 }
 
 interface FilterState {
@@ -420,8 +436,18 @@ const mariaRenoldFrequencies = [
 const musicalScales = {
 	major: [0, 2, 4, 5, 7, 9, 11],
 	minor: [0, 2, 3, 5, 7, 8, 10],
+	dorian: [0, 2, 3, 5, 7, 9, 10],
+	phrygian: [0, 1, 3, 5, 7, 8, 10],
+	lydian: [0, 2, 4, 6, 7, 9, 11],
+	mixolydian: [0, 2, 4, 5, 7, 9, 10],
 	pentatonicMajor: [0, 2, 4, 7, 9],
 	pentatonicMinor: [0, 3, 5, 7, 10],
+	blues: [0, 3, 5, 6, 7, 10],
+	harmonicMinor: [0, 2, 3, 5, 7, 8, 11],
+	phrygianDominant: [0, 1, 4, 5, 7, 8, 10],
+	inSen: [0, 1, 5, 7, 8],
+	prometheus: [0, 2, 4, 6, 9, 10],
+	wholeTone: [0, 2, 4, 6, 8, 10],
 	chromatic: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
 };
 type ScaleName = keyof typeof musicalScales;
@@ -522,9 +548,8 @@ const getInitialState = () => {
 				enabled: true,
 				volume: 0.7,
 				frequency: 220,
-				oscillatorType: "sine" as OscillatorType,
+				oscillatorType: "sawtooth" as OscillatorType,
 				solfeggioFrequency: "528",
-				frequencyOverride: false,
 			},
 			noise: { enabled: false, volume: 0.2, noiseType: "white" as NoiseType },
 			sampler: {
@@ -532,7 +557,7 @@ const getInitialState = () => {
 				volume: 0.8,
 				sampleName: null,
 				transpose: 0,
-				granularModeEnabled: false,
+				granularModeEnabled: true,
 				grainSize: 0.1,
 				grainDensity: 10,
 				playbackPosition: 0,
@@ -554,20 +579,19 @@ const getInitialState = () => {
 			sequencerEnabled: true,
 			midiControlled: true,
 			synth: {
-				enabled: true,
+				enabled: false,
 				volume: 0.7,
 				frequency: 440,
 				oscillatorType: "sawtooth" as OscillatorType,
 				solfeggioFrequency: "417",
-				frequencyOverride: false,
 			},
 			noise: { enabled: false, volume: 0.2, noiseType: "pink" as NoiseType },
 			sampler: {
-				enabled: false,
+				enabled: true,
 				volume: 0.8,
 				sampleName: null,
 				transpose: 0,
-				granularModeEnabled: false,
+				granularModeEnabled: true,
 				grainSize: 0.1,
 				grainDensity: 10,
 				playbackPosition: 0,
@@ -589,20 +613,19 @@ const getInitialState = () => {
 			sequencerEnabled: true,
 			midiControlled: true,
 			synth: {
-				enabled: true,
+				enabled: false,
 				volume: 0.7,
 				frequency: 110,
-				oscillatorType: "square" as OscillatorType,
+				oscillatorType: "sawtooth" as OscillatorType,
 				solfeggioFrequency: "396",
-				frequencyOverride: false,
 			},
 			noise: { enabled: false, volume: 0.2, noiseType: "brown" as NoiseType },
 			sampler: {
-				enabled: false,
+				enabled: true,
 				volume: 0.8,
 				sampleName: null,
 				transpose: 0,
-				granularModeEnabled: false,
+				granularModeEnabled: true,
 				grainSize: 0.1,
 				grainDensity: 10,
 				playbackPosition: 0,
@@ -689,21 +712,30 @@ const getInitialLockState = (): LockState => {
 					sequencerRotate: false,
 					sequencerRate: false,
 					synth: {
+						enabled: false,
 						volume: true,
 						oscillatorType: false,
 						solfeggioFrequency: false,
 						frequency: false,
 					},
-					noise: { volume: true, noiseType: false },
+					noise: {
+						enabled: false,
+						volume: true,
+						noiseType: false,
+					},
 					sampler: {
+						enabled: false,
 						volume: true,
 						transpose: false,
+						granularModeEnabled: false,
 						grainSize: false,
 						grainDensity: false,
 						playbackPosition: false,
 						positionJitter: false,
+						liveInputEnabled: false,
 					},
 					adsr: { attack: true, decay: true, sustain: true, release: true },
+					effects: { distortion: false, delayTime: false, delayFeedback: false },
 				},
 			])
 		),
@@ -719,8 +751,8 @@ const getInitialLockState = (): LockState => {
 				},
 			])
 		),
-		filter1: { cutoff: false, resonance: false, type: false },
-		filter2: { cutoff: false, resonance: false, type: false },
+		filter1: { enabled: false, cutoff: false, resonance: false, type: false },
+		filter2: { enabled: false, cutoff: false, resonance: false, type: false },
 		masterEffects: Object.fromEntries(
 			availableMasterEffects.map((type) => {
 				const defaultParams = getDefaultEffectParams(type);
@@ -780,24 +812,134 @@ const getDefaultEffectParams = (
 	}
 };
 
+const createRandomizedEffectParams = (
+	effect: MasterEffect,
+	mode: RandomizeMode
+): MasterEffect["params"] => {
+	const { type, params: currentParams } = effect;
+
+	// Helper to check if a param should be randomized
+	const shouldRandomize = (paramType: "rhythmic" | "melodic") => {
+		if (mode === "chaos") return true;
+		if (mode === "rhythmic" && paramType === "rhythmic") return true;
+		if (mode === "melodic" && paramType === "melodic") return true;
+		return false;
+	};
+
+	switch (type) {
+		case "distortion": {
+			const p = currentParams.distortion!;
+			if (!shouldRandomize("melodic")) return { distortion: p };
+			return {
+				distortion: {
+					mode: getRandomElement(distortionModes),
+					amount: getRandom(0, 1),
+				},
+			};
+		}
+		case "delay": {
+			const p = currentParams.delay!;
+			return {
+				delay: {
+					time: shouldRandomize("rhythmic") ? getRandom(0.01, 2) : p.time,
+					feedback: shouldRandomize("melodic") ? getRandom(0, 0.95) : p.feedback,
+					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
+				},
+			};
+		}
+		case "reverb": {
+			const p = currentParams.reverb!;
+			if (!shouldRandomize("melodic")) return { reverb: p };
+			return {
+				reverb: {
+					decay: getRandom(0.5, 8),
+					mix: getRandom(0.1, 1),
+				},
+			};
+		}
+		case "chorus": {
+			const p = currentParams.chorus!;
+			return {
+				chorus: {
+					rate: shouldRandomize("rhythmic") ? getRandom(0.1, 8) : p.rate,
+					depth: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.depth,
+					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
+				},
+			};
+		}
+		case "flanger": {
+			const p = currentParams.flanger!;
+			return {
+				flanger: {
+					rate: shouldRandomize("rhythmic") ? getRandom(0.1, 5) : p.rate,
+					depth: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.depth,
+					delay: shouldRandomize("rhythmic")
+						? getRandom(0.001, 0.02)
+						: p.delay,
+					feedback: shouldRandomize("melodic") ? getRandom(0, 0.95) : p.feedback,
+					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
+				},
+			};
+		}
+		case "phaser": {
+			const p = currentParams.phaser!;
+			return {
+				phaser: {
+					rate: shouldRandomize("rhythmic") ? getRandom(0.1, 8) : p.rate,
+					stages: shouldRandomize("melodic")
+						? getRandomElement([2, 4, 6, 8, 10, 12])
+						: p.stages,
+					q: shouldRandomize("melodic") ? getRandom(1, 20) : p.q,
+					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
+				},
+			};
+		}
+		case "tremolo": {
+			const p = currentParams.tremolo!;
+			return {
+				tremolo: {
+					rate: shouldRandomize("rhythmic") ? getRandom(2, 20) : p.rate,
+					depth: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.depth,
+					shape: shouldRandomize("rhythmic")
+						? getRandomElement(lfoShapes)
+						: p.shape,
+					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
+				},
+			};
+		}
+		case "eq": {
+			const p = currentParams.eq!;
+			if (!shouldRandomize("melodic")) return { eq: p };
+			return {
+				eq: {
+					bands: Array(8)
+						.fill(0)
+						.map(() => getRandom(-12, 12)),
+				},
+			};
+		}
+		default:
+			return currentParams;
+	}
+};
+
 // --- Utility Functions ---
 const generateEuclideanPattern = (steps: number, pulses: number): number[] => {
-	if (pulses > steps || pulses <= 0 || steps <= 0) {
+	pulses = Math.min(steps, pulses);
+	if (pulses <= 0 || steps <= 0) {
 		return new Array(steps).fill(0);
 	}
-	const pattern: number[][] = [];
+
+	const pattern = new Array(steps).fill(0);
+	let accumulator = 0;
 	for (let i = 0; i < steps; i++) {
-		pattern.push(i < pulses ? [1] : [0]);
-	}
-	while (true) {
-		let q = Math.floor((pattern.length - pulses) / pulses);
-		if (q === 0) break;
-		let elementsToMove = pattern.splice(pulses);
-		for (let i = 0; i < elementsToMove.length; i++) {
-			pattern[i % pulses].push(...elementsToMove[i]);
+		accumulator += pulses;
+		if (accumulator >= steps) {
+			accumulator -= steps;
+			pattern[i] = 1;
 		}
 	}
-	return pattern.flat();
+	return pattern;
 };
 
 const rotatePattern = (pattern: number[], rotation: number): number[] => {
@@ -816,6 +958,63 @@ function getRandomElement<T>(arr: readonly T[] | T[]): T {
 	return arr[Math.floor(Math.random() * arr.length)];
 }
 
+const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
+
+
+const calculateLFOValue = (lfo: LFOState, time: number, bpm: number): number => {
+    let lfoFrequency = lfo.rate;
+    if (lfo.sync) {
+        const syncRate = lfo.syncRate;
+        let noteValueInBeats = 1;
+        const isDotted = syncRate.endsWith("d");
+        const cleanRate = syncRate.replace("d", "");
+
+        if (cleanRate.includes("/")) {
+            const parts = cleanRate.split("/");
+            const denominator = parseFloat(parts[1]);
+            if (denominator) noteValueInBeats = 4 / denominator;
+        } else {
+            const val = parseFloat(cleanRate);
+            if (val) noteValueInBeats = 4 / val;
+        }
+
+        if (isDotted) {
+            noteValueInBeats *= 1.5;
+        }
+
+        const durationInSeconds = noteValueInBeats * (60 / bpm);
+        if (durationInSeconds > 0) {
+            lfoFrequency = 1 / durationInSeconds;
+        }
+    }
+
+    if (lfoFrequency === 0) return 0;
+
+    const phase = (time * lfoFrequency) % 1.0;
+    let y = 0;
+    switch (lfo.shape) {
+        case "sine":
+            y = Math.sin(phase * 2 * Math.PI);
+            break;
+        case "square":
+            y = phase < 0.5 ? 1 : -1;
+            break;
+        case "sawtooth":
+            y = 1 - 2 * phase; // Correct sawtooth
+            break;
+        case "ramp":
+            y = 2 * phase - 1;
+            break;
+        case "triangle":
+            y = 2 * (1 - Math.abs(2 * phase - 1)) - 1;
+            break;
+        default:
+            y = 0;
+    }
+    // Return value is from -1 to 1, which will be scaled by depth later.
+    return y * lfo.depth;
+};
+
 function shuffleArray<T>(array: T[]): T[] {
 	const newArray = [...array];
 	for (let i = newArray.length - 1; i > 0; i--) {
@@ -824,6 +1023,46 @@ function shuffleArray<T>(array: T[]): T[] {
 	}
 	return newArray;
 }
+const calculateTimeFromSync = (
+	bpm: number,
+	isSynced: boolean,
+	syncRateIndex: number,
+	syncRates: string[],
+	defaultTimeMs: number
+): number => {
+	if (!isSynced || syncRateIndex < 0 || syncRateIndex >= syncRates.length) {
+		return defaultTimeMs;
+	}
+	const rateStr = syncRates[syncRateIndex];
+	if (!rateStr) return defaultTimeMs;
+
+	const isDotted = rateStr.endsWith("d");
+	const cleanRateStr = rateStr.replace("d", "");
+
+	const beatDurationMs = (60 / bpm) * 1000;
+
+	let multiplier = 1;
+	// The sync rates are based on a whole note being 4 beats.
+	// A "1/4" note is one beat.
+	if (cleanRateStr.includes("/")) {
+		const [numerator, denominator] = cleanRateStr.split("/").map(Number);
+		if (!isNaN(numerator) && !isNaN(denominator) && denominator !== 0) {
+			multiplier = (numerator / denominator) * 4;
+		}
+	} else {
+		const val = parseFloat(cleanRateStr);
+		if (!isNaN(val)) {
+			multiplier = val * 4;
+		}
+	}
+
+	let time = beatDurationMs * multiplier;
+	if (isDotted) {
+		time *= 1.5;
+	}
+
+	return time;
+};
 
 const getNoteFromScale = (
 	rootFreq: number,
@@ -942,13 +1181,27 @@ const midiNoteToFrequency = (note: number, tuning: TuningSystem): number => {
 			const baseOctave = 4; // C4 is MIDI note 60
 			const midiNoteC4 = 60;
 			const octaveOffset = Math.floor((note - midiNoteC4) / 12);
-			const semi = (note - midiNoteC4) % 12;
+			const semi = ((note - midiNoteC4) + 12) % 12;
 			const frequency = mariaRenoldFrequencies[semi];
 			return frequency * Math.pow(2, octaveOffset);
 		}
 		default:
 			return 440 * Math.pow(2, (note - 69) / 12);
 	}
+};
+
+const frequencyToMidiNote = (freq: number): number => {
+    return Math.log2(freq / 440) * 12 + 69;
+}
+
+const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const frequencyToNoteName = (freq: number): string => {
+	if (freq <= 0) return "";
+	const noteNum = 12 * Math.log2(freq / 440);
+	const roundedNote = Math.round(noteNum) + 69;
+	const octave = Math.floor(roundedNote / 12) - 1;
+	const noteIndex = roundedNote % 12;
+	return `${noteNames[noteIndex]}${octave}`;
 };
 
 // --- Components ---
@@ -1128,31 +1381,23 @@ const CircularVisualizerSequencer: React.FC<
 };
 
 const ChaosIcon = () => (
-	<svg
-		xmlns="http://www.w3.org/2000/svg"
-		viewBox="0 0 24 24"
-		fill="currentColor"
-	>
-		<path d="M20.5 3.4A1.5 1.5 0 0 0 19 2H5a1.5 1.5 0 0 0-1.5 1.5v14a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5zM8 12a1.5 1.5 0 1 1-1.5-1.5A1.5 1.5 0 0 1 8 12zm4-4a1.5 1.5 0 1 1-1.5-1.5A1.5 1.5 0 0 1 12 8zm0 8a1.5 1.5 0 1 1-1.5-1.5A1.5 1.5 0 0 1 12 16zm4-4a1.5 1.5 0 1 1-1.5-1.5A1.5 1.5 0 0 1 16 12z"></path>
-	</svg>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 5V2M5 12H2M19 12h3M12 22v-3M7.05 7.05l-2.12-2.12M17 17l2.12 2.12M7.05 17l-2.12 2.12M17 7.05l2.12-2.12"/>
+        <path d="M16 8A5 5 0 0 0 8.5 4.5"/>
+        <path d="M8 16a5 5 0 0 0 7.5 3.5"/>
+    </svg>
 );
-const HarmonicIcon = () => (
-	<svg
-		xmlns="http://www.w3.org/2000/svg"
-		viewBox="0 0 24 24"
-		fill="currentColor"
-	>
-		<path d="M15.75,7.5a1.5,1.5,0,0,1-3,0A1.5,1.5,0,0,1,15.75,7.5Zm-6,0a1.5,1.5,0,0,1-3,0A1.5,1.5,0,0,1,9.75,7.5Zm-6,0a1.5,1.5,0,0,1-3,0A1.5,1.5,0,0,1,3.75,7.5ZM21.75,12a1.5,1.5,0,0,0,0-3H2.25a1.5,1.5,0,0,0,0,3ZM15.75,16.5a1.5,1.5,0,0,1-3,0A1.5,1.5,0,0,1,15.75,16.5Zm-6,0a1.5,1.5,0,0,1-3,0A1.5,1.5,0,0,1,9.75,16.5Zm-6,0a1.5,1.5,0,0,1-3,0A1.5,1.5,0,0,1,3.75,16.5Z"></path>
-	</svg>
+const MelodicIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1">
+        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55c-2.21 0-4 1.79-4 4s1.79 4 4 4s4-1.79 4-4V7h4V3h-6z"/>
+    </svg>
 );
 const RhythmicIcon = () => (
-	<svg
-		xmlns="http://www.w3.org/2000/svg"
-		viewBox="0 0 24 24"
-		fill="currentColor"
-	>
-		<path d="M2.25,12a1.5,1.5,0,0,0,3,0H2.25Zm16.5,0a1.5,1.5,0,0,0,3,0H18.75ZM10.5,12a1.5,1.5,0,0,0,3,0H10.5ZM12,21.75a1.5,1.5,0,0,0,0-3v3Zm0-16.5a1.5,1.5,0,0,0,0-3v3ZM12,6h0a1.5,1.5,0,0,0-3,0H12Zm0,12h0a1.5,1.5,0,0,0-3,0H12ZM6,12h0a1.5,1.5,0,0,0-3,0H6Zm12,0h0a1.5,1.5,0,0,0-3,0H18Z"></path>
-	</svg>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="4" width="2" height="16" />
+        <rect x="11" y="9" width="2" height="6" />
+        <rect x="16" y="6" width="2" height="12" />
+    </svg>
 );
 const InitializeIcon = () => (
 	<svg
@@ -1160,7 +1405,7 @@ const InitializeIcon = () => (
 		viewBox="0 0 24 24"
 		fill="currentColor"
 	>
-		<path d="M12 2.5A9.5 9.5 0 0 0 2.5 12a1.5 1.5 0 0 0 3 0A6.5 6.5 0 0 1 12 5.5a1.5 1.5 0 0 0 0-3Zm0 19A9.5 9.5 0 0 0 21.5 12a1.5 1.5 0 0 0-3 0A6.5 6.5 0 0 1 12 18.5a1.5 1.5 0 0 0 0 3Z"></path>
+		<path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"></path>
 	</svg>
 );
 const LockIcon = ({
@@ -1298,6 +1543,7 @@ const TopBar: React.FC<TopBarProps> = ({
 
 const MainControlPanel: React.FC<MainControlPanelProps> = ({
 	onRandomize,
+	onInitializeAll,
 	isMorphing,
 	morphTime,
 	setMorphTime,
@@ -1327,11 +1573,15 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 	setGlobalAutoRandomInterval,
 	globalAutoRandomMode,
 	setGlobalAutoRandomMode,
+	isAutoRandomSynced,
+	setIsAutoRandomSynced,
+	autoRandomSyncRateIndex,
+	setAutoRandomSyncRateIndex,
 }) => {
 	return (
 		<div className="main-control-panel">
 			<div className="sub-control-group">
-				<h2>Generative Tools</h2>
+				<h2>Randomorph</h2>
 				<div className="control-row">
 					<label>Harmonic Mode</label>
 					<select
@@ -1353,26 +1603,33 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 					</select>
 				</div>
 				<div className="control-row">
-					<label>Random Morph</label>
+					<label>Actions</label>
 					<div className="randomizer-buttons-group">
+						<button
+							className="icon-button init-button"
+							onClick={onInitializeAll}
+							title="Initialize Patch"
+						>
+							<InitializeIcon />
+						</button>
 						<button
 							className="icon-button"
 							onClick={() => onRandomize("chaos", "global")}
-							title="Chaos Morph"
+							title="Global Chaos Morph"
 						>
 							<ChaosIcon />
 						</button>
 						<button
 							className="icon-button"
-							onClick={() => onRandomize("harmonic", "global")}
-							title="Harmonic Morph"
+							onClick={() => onRandomize("melodic", "global")}
+							title="Global Melodic Morph"
 						>
-							<HarmonicIcon />
+							<MelodicIcon />
 						</button>
 						<button
 							className="icon-button"
 							onClick={() => onRandomize("rhythmic", "global")}
-							title="Rhythmic Morph"
+							title="Global Rhythmic Morph"
 						>
 							<RhythmicIcon />
 						</button>
@@ -1410,32 +1667,6 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 							))}
 						</select>
 					)}
-				</div>
-				<div className="control-row">
-					<label>Global Randomize</label>
-					<div className="randomizer-buttons-group">
-						<button
-							className="icon-button"
-							onClick={() => onRandomize("chaos", "global-immediate")}
-							title="Global Chaos"
-						>
-							<ChaosIcon />
-						</button>
-						<button
-							className="icon-button"
-							onClick={() => onRandomize("harmonic", "global-immediate")}
-							title="Global Harmonic"
-						>
-							<HarmonicIcon />
-						</button>
-						<button
-							className="icon-button"
-							onClick={() => onRandomize("rhythmic", "global-immediate")}
-							title="Global Rhythmic"
-						>
-							<RhythmicIcon />
-						</button>
-					</div>
 				</div>
 			</div>
 			<div className="sub-control-group">
@@ -1503,7 +1734,7 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 							>
 								{Object.keys(musicalScales).map((scaleName) => (
 									<option key={scaleName} value={scaleName}>
-										{scaleName}
+										{scaleName.charAt(0).toUpperCase() + scaleName.slice(1).replace(/([A-Z])/g, ' $1').trim()}
 									</option>
 								))}
 							</select>
@@ -1549,10 +1780,30 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 							onChange={(e) =>
 								setGlobalAutoRandomInterval(parseInt(e.target.value))
 							}
-							disabled={!isGlobalAutoRandomEnabled}
+							disabled={!isGlobalAutoRandomEnabled || isAutoRandomSynced}
 						/>
 						<span>{globalAutoRandomInterval / 1000} s</span>
 					</div>
+					<button
+						className={`small ${isAutoRandomSynced ? "active" : ""}`}
+						onClick={() => setIsAutoRandomSynced(!isAutoRandomSynced)}
+					>
+						Sync
+					</button>
+					{isAutoRandomSynced && (
+						<select
+							value={autoRandomSyncRateIndex}
+							onChange={(e) =>
+								setAutoRandomSyncRateIndex(parseInt(e.target.value))
+							}
+						>
+							{syncRates.map((rate, i) => (
+								<option key={i} value={i}>
+									{rate}
+								</option>
+							))}
+						</select>
+					)}
 				</div>
 				<div className="control-row">
 					<label>Mode</label>
@@ -1564,7 +1815,7 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 						disabled={!isGlobalAutoRandomEnabled}
 					>
 						<option value="chaos">Chaos</option>
-						<option value="harmonic">Harmonic</option>
+						<option value="melodic">Melodic</option>
 						<option value="rhythmic">Rhythmic</option>
 					</select>
 				</div>
@@ -1583,8 +1834,6 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 	onToggleLiveInput,
 	onRandomize,
 	onInitialize,
-	onGenerateSequence,
-	isGenerating,
 	analyserNode,
 	currentStep,
 	isTransportPlaying,
@@ -1592,8 +1841,10 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 	lockState,
 	onToggleLock,
 	harmonicTuningSystem,
+	scaleFrequencies,
+	onSnapToScale,
 }) => {
-	const [activeTab, setActiveTab] = useState<EngineLayerType>("synth");
+	const [activeTab, setActiveTab] = useState<EngineLayerType>("sampler");
 	const dropZoneRef = useRef<HTMLDivElement>(null);
 
 	const [isRecording, setIsRecording] = useState(false);
@@ -1609,6 +1860,15 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 		}
 		return !!current;
 	};
+
+	const isFrequencyOverridden = useMemo(() => {
+		if (!scaleFrequencies || scaleFrequencies.length === 0) return false;
+		// Use a small tolerance for floating point comparison
+		const tolerance = 0.1; // in Hz
+		return !scaleFrequencies.some(
+			(f) => Math.abs(f.value - engine.synth.frequency) < tolerance
+		);
+	}, [engine.synth.frequency, scaleFrequencies]);
 
 	const handleDragOver = (e: React.DragEvent) => {
 		e.preventDefault();
@@ -1712,10 +1972,10 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 						</button>
 						<button
 							className="icon-button"
-							onClick={() => onRandomize("harmonic", engine.id)}
-							title="Harmonic"
+							onClick={() => onRandomize("melodic", engine.id)}
+							title="Melodic"
 						>
-							<HarmonicIcon />
+							<MelodicIcon />
 						</button>
 						<button
 							className="icon-button"
@@ -1825,15 +2085,6 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 					/>
 				</div>
 			</div>
-			<div className="control-row">
-				<label>Generative Sequencer</label>
-				<button
-					onClick={() => onGenerateSequence(engine.id)}
-					disabled={isGenerating}
-				>
-					{isGenerating ? "Generating..." : "✨ Generate"}
-				</button>
-			</div>
 
 			<div className="tab-nav">
 				{(["synth", "noise", "sampler"] as EngineLayerType[]).map((layer) => (
@@ -1917,21 +2168,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 								/>
 							</div>
 						</div>
-						<div className="control-row">
-							<label>Frequency Override</label>
-							<button
-								className={`small ${
-									engine.synth.frequencyOverride ? "active" : ""
-								}`}
-								onClick={() =>
-									onLayerUpdate(engine.id, "synth", {
-										frequencyOverride: !engine.synth.frequencyOverride,
-									})
-								}
-							>
-								{engine.synth.frequencyOverride ? "On" : "Off"}
-							</button>
-						</div>
+
 						<div className="control-row">
 							<label>Frequency</label>
 							<div className="control-value-wrapper control-with-lock">
@@ -1946,7 +2183,6 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 											frequency: parseFloat(e.target.value),
 										})
 									}
-									disabled={!engine.synth.frequencyOverride}
 								/>
 								<span>{engine.synth.frequency.toFixed(0)} Hz</span>
 								<LockIcon
@@ -1959,25 +2195,24 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 							</div>
 						</div>
 						<div className="control-row">
-							<label>
-								{harmonicTuningSystem === "solfeggio"
-									? "Solfeggio Freq"
-									: "Note"}
-							</label>
+							<label>Scale Note</label>
 							<div className="control-with-lock">
 								<select
-									value={engine.synth.solfeggioFrequency}
+									value={
+										isFrequencyOverridden ? "custom" : engine.synth.frequency
+									}
 									onChange={(e) =>
 										onLayerUpdate(engine.id, "synth", {
-											solfeggioFrequency: e.target.value,
+											frequency: parseFloat(e.target.value),
 										})
 									}
-									disabled={
-										engine.synth.frequencyOverride ||
-										harmonicTuningSystem !== "solfeggio"
-									}
 								>
-									{solfeggioFrequenciesData.map((f) => (
+									{isFrequencyOverridden && (
+										<option value="custom" disabled>
+											Custom Freq
+										</option>
+									)}
+									{scaleFrequencies.map((f) => (
 										<option key={f.value} value={f.value}>
 											{f.label}
 										</option>
@@ -1992,8 +2227,22 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 											`engines.${engine.id}.synth.solfeggioFrequency`
 										)
 									}
-									title="Lock Solfeggio Frequency"
+									title="Lock Preset Note"
 								/>
+							</div>
+							<div className="snap-control">
+								<div
+									className="snap-indicator"
+									style={{ opacity: isFrequencyOverridden ? 1 : 0 }}
+									title="Frequency is off-scale"
+								/>
+								<button
+									className="small"
+									onClick={() => onSnapToScale(engine.id)}
+									title="Snap to nearest scale note"
+								>
+									Snap
+								</button>
 							</div>
 						</div>
 					</>
@@ -2432,10 +2681,10 @@ const MasterFilterControls: React.FC<MasterFilterControlsProps> = ({
 					</button>
 					<button
 						className="icon-button"
-						onClick={() => onRandomize("harmonic", scope)}
-						title="Harmonic"
+						onClick={() => onRandomize("melodic", scope)}
+						title="Melodic"
 					>
-						<HarmonicIcon />
+						<MelodicIcon />
 					</button>
 					<button
 						className="icon-button"
@@ -2530,6 +2779,22 @@ const LfoVisualizer: React.FC<{
 		if (!ctx) return;
 		let animationFrameId: number;
 
+		let lfoFrequency = rate;
+		if (isSynced) {
+			let noteValueInBeats = 1;
+			const cleanRate = syncRate; // LFO rates are not dotted
+			if (cleanRate.includes("/")) {
+				const parts = cleanRate.split("/");
+				const denominator = parseFloat(parts[1]);
+				if (denominator) noteValueInBeats = 4 / denominator;
+			} else {
+				const val = parseFloat(cleanRate);
+				if (val) noteValueInBeats = 4 / val;
+			}
+			const durationInSeconds = noteValueInBeats * (60 / bpm);
+			if (durationInSeconds > 0) lfoFrequency = 1 / durationInSeconds;
+		}
+
 		const draw = (time: number) => {
 			const { width, height } = canvas;
 			ctx.clearRect(0, 0, width, height);
@@ -2538,11 +2803,7 @@ const LfoVisualizer: React.FC<{
 
 			ctx.beginPath();
 
-			const lfoRate = isSynced
-				? bpm /
-				  60 /
-				  (lfoSyncRates.indexOf(syncRate) === 4 ? 1 : parseFloat(syncRate) * 4) // Simplified conversion
-				: rate;
+			const lfoRate = lfoFrequency;
 
 			for (let x = 0; x < width; x++) {
 				const normalizedX = x / width;
@@ -2618,10 +2879,10 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 					</button>
 					<button
 						className="icon-button"
-						onClick={() => onRandomize("harmonic", lfoState.id)}
-						title="Harmonic"
+						onClick={() => onRandomize("melodic", lfoState.id)}
+						title="Melodic"
 					>
-						<HarmonicIcon />
+						<MelodicIcon />
 					</button>
 					<button
 						className="icon-button"
@@ -2811,10 +3072,10 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 							</button>
 							<button
 								className="icon-button"
-								onClick={() => onRandomize("harmonic", effect.id)}
-								title="Harmonic"
+								onClick={() => onRandomize("melodic", effect.id)}
+								title="Melodic"
 							>
-								<HarmonicIcon />
+								<MelodicIcon />
 							</button>
 							<button
 								className="icon-button"
@@ -3574,10 +3835,10 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 						</button>
 						<button
 							className="icon-button"
-							onClick={() => onRandomize("harmonic", "routing")}
-							title="Harmonic"
+							onClick={() => onRandomize("melodic", "routing")}
+							title="Melodic"
 						>
-							<HarmonicIcon />
+							<MelodicIcon />
 						</button>
 						<button
 							className="icon-button"
@@ -3635,16 +3896,19 @@ const App: React.FC = () => {
 	const lfoRoutingBussesRef = useRef<LfoRoutingBusses | null>(null);
 	const samplesRef = useRef<Map<string, AudioBuffer>>(new Map());
 	const activeVoicesRef = useRef<Map<string, ActiveVoice>>(new Map());
-	const activeMonoNotePerEngineRef = useRef<Map<string, number>>(new Map());
+	const activeMonoNotePerEngineRef = useRef<Map<string, {note: number, freq: number}>>(new Map());
 	const lastPlayedNotePerEngineRef = useRef<Map<string, number>>(new Map());
-	const effectNodesRef = useRef<Map<string, any>>(new Map());
+	const effectNodesRef = useRef<Map<string, MasterEffectNodes>>(new Map());
+    const noiseBuffersRef = useRef<Map<NoiseType, AudioBuffer>>(new Map());
+	const reverbImpulseCache = useRef<Map<string, AudioBuffer>>(new Map());
+	const dummyGainRef = useRef<GainNode | null>(null);
+	const sequencerModEventsRef = useRef<Map<string, {start: number, end: number}[]>>(new Map());
 
 	// --- State Management ---
 	const initialAppState = useMemo(() => getInitialState(), []);
 	const [engines, setEngines] = useState<EngineState[]>(
 		initialAppState.engines
 	);
-	const enginesRef = useRef(initialAppState.engines); // Corrected initialization
 	const [lfos, setLfos] = useState<LFOState[]>(initialAppState.lfos);
 	const [filter1State, setFilter1State] = useState<FilterState>(
 		initialAppState.filter1
@@ -3658,20 +3922,26 @@ const App: React.FC = () => {
 	const [masterEffects, setMasterEffects] = useState<MasterEffect[]>(
 		initialAppState.masterEffects
 	);
+	// Fix: Declare bpm before it is used in latestStateRef to avoid block-scoped variable error.
+	const [bpm, setBPM] = useState(120);
+	const [voicingMode, setVoicingMode] = useState<VoicingMode>("poly");
+	const [glideTime, setGlideTime] = useState(50); // ms
+	const [isGlideSynced, setIsGlideSynced] = useState(false);
+	const [glideSyncRateIndex, setGlideSyncRateIndex] = useState(3); // 1/8
 
-	// Add this useEffect to keep enginesRef updated
+	// Use a ref to get the latest state in audio callbacks
+	const latestStateRef = useRef({ engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex });
 	useEffect(() => {
-		enginesRef.current = engines;
-	}, [engines]);
+		latestStateRef.current = { engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex };
+	}, [engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex]);
+
 
 	const [masterVolume, setMasterVolume] = useState(0.7);
-	const [bpm, setBPM] = useState(120);
 	const [isTransportPlaying, setIsTransportPlaying] = useState(false);
-	const [currentStep, setCurrentStep] = useState(0);
+	const [sequencerCurrentSteps, setSequencerCurrentSteps] = useState<Map<string, number>>(new Map());
 	const [harmonicTuningSystem, setHarmonicTuningSystem] =
 		useState<TuningSystem>("440_ET");
 	const [isMorphing, setIsMorphing] = useState(false);
-	const [isGenerating, setIsGenerating] = useState(false);
 	const [scale, setScale] = useState<ScaleName>("major");
 	const [transpose, setTranspose] = useState(0);
 
@@ -3692,10 +3962,6 @@ const App: React.FC = () => {
 		null
 	);
 
-	const [voicingMode, setVoicingMode] = useState<VoicingMode>("poly");
-	const [glideTime, setGlideTime] = useState(50); // ms
-	const [isGlideSynced, setIsGlideSynced] = useState(false);
-	const [glideSyncRateIndex, setGlideSyncRateIndex] = useState(3); // 1/8
 	const syncRates = useMemo(
 		() => ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2"],
 		[]
@@ -3710,684 +3976,276 @@ const App: React.FC = () => {
 		useState(5000); // 5 seconds
 	const [globalAutoRandomMode, setGlobalAutoRandomMode] =
 		useState<RandomizeMode>("chaos");
+	const [isAutoRandomSynced, setIsAutoRandomSynced] = useState(false);
+	const [autoRandomSyncRateIndex, setAutoRandomSyncRateIndex] = useState(3); // Default to 1/8
 
-	const handleRandomize = (mode: RandomizeMode, scope: string) => {
-		const randomizeRouting = () => {
-			const newState = { ...DEFAULT_LFO_ROUTING_STATE };
-			const keys = Object.keys(newState) as (keyof LFORoutingState)[];
-			const numRoutings = getRandomInt(2, 6);
-			for (let i = 0; i < numRoutings; i++) {
-				newState[getRandomElement(keys)] = true;
-			}
-			return newState;
-		};
+	const scaleFrequencies = useMemo(() => {
+		if (harmonicTuningSystem === "none") return [];
+		if (harmonicTuningSystem === "solfeggio")
+			return solfeggioFrequenciesData.map((f) => ({
+				value: f.value,
+				label: f.label,
+			}));
+		if (harmonicTuningSystem === "wholesome_scale")
+			return wholesomeScaleFrequencies.map((f) => ({
+				value: f,
+				label: frequencyToNoteName(f),
+			}));
+		if (harmonicTuningSystem === "maria_renold_I")
+			return mariaRenoldFrequencies.map((f) => ({
+				value: f,
+				label: frequencyToNoteName(f),
+			}));
 
-		if (scope === "routing") {
-			setLfos((prev) =>
-				prev.map((lfo) => ({ ...lfo, routing: randomizeRouting() }))
-			);
-			setEngines((prev) =>
-				prev.map((engine) => ({ ...engine, routing: randomizeRouting() }))
-			);
-			return;
-		}
+		const notes: { value: number; label: string }[] = [];
+		const scaleSteps = musicalScales[scale];
+		const rootMidiNote = 60 + transpose; // C4 + transpose
 
-		let newGlobalHarmonicTuningSystem = harmonicTuningSystem;
-		if (mode === "harmonic" && scope === "global-immediate") {
-			newGlobalHarmonicTuningSystem = getRandomElement(availableTuningSystems);
-			setHarmonicTuningSystem(newGlobalHarmonicTuningSystem);
-
-			// Call helper functions for other modules
-			// These are now handled within createRandomizedState
-		} else if (mode === "rhythmic" && scope === "global-immediate") {
-			// These are now handled within createRandomizedState
-		}
-
-		const createRandomizedState = () => {
-			const newEngines = engines.map((engine): EngineState => {
-				if (
-					scope !== "global" &&
-					scope !== "global-immediate" &&
-					scope !== engine.id
-				)
-					return engine;
-				const locks = lockState.engines[engine.id];
-
-				let sequencerParams: Partial<EngineState> = {};
-				if (mode === "rhythmic" || mode === "chaos") {
-					sequencerParams = {
-						sequencerSteps: locks.sequencerSteps
-							? engine.sequencerSteps
-							: getRandomElement([8, 12, 16, 24, 32]),
-						sequencerPulses: locks.sequencerPulses
-							? engine.sequencerPulses
-							: getRandomInt(1, engine.sequencerSteps),
-						sequencerRotate: locks.sequencerRotate
-							? engine.sequencerRotate
-							: getRandomInt(0, engine.sequencerSteps - 1),
-						sequencerRate: locks.sequencerRate
-							? engine.sequencerRate
-							: getRandomElement(sequencerRates),
-					};
+		// Generate notes for a few octaves
+		for (let octave = -2; octave <= 3; octave++) {
+			for (const step of scaleSteps) {
+				const midiNote = rootMidiNote + octave * 12 + step;
+				if (midiNote >= 0 && midiNote <= 127) {
+					const freq = midiNoteToFrequency(midiNote, harmonicTuningSystem);
+					notes.push({ value: freq, label: frequencyToNoteName(freq) });
 				}
+			}
+		}
+		// Remove duplicates and sort
+		return [...new Map(notes.map((item) => [item.value, item])).values()].sort(
+			(a, b) => a.value - b.value
+		);
+	}, [harmonicTuningSystem, scale, transpose]);
 
-				let newMelodicSequence: number[] = [];
-				let newSynthState: Partial<SynthLayerState> = { ...engine.synth };
-				let newNoiseState: Partial<NoiseLayerState> = { ...engine.noise };
-				let newSamplerState: Partial<SamplerLayerState> = { ...engine.sampler };
-				let newAdsrState: Partial<ADSRState> = { ...engine.adsr };
-				let newEngineEffects: Partial<EffectState> = { ...engine.effects };
+	const handleRandomize = useCallback(
+		(mode: RandomizeMode, scope: string) => {
+			const randomizeRouting = () => {
+				const newState = { ...DEFAULT_LFO_ROUTING_STATE };
+				const keys = Object.keys(newState) as (keyof LFORoutingState)[];
+				const numRoutings = getRandomInt(2, 8);
+				for (let i = 0; i < numRoutings; i++) {
+					newState[getRandomElement(keys)] = getRandomBool();
+				}
+				return newState;
+			};
 
-				if (mode === "harmonic" || mode === "chaos") {
-					if (mode === "harmonic") {
-						// Harmonic randomization for synth parameters
-						if (!locks.synth.enabled) newSynthState.enabled = getRandomBool();
-						if (!locks.synth.oscillatorType)
-							newSynthState.oscillatorType = getRandomElement(oscillatorTypes);
-						if (!locks.synth.volume) newSynthState.volume = getRandom(0.3, 0.8);
-						if (!locks.synth.frequencyOverride)
-							newSynthState.frequencyOverride = getRandomBool(0.2); // Less likely to override
-						if (newSynthState.frequencyOverride && !locks.synth.frequency) {
-							// Harmonically relevant frequency override
-							const rootFreq = midiNoteToFrequency(
-								getRandomInt(40, 80),
-								newGlobalHarmonicTuningSystem
-							);
-							const currentScale = musicalScales[scale];
-							const ratios = currentScale.map((semitone) =>
+			if (scope === "routing") {
+				setLfos((prev) =>
+					prev.map((lfo) => ({ ...lfo, routing: randomizeRouting() }))
+				);
+				setEngines((prev) =>
+					prev.map((engine) => ({ ...engine, routing: randomizeRouting() }))
+				);
+				return;
+			}
+
+			const createRandomizedState = () => {
+				const newEngines = engines.map((engine): EngineState => {
+					if (scope !== "global" && scope !== engine.id) return engine;
+
+					const locks = lockState.engines[
+						engine.id
+					] as LockState["engines"]["engine1"];
+					const synthLocks = locks.synth as { [key: string]: boolean };
+					const noiseLocks = locks.noise as { [key: string]: boolean };
+					const samplerLocks = locks.sampler as { [key: string]: boolean };
+					const adsrLocks = locks.adsr as { [key: string]: boolean };
+
+					const shouldChangeRhythm = mode === "rhythmic" || mode === "chaos";
+					const shouldChangeMelody = mode === "melodic" || mode === "chaos";
+
+					// --- Rhythmic params ---
+					let newSteps = engine.sequencerSteps;
+					if (shouldChangeRhythm && !locks.sequencerSteps) {
+						newSteps = getRandomElement([8, 12, 16, 24, 32]);
+					}
+					let newPulses = engine.sequencerPulses;
+					if (shouldChangeRhythm && !locks.sequencerPulses) {
+						newPulses = getRandomInt(1, newSteps);
+					}
+					let newRotate = engine.sequencerRotate;
+					if (shouldChangeRhythm && !locks.sequencerRotate) {
+						newRotate = getRandomInt(0, newSteps - 1);
+					}
+					let newRate = engine.sequencerRate;
+					if (shouldChangeRhythm && !locks.sequencerRate) {
+						newRate = getRandomElement(sequencerRates);
+					}
+
+					// --- IMPORTANT: Regenerate sequence if rhythmic params changed ---
+					const newSequence = rotatePattern(
+						generateEuclideanPattern(newSteps, newPulses),
+						newRotate
+					);
+
+					// --- Melodic & Timbre params ---
+					let newMelodicSequence = [...engine.melodicSequence];
+					if (newSteps !== engine.sequencerSteps) {
+						// Resize if steps changed
+						const oldSequence = newMelodicSequence;
+						newMelodicSequence = Array(newSteps).fill(oldSequence[0] || 220);
+						for (let i = 0; i < newSteps; i++) {
+							newMelodicSequence[i] = oldSequence[i % oldSequence.length];
+						}
+					}
+
+					const newSynthState: Partial<SynthLayerState> = {};
+					const newNoiseState: Partial<NoiseLayerState> = {};
+					const newSamplerState: Partial<SamplerLayerState> = {};
+
+					if (shouldChangeMelody) {
+						let possibleNotes = scaleFrequencies.map((f) => f.value);
+						if (possibleNotes.length === 0) {
+							// Fallback if no scale is active
+							const rootFreq = midiNoteToFrequency(60 + transpose, "440_ET");
+							const currentScaleRatios = musicalScales[scale].map((semitone) =>
 								Math.pow(2, semitone / 12)
 							);
-							newSynthState.frequency = getNoteFromScale(rootFreq, ratios, 2); // 2 octaves
+							possibleNotes = Array(12)
+								.fill(0)
+								.map(() => getNoteFromScale(rootFreq, currentScaleRatios, 3));
 						}
-						if (!locks.synth.solfeggioFrequency)
-							newSynthState.solfeggioFrequency = getRandomElement(
-								solfeggioFrequenciesData.map((f) => f.value.toString())
-							);
 
-						// Harmonic randomization for noise parameters
-						if (!locks.noise.enabled) newNoiseState.enabled = getRandomBool(0.3); // Less likely to enable noise
-						if (!locks.noise.noiseType)
-							newNoiseState.noiseType = getRandomElement(noiseTypes);
-						if (!locks.noise.volume) newNoiseState.volume = getRandom(0.1, 0.4);
+						newMelodicSequence = newMelodicSequence.map(() =>
+							getRandomElement(possibleNotes)
+						);
 
-						// Harmonic randomization for sampler parameters
-						if (!locks.sampler.enabled) newSamplerState.enabled = getRandomBool(0.3); // Less likely to enable sampler
-						if (!locks.sampler.volume) newSamplerState.volume = getRandom(0.3, 0.8);
-						if (!locks.sampler.transpose)
-							newSamplerState.transpose = getRandomElement([-12, -7, 0, 5, 7, 12]); // Harmonically relevant transpositions
-						if (!locks.sampler.granularModeEnabled)
-							newSamplerState.granularModeEnabled = getRandomBool(0.1); // Even less likely for granular
-						if (newSamplerState.granularModeEnabled) {
-							if (!locks.sampler.grainSize)
-								newSamplerState.grainSize = getRandom(0.05, 0.2); // Smaller grain sizes
-							if (!locks.sampler.grainDensity)
-								newSamplerState.grainDensity = getRandomInt(10, 40);
-							if (!locks.sampler.playbackPosition)
-								newSamplerState.playbackPosition = getRandom(0.2, 0.8);
-							if (!locks.sampler.positionJitter)
-								newSamplerState.positionJitter = getRandom(0, 0.3);
-						}
-						if (!locks.sampler.liveInputEnabled)
-							newSamplerState.liveInputEnabled = getRandomBool(0.05); // Very unlikely for live input
-
-						// Harmonic randomization for ADSR
-						if (!locks.adsr.attack) newAdsrState.attack = getRandom(0.01, 0.5);
-						if (!locks.adsr.decay) newAdsrState.decay = getRandom(0.1, 1.0);
-						if (!locks.adsr.sustain) newAdsrState.sustain = getRandom(0.5, 0.9);
-						if (!locks.adsr.release) newAdsrState.release = getRandom(0.1, 1.5);
-
-						// Harmonic randomization for engine effects
-						if (!locks.effects.distortion)
-							newEngineEffects.distortion = getRandom(0.1, 0.6); // Less extreme distortion
-						if (!locks.effects.delayTime)
-							newEngineEffects.delayTime = getRandom(0.1, 0.8);
-						if (!locks.effects.delayFeedback)
-							newEngineEffects.delayFeedback = getRandom(0.2, 0.7);
-
-						if (newGlobalHarmonicTuningSystem === "maria_renold_I") {
-							const shuffledFrequencies = shuffleArray([
-								...mariaRenoldFrequencies,
-							]);
-							for (let i = 0; i < engine.sequencerSteps; i++) {
-								newMelodicSequence.push(
-									shuffledFrequencies[i % shuffledFrequencies.length]
-								);
-							}
-							console.log(
-								"Maria Renold I melodicSequence:",
-								newMelodicSequence
-							);
-						} else if (newGlobalHarmonicTuningSystem === "none") {
-							for (let i = 0; i < engine.sequencerSteps; i++) {
-								newMelodicSequence.push(getRandom(20, 20000));
-							}
-							console.log(
-								"None melodicSequence (random freqs):",
-								newMelodicSequence
-							);
-						} else {
-							// For other harmonic tuning systems, randomize a note within the scale
-							const rootFreq =
-								newGlobalHarmonicTuningSystem === "solfeggio" ||
-								newGlobalHarmonicTuningSystem === "wholesome_scale"
-									? 220 // Base frequency for solfeggio/wholesome
-									: midiNoteToFrequency(
-											60 + transpose,
-											newGlobalHarmonicTuningSystem
-									  ); // C4 + transpose
-
-							const currentScale = musicalScales[scale];
-							const ratios = newGlobalHarmonicTuningSystem.startsWith("just")
-								? justIntonationRatios
-								: newGlobalHarmonicTuningSystem.startsWith("pythagorean")
-								? pythagoreanRatios
-								: currentScale.map((semitone) => Math.pow(2, semitone / 12)); // ET ratios
-
-							for (let i = 0; i < engine.sequencerSteps; i++) {
-								newMelodicSequence.push(getNoteFromScale(rootFreq, ratios, 3)); // 3 octaves
-							}
-						}
-					} else if (mode === "chaos") {
-						// Chaos randomization for synth parameters
-						if (!locks.synth.enabled) newSynthState.enabled = getRandomBool();
-						if (!locks.synth.oscillatorType)
+						if (!synthLocks.frequency)
+							newSynthState.frequency = getRandomElement(possibleNotes);
+						if (!synthLocks.oscillatorType)
 							newSynthState.oscillatorType = getRandomElement(oscillatorTypes);
-						if (!locks.synth.volume) newSynthState.volume = getRandom(0.1, 1.0);
-						if (!locks.synth.frequencyOverride)
-							newSynthState.frequencyOverride = getRandomBool();
-						if (newSynthState.frequencyOverride && !locks.synth.frequency)
-							newSynthState.frequency = getRandom(20, 20000);
-						if (!locks.synth.solfeggioFrequency)
-							newSynthState.solfeggioFrequency = getRandomElement(
-								solfeggioFrequenciesData.map((f) => f.value.toString())
-							);
-
-						// Chaos randomization for noise parameters
-						if (!locks.noise.enabled) newNoiseState.enabled = getRandomBool();
-						if (!locks.noise.noiseType)
+						if (!synthLocks.volume) newSynthState.volume = getRandom(0.3, 0.8);
+						if (!noiseLocks.noiseType)
 							newNoiseState.noiseType = getRandomElement(noiseTypes);
-						if (!locks.noise.volume) newNoiseState.volume = getRandom(0.0, 0.5);
-
-						// Chaos randomization for sampler parameters
-						if (!locks.sampler.enabled) newSamplerState.enabled = getRandomBool();
-						if (!locks.sampler.volume) newSamplerState.volume = getRandom(0.1, 1.0);
-						if (!locks.sampler.transpose)
-							newSamplerState.transpose = getRandomInt(-24, 24);
-						if (!locks.sampler.granularModeEnabled)
-							newSamplerState.granularModeEnabled = getRandomBool(0.3); // Less likely to be granular
-						if (newSamplerState.granularModeEnabled) {
-							if (!locks.sampler.grainSize)
-								newSamplerState.grainSize = getRandom(0.01, 0.5);
-							if (!locks.sampler.grainDensity)
-								newSamplerState.grainDensity = getRandomInt(1, 100);
-							if (!locks.sampler.playbackPosition)
-								newSamplerState.playbackPosition = getRandom(0, 1);
-							if (!locks.sampler.positionJitter)
-								newSamplerState.positionJitter = getRandom(0, 1);
-						}
-						if (!locks.sampler.liveInputEnabled)
-							newSamplerState.liveInputEnabled = getRandomBool(0.1); // Less likely to be live input
-
-						// Chaos randomization for ADSR
-						if (!locks.adsr.attack) newAdsrState.attack = getRandom(0.001, 1.0);
-						if (!locks.adsr.decay) newAdsrState.decay = getRandom(0.01, 2.0);
-						if (!locks.adsr.sustain) newAdsrState.sustain = getRandom(0.0, 1.0);
-						if (!locks.adsr.release)
-							newAdsrState.release = getRandom(0.01, 3.0);
-
-						// Chaos randomization for engine effects
-						if (!locks.effects.distortion)
-							newEngineEffects.distortion = getRandom(0, 1);
-						if (!locks.effects.delayTime)
-							newEngineEffects.delayTime = getRandom(0.01, 1);
-						if (!locks.effects.delayFeedback)
-							newEngineEffects.delayFeedback = getRandom(0, 0.8);
-
-						for (let i = 0; i < engine.sequencerSteps; i++) {
-							newMelodicSequence.push(getRandom(20, 20000));
-						}
+						if (!noiseLocks.volume) newNoiseState.volume = getRandom(0.1, 0.5);
+						if (!samplerLocks.transpose) newSamplerState.transpose = getRandomInt(-12, 12);
+						if (!samplerLocks.grainSize) newSamplerState.grainSize = getRandom(0.01, 0.4);
+						if (!samplerLocks.playbackPosition) newSamplerState.playbackPosition = getRandom(0, 1);
+						if (!samplerLocks.positionJitter) newSamplerState.positionJitter = getRandom(0, 1);
 					}
-				} else if (mode === "rhythmic") {
-					// Rhythmic randomization for synth parameters
-					if (!locks.synth.enabled) newSynthState.enabled = getRandomBool();
-					if (!locks.synth.oscillatorType)
-						newSynthState.oscillatorType = getRandomElement(oscillatorTypes);
-					if (!locks.synth.volume) newSynthState.volume = getRandom(0.4, 0.9);
-					if (!locks.synth.frequencyOverride)
-						newSynthState.frequencyOverride = getRandomBool(0.3); // Less likely to override
-					if (newSynthState.frequencyOverride && !locks.synth.frequency) {
-						// Rhythmic frequency override (e.g., multiples of BPM-derived frequencies)
-						const beatFreq = bpm / 60;
-						newSynthState.frequency = getRandomElement([
-							beatFreq * 0.5,
-							beatFreq * 1,
-							beatFreq * 2,
-							beatFreq * 4,
-							beatFreq * 8,
-						]);
+
+					if (shouldChangeRhythm) {
+						if (!samplerLocks.grainDensity) newSamplerState.grainDensity = getRandomInt(5, 80);
 					}
-					if (!locks.synth.solfeggioFrequency)
-						newSynthState.solfeggioFrequency = getRandomElement(
-							solfeggioFrequenciesData.map((f) => f.value.toString())
-						);
 
-					// Rhythmic randomization for noise parameters
-					if (!locks.noise.enabled) newNoiseState.enabled = getRandomBool(0.4);
-					if (!locks.noise.noiseType)
-						newNoiseState.noiseType = getRandomElement(noiseTypes);
-					if (!locks.noise.volume) newNoiseState.volume = getRandom(0.1, 0.4);
-
-					// Rhythmic randomization for sampler parameters
-					if (!locks.sampler.enabled) newSamplerState.enabled = getRandomBool(0.4);
-					if (!locks.sampler.volume) newSamplerState.volume = getRandom(0.4, 0.9);
-					if (!locks.sampler.transpose)
-						newSamplerState.transpose = getRandomElement([-12, -7, 0, 7, 12]); // Rhythmic transpositions
-					if (!locks.sampler.granularModeEnabled)
-						newSamplerState.granularModeEnabled = getRandomBool(0.2);
-					if (newSamplerState.granularModeEnabled) {
-						if (!locks.sampler.grainSize)
-							newSamplerState.grainSize = getRandomElement([
-								0.05, 0.1, 0.2, 0.25, 0.5,
-							]); // Rhythmic grain sizes
-						if (!locks.sampler.grainDensity)
-							newSamplerState.grainDensity = getRandomElement([5, 10, 20, 40]); // Rhythmic grain densities
-						if (!locks.sampler.playbackPosition)
-							newSamplerState.playbackPosition = getRandomElement([
-								0, 0.25, 0.5, 0.75, 1,
-							]); // Rhythmic positions
-						if (!locks.sampler.positionJitter)
-							newSamplerState.positionJitter = getRandomElement([0, 0.1, 0.25, 0.5]);
+					// Chaos mode specific changes
+					if (mode === "chaos") {
+						if (!synthLocks.enabled) newSynthState.enabled = getRandomBool(0.8);
+						if (!noiseLocks.enabled) newNoiseState.enabled = getRandomBool(0.3);
+						if (!samplerLocks.enabled) newSamplerState.enabled = getRandomBool(0.3);
+						if (!samplerLocks.granularModeEnabled) newSamplerState.granularModeEnabled = getRandomBool();
 					}
-					if (!locks.sampler.liveInputEnabled)
-						newSamplerState.liveInputEnabled = getRandomBool(0.05);
 
-					// Rhythmic randomization for ADSR
-					if (!locks.adsr.attack)
-						newAdsrState.attack = getRandomElement([0.01, 0.05, 0.1, 0.2]);
-					if (!locks.adsr.decay)
-						newAdsrState.decay = getRandomElement([0.1, 0.2, 0.4, 0.8]);
-					if (!locks.adsr.sustain)
-						newAdsrState.sustain = getRandomElement([0.5, 0.7, 0.9, 1.0]);
-					if (!locks.adsr.release)
-						newAdsrState.release = getRandomElement([0.1, 0.5, 1.0, 2.0]);
+					// --- ADSR ---
+					const newAdsrState: Partial<ADSRState> = {};
+					const setAdsr = (a: number[], d: number[], s: number[], r: number[]) => {
+						if (!adsrLocks.attack) newAdsrState.attack = getRandom(a[0], a[1]);
+						if (!adsrLocks.decay) newAdsrState.decay = getRandom(d[0], d[1]);
+						if (!adsrLocks.sustain) newAdsrState.sustain = getRandom(s[0], s[1]);
+						if (!adsrLocks.release) newAdsrState.release = getRandom(r[0], r[1]);
+					};
+					if (mode === "rhythmic")
+						setAdsr([0.001, 0.1], [0.05, 0.3], [0.0, 0.5], [0.05, 0.4]);
+					else if (mode === "melodic")
+						setAdsr([0.1, 2.0], [0.2, 2.0], [0.4, 1.0], [0.2, 3.0]);
+					else if (mode === "chaos")
+						setAdsr([0.001, 3.0], [0.05, 3.0], [0.0, 1.0], [0.05, 5.0]);
 
-					// Rhythmic randomization for engine effects
-					if (!locks.effects.distortion)
-						newEngineEffects.distortion = getRandom(0.1, 0.7);
-					if (!locks.effects.delayTime) {
-						const rhythmicDelayTimes = delaySyncRates.map((rate) => {
-							const [numerator, denominator] = rate
-								.split("/")
-								.map((part) => parseFloat(part.replace("d", "")));
-							const base = 60 / bpm;
-							if (rate.includes("d")) {
-								return base * (numerator / denominator) * 1.5;
-							}
-							return base * (numerator / denominator);
-						});
-						newEngineEffects.delayTime = getRandomElement(rhythmicDelayTimes);
-					}
-					if (!locks.effects.delayFeedback)
-						newEngineEffects.delayFeedback = getRandom(0.2, 0.7);
-
-					// Rhythmic melodic sequence (e.g., based on current scale but with rhythmic intervals)
-					const rootFreq = midiNoteToFrequency(
-						60 + transpose,
-						harmonicTuningSystem
-					);
-					const currentScale = musicalScales[scale];
-					const ratios = currentScale.map((semitone) =>
-						Math.pow(2, semitone / 12)
-					);
-
-					for (let i = 0; i < engine.sequencerSteps; i++) {
-						newMelodicSequence.push(getNoteFromScale(rootFreq, ratios, 2)); // 2 octaves for rhythmic
-					}
-				}
-
-
-
-				return {
-					...engine,
-					...sequencerParams,
-					synth: newSynthState,
-					noise: newNoiseState,
-					sampler: newSamplerState,
-					effects: newEngineEffects,
-					melodicSequence:
-						newMelodicSequence.length > 0
-							? newMelodicSequence
-							: engine.melodicSequence, // Update melodic sequence
-					routing: randomizeRouting(),
-					adsr: newAdsrState,
-				};
-			});
-
-			const newLfos = lfos.map((lfo): LFOState => {
-				if (
-					(scope !== "global" && scope !== "global-immediate" && scope !== lfo.id) ||
-					(scope === "global-immediate" && mode === "chaos") // Chaos for LFOs is handled below
-				)
-					return lfo;
-				const locks = lockState.lfos[lfo.id];
-
-				let newLfo = { ...lfo };
-
-				if (mode === "harmonic") {
-					if (!locks.rate) newLfo.rate = getRandom(0.5, 5); // Slower, more musical rates
-					if (!locks.depth) newLfo.depth = getRandom(0.2, 0.8);
-					if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
-					if (!locks.sync) newLfo.sync = getRandomBool(0.7); // More likely to sync
-					if (newLfo.sync && !locks.syncRate)
-						newLfo.syncRate = getRandomElement(lfoSyncRates);
-				} else if (mode === "rhythmic") {
-					const rhythmicRates = lfoSyncRates.map((rate) => {
-						const [numerator, denominator] = rate
-							.split("/")
-							.map((part) => parseFloat(part.replace("d", "")));
-						const base = 60 / bpm;
-						if (rate.includes("d")) {
-							return base * (numerator / denominator) * 1.5;
-						}
-						return base * (numerator / denominator);
-					});
-					if (!locks.rate)
-						newLfo.rate = getRandomElement(
-							rhythmicRates.filter((r) => r > 0)
-						);
-					if (!locks.depth) newLfo.depth = getRandom(0.3, 0.9);
-					if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
-					if (!locks.sync) newLfo.sync = true; // Rhythmic implies sync
-					if (newLfo.sync && !locks.syncRate)
-						newLfo.syncRate = getRandomElement(lfoSyncRates);
-				} else if (mode === "chaos") {
-					if (!locks.rate) newLfo.rate = getRandom(0.1, 20);
-					if (!locks.depth) newLfo.depth = getRandom(0, 1);
-					if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
-					if (!locks.sync) newLfo.sync = getRandomBool();
-					if (newLfo.sync && !locks.syncRate)
-						newLfo.syncRate = getRandomElement(lfoSyncRates);
-				}
-
-				return {
-					...newLfo,
-					routing: randomizeRouting(),
-				};
-			});
-
-			const newFilter1 =
-				scope === "global" || scope === "global-immediate" || scope === "filter1"
-					? {
-							...filter1State,
-							enabled: lockState.filter1.enabled
-								? filter1State.enabled
-								: getRandomBool(),
-							cutoff: lockState.filter1.cutoff
-								? filter1State.cutoff
-								: mode === "harmonic"
-								? midiNoteToFrequency(
-										getRandomInt(40, 90),
-										newGlobalHarmonicTuningSystem
-								  )
-								: mode === "rhythmic"
-								? getRandomElement([
-										125, 250, 500, 1000, 2000, 4000, 8000,
-								  ])
-								: getRandom(100, 10000),
-							resonance: lockState.filter1.resonance
-								? filter1State.resonance
-								: mode === "rhythmic"
-								? getRandom(0, 5)
-								: getRandom(0, 10),
-							type: lockState.filter1.type
-								? filter1State.type
-								: getRandomElement(filterTypes),
-					  }
-					: filter1State;
-			const newFilter2 =
-				scope === "global" || scope === "global-immediate" || scope === "filter2"
-					? {
-							...filter2State,
-							enabled: lockState.filter2.enabled
-								? filter2State.enabled
-								: getRandomBool(),
-							cutoff: lockState.filter2.cutoff
-								? filter2State.cutoff
-								: mode === "harmonic"
-								? midiNoteToFrequency(
-										getRandomInt(40, 90),
-										newGlobalHarmonicTuningSystem
-								  )
-								: mode === "rhythmic"
-								? getRandomElement([
-										125, 250, 500, 1000, 2000, 4000, 8000,
-								  ])
-								: getRandom(100, 15000),
-							resonance: lockState.filter2.resonance
-								? filter2State.resonance
-								: mode === "rhythmic"
-								? getRandom(0, 5)
-								: getRandom(0, 15),
-							type: lockState.filter2.type
-								? filter2State.type
-								: getRandomElement(filterTypes),
-					  }
-					: filter2State;
-
-			const newMasterEffects = masterEffects.map((effect) => {
-				if (
-					scope !== "global" &&
-					scope !== "global-immediate" &&
-					scope !== effect.id
-				)
-					return effect;
-				const locks = lockState.masterEffects[effect.id];
-				const newParams = { ...effect.params };
-
-				// Helper for rhythmic times
-				const rhythmicTimes = delaySyncRates.map((rate) => {
-					const [numerator, denominator] = rate
-						.split("/")
-						.map((part) => parseFloat(part.replace("d", "")));
-					const base = 60 / bpm;
-					if (rate.includes("d")) {
-						return base * (numerator / denominator) * 1.5;
-					}
-					return base * (numerator / denominator);
+					return {
+						...engine,
+						sequencerSteps: newSteps,
+						sequencerPulses: newPulses,
+						sequencerRotate: newRotate,
+						sequencerRate: newRate,
+						sequence: newSequence,
+						synth: { ...engine.synth, ...newSynthState },
+						noise: { ...engine.noise, ...newNoiseState },
+						sampler: { ...engine.sampler, ...newSamplerState },
+						adsr: { ...engine.adsr, ...newAdsrState },
+						routing: mode === "chaos" ? randomizeRouting() : engine.routing,
+						melodicSequence: newMelodicSequence,
+					};
 				});
 
-				switch (effect.type) {
-					case "distortion":
-						if (newParams.distortion) {
-							if (!locks.distortion?.amount)
-								newParams.distortion.amount =
-									mode === "harmonic"
-										? getRandom(0.1, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.2, 0.7)
-										: getRandom(0, 1);
-							if (!locks.distortion?.mode)
-								newParams.distortion.mode =
-									mode === "harmonic"
-										? getRandomElement(["overdrive", "soft clip"])
-										: getRandomElement(distortionModes);
-						}
-						break;
-					case "delay":
-						if (newParams.delay) {
-							if (!locks.delay?.time)
-								newParams.delay.time =
-									mode === "rhythmic"
-										? getRandomElement(rhythmicTimes)
-										: getRandom(0.01, 2);
-							if (!locks.delay?.feedback)
-								newParams.delay.feedback =
-									mode === "harmonic"
-										? getRandom(0.2, 0.7)
-										: mode === "rhythmic"
-										? getRandom(0.3, 0.8)
-										: getRandom(0, 0.9);
-							if (!locks.delay?.mix)
-								newParams.delay.mix =
-									mode === "harmonic"
-										? getRandom(0.3, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 1);
-						}
-						break;
-					case "reverb":
-						if (newParams.reverb) {
-							if (!locks.reverb?.decay)
-								newParams.reverb.decay =
-									mode === "rhythmic"
-										? getRandom(0.5, 3)
-										: getRandom(0.1, 8);
-							if (!locks.reverb?.mix)
-								newParams.reverb.mix =
-									mode === "rhythmic"
-										? getRandom(0.2, 0.7)
-										: getRandom(0, 1);
-						}
-						break;
-					case "chorus":
-						if (newParams.chorus) {
-							if (!locks.chorus?.rate)
-								newParams.chorus.rate =
-									mode === "rhythmic"
-										? getRandomElement(
-												rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-										  )
-										: getRandom(0.1, 5);
-							if (!locks.chorus?.depth)
-								newParams.chorus.depth =
-									mode === "harmonic"
-										? getRandom(0.2, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.3, 0.9)
-										: getRandom(0.1, 0.9);
-							if (!locks.chorus?.mix)
-								newParams.chorus.mix =
-									mode === "harmonic"
-										? getRandom(0.3, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 1);
-						}
-						break;
-					case "flanger":
-						if (newParams.flanger) {
-							if (!locks.flanger?.rate)
-								newParams.flanger.rate =
-									mode === "rhythmic"
-										? getRandomElement(
-												rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-										  )
-										: getRandom(0.1, 5);
-							if (!locks.flanger?.depth)
-								newParams.flanger.depth =
-									mode === "harmonic"
-										? getRandom(0.3, 0.9)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0.1, 0.9);
-							if (!locks.flanger?.feedback)
-								newParams.flanger.feedback =
-									mode === "harmonic"
-										? getRandom(0.3, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 0.9);
-							if (!locks.flanger?.mix)
-								newParams.flanger.mix =
-									mode === "harmonic"
-										? getRandom(0.3, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 1);
-						}
-						break;
-					case "phaser":
-						if (newParams.phaser) {
-							if (!locks.phaser?.rate)
-								newParams.phaser.rate =
-									mode === "rhythmic"
-										? getRandomElement(
-												rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-										  )
-										: getRandom(0.1, 8);
-							if (!locks.phaser?.stages)
-								newParams.phaser.stages = getRandomElement([2, 4, 6, 8, 10, 12]);
-							if (!locks.phaser?.q)
-								newParams.phaser.q =
-									mode === "harmonic"
-										? getRandom(5, 15)
-										: getRandom(1, 20);
-							if (!locks.phaser?.mix)
-								newParams.phaser.mix =
-									mode === "harmonic"
-										? getRandom(0.3, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 1);
-						}
-						break;
-					case "tremolo":
-						if (newParams.tremolo) {
-							if (!locks.tremolo?.rate)
-								newParams.tremolo.rate =
-									mode === "rhythmic"
-										? getRandomElement(
-												rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-										  )
-										: getRandom(0.1, 20);
-							if (!locks.tremolo?.depth)
-								newParams.tremolo.depth =
-									mode === "harmonic"
-										? getRandom(0.3, 0.9)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 1);
-							if (!locks.tremolo?.shape)
-								newParams.tremolo.shape = getRandomElement(lfoShapes);
-							if (!locks.tremolo?.mix)
-								newParams.tremolo.mix =
-									mode === "harmonic"
-										? getRandom(0.3, 0.8)
-										: mode === "rhythmic"
-										? getRandom(0.4, 0.9)
-										: getRandom(0, 1);
-						}
-						break;
-					case "eq":
-						if (newParams.eq) {
-							if (!locks.eq?.bands)
-								newParams.eq.bands = Array(8)
-									.fill(0)
-									.map(() =>
-										mode === "rhythmic"
-											? getRandomInt(-3, 3)
-											: getRandomInt(-12, 12)
-									);
-						}
-						break;
-				}
-				return { ...effect, params: newParams };
-			});
+				const newLfos = lfos.map((lfo): LFOState => {
+					if (scope !== "global" && scope !== lfo.id) return lfo;
+					const locks = lockState.lfos[lfo.id];
+					const shouldChangeRhythm = mode === "rhythmic" || mode === "chaos";
+					const shouldChangeMelody = mode === "melodic" || mode === "chaos";
 
-			return {
-				engines: newEngines,
-				filter1State: newFilter1,
-				filter2State: newFilter2,
-				lfos: newLfos,
-				masterEffects: newMasterEffects,
+					const newState: Partial<LFOState> = {};
+					if (shouldChangeRhythm && !locks.rate) newState.rate = getRandom(0.1, 20);
+					if (shouldChangeRhythm && !locks.sync) newState.sync = getRandomBool();
+					if (shouldChangeRhythm && !locks.syncRate)
+						newState.syncRate = getRandomElement(lfoSyncRates);
+					if (shouldChangeMelody && !locks.depth)
+						newState.depth = getRandom(0.1, 1.0);
+					if (shouldChangeMelody && !locks.shape)
+						newState.shape = getRandomElement(lfoShapes);
+					if (mode === "chaos") newState.routing = randomizeRouting();
+
+					return { ...lfo, ...newState };
+				});
+
+				const shouldChangeMelodyGlobal = mode === "melodic" || mode === "chaos";
+
+				const newFilter1 =
+					(scope === "global" || scope === "filter1") && shouldChangeMelodyGlobal
+						? {
+								enabled: lockState.filter1.enabled
+									? filter1State.enabled
+									: true,
+								type: lockState.filter1.type
+									? filter1State.type
+									: getRandomElement(filterTypes),
+								cutoff: lockState.filter1.cutoff
+									? filter1State.cutoff
+									: getRandom(100, 10000),
+								resonance: lockState.filter1.resonance
+									? filter1State.resonance
+									: getRandom(0, 20),
+						  }
+						: filter1State;
+
+				const newFilter2 =
+					(scope === "global" || scope === "filter2") && shouldChangeMelodyGlobal
+						? {
+								enabled: lockState.filter2.enabled
+									? filter2State.enabled
+									: getRandomBool(0.5),
+								type: lockState.filter2.type
+									? filter2State.type
+									: getRandomElement(filterTypes),
+								cutoff: lockState.filter2.cutoff
+									? filter2State.cutoff
+									: getRandom(100, 10000),
+								resonance: lockState.filter2.resonance
+									? filter2State.resonance
+									: getRandom(0, 20),
+						  }
+						: filter2State;
+
+				const newMasterEffects = masterEffects.map((effect) => {
+					if (scope !== "global" && scope !== effect.id) {
+						return effect;
+					}
+					// Don't add/remove effects, just morph params
+					const newParams = createRandomizedEffectParams(effect, mode);
+					return { ...effect, params: newParams };
+				});
+
+
+				return {
+					engines: newEngines,
+					lfos: newLfos,
+					filter1State: newFilter1,
+					filter2State: newFilter2,
+					masterEffects: newMasterEffects,
+				};
 			};
-		};
 
-		const randomState = createRandomizedState();
+			const randomState = createRandomizedState();
 
-		if (scope === "global") {
-			// For "Random Morph" buttons
 			morphStartRef.current = {
 				engines,
 				filter1State,
@@ -4398,55 +4256,34 @@ const App: React.FC = () => {
 			morphTargetRef.current = randomState;
 			morphStartTimeRef.current = Date.now();
 			setIsMorphing(true);
-		} else if (scope === "global-immediate") {
-			// For new global randomize buttons
-			setEngines(randomState.engines);
-			setFilter1State(randomState.filter1State);
-			setFilter2State(randomState.filter2State);
-			setLfos(randomState.lfos);
-			setMasterEffects(randomState.masterEffects);
-		} else {
-			// For per-module randomization
-			setEngines((prev) =>
-				prev.map((e) =>
-					e.id === scope
-						? randomState.engines.find((re) => re.id === scope) || e
-						: e
-				)
-			);
-			setFilter1State(
-				scope === "filter1" ? randomState.filter1State : filter1State
-			);
-			setFilter2State(
-				scope === "filter2" ? randomState.filter2State : filter2State
-			);
-			setLfos((prev) =>
-				prev.map((l) =>
-					l.id === scope
-						? randomState.lfos.find((rl) => rl.id === scope) || l
-						: l
-				)
-			);
-			setMasterEffects((prev) =>
-				prev.map((me) =>
-					me.id === scope
-						? randomState.masterEffects.find((rme) => rme.id === scope) || me
-						: me
-				)
-			);
-		}
-	};
+		},
+		[
+			engines,
+			lfos,
+			filter1State,
+			filter2State,
+			masterEffects,
+			lockState,
+			scale,
+			transpose,
+			scaleFrequencies,
+		]
+	);
 
 	// Auto-randomization effect
 	useEffect(() => {
-		let intervalId: number;
+		let intervalId: ReturnType<typeof setInterval> | undefined;
 		if (isGlobalAutoRandomEnabled && isTransportPlaying) {
+			const effectiveInterval = calculateTimeFromSync(
+				bpm,
+				isAutoRandomSynced,
+				autoRandomSyncRateIndex,
+				syncRates,
+				globalAutoRandomInterval
+			);
 			intervalId = setInterval(() => {
-				console.log(
-					`Global auto-random triggered. Mode: ${globalAutoRandomMode}`
-				);
-				handleRandomize(globalAutoRandomMode, "global-immediate");
-			}, globalAutoRandomInterval);
+				handleRandomize(globalAutoRandomMode, "global");
+			}, effectiveInterval);
 		}
 		return () => {
 			if (intervalId) {
@@ -4455,2496 +4292,1486 @@ const App: React.FC = () => {
 		};
 	}, [
 		isGlobalAutoRandomEnabled,
+		isTransportPlaying,
+		bpm,
+		isAutoRandomSynced,
+		autoRandomSyncRateIndex,
+		syncRates,
 		globalAutoRandomInterval,
 		globalAutoRandomMode,
 		handleRandomize,
-		isTransportPlaying,
 	]);
 
 	const handleToggleLock = useCallback((path: string) => {
-		setLockState((prev) => {
-			const newState = JSON.parse(JSON.stringify(prev)); // Deep copy
-			const parts = path.split(".");
-			let current = newState;
-			for (let i = 0; i < parts.length - 1; i++) {
-				current = current[parts[i]];
-			}
-			const key = parts[parts.length - 1];
-			current[key] = !current[key];
-			return newState;
+		setLockState(prev => {
+			const parts = path.split('.');
+			const updateRecursively = (currentValue: any, pathParts: string[]): any => {
+				if (!pathParts.length) {
+					return currentValue;
+				}
+				const [currentKey, ...restKeys] = pathParts;
+				if (restKeys.length === 0) {
+					if (typeof currentValue[currentKey] === 'boolean') {
+						return {
+							...currentValue,
+							[currentKey]: !currentValue[currentKey],
+						};
+					}
+					return currentValue;
+				}
+				if (typeof currentValue[currentKey] === 'object' && currentValue[currentKey] !== null) {
+					return {
+						...currentValue,
+						[currentKey]: updateRecursively(currentValue[currentKey], restKeys),
+					};
+				}
+				return currentValue;
+			};
+			return updateRecursively(prev, parts);
 		});
 	}, []);
 
-	const handleEngineUpdate = useCallback(
-		(engineId: string, updates: Partial<EngineState>) => {
-			setEngines((prevEngines) =>
-				prevEngines.map((e) => (e.id === engineId ? { ...e, ...updates } : e))
-			);
-		},
-		[]
-	);
-	const handleLayerUpdate = useCallback(
-		<K extends EngineLayerType>(
-			engineId: string,
-			layer: K,
-			updates: Partial<EngineState[K]>
-		) => {
-			setEngines((prevEngines) =>
-				prevEngines.map((e) =>
-					e.id === engineId ? { ...e, [layer]: { ...e[layer], ...updates } } : e
-				)
-			);
-		},
-		[]
-	);
-	const handleLfoUpdate = useCallback(
-		(lfoId: string, updates: Partial<LFOState>) => {
-			setLfos((prevLfos) =>
-				prevLfos.map((l) => (l.id === lfoId ? { ...l, ...updates } : l))
-			);
-		},
-		[]
-	);
-
-	const randomizeLFOsHarmonic = useCallback(() => {
-		setLfos((prevLfos) =>
-			prevLfos.map((lfo) => {
-				const locks = lockState.lfos[lfo.id];
-				let newLfo = { ...lfo };
-
-				if (!locks.rate) newLfo.rate = getRandom(0.1, 10); // Musically relevant LFO rates
-				if (!locks.depth) newLfo.depth = getRandom(0.1, 1.0);
-				if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
-				if (!locks.sync) newLfo.sync = getRandomBool(0.5);
-				if (newLfo.sync && !locks.syncRate)
-					newLfo.syncRate = getRandomElement(lfoSyncRates);
-
-				return newLfo;
-			})
-		);
-	}, [lockState, lfoShapes, lfoSyncRates]);
-
-	const randomizeFiltersHarmonic = useCallback(() => {
-		setFilter1State((prev) => {
-			const locks = lockState.filter1;
-			let newFilter = { ...prev };
-			if (!locks.enabled) newFilter.enabled = getRandomBool();
-			if (!locks.cutoff) newFilter.cutoff = getRandom(100, 10000);
-			if (!locks.resonance) newFilter.resonance = getRandom(0, 10);
-			if (!locks.type) newFilter.type = getRandomElement(filterTypes);
-			return newFilter;
-		});
-		setFilter2State((prev) => {
-			const locks = lockState.filter2;
-			let newFilter = { ...prev };
-			if (!locks.enabled) newFilter.enabled = getRandomBool();
-			if (!locks.cutoff) newFilter.cutoff = getRandom(100, 10000);
-			if (!locks.resonance) newFilter.resonance = getRandom(0, 10);
-			if (!locks.type) newFilter.type = getRandomElement(filterTypes);
-			return newFilter;
-		});
-	}, [lockState, filterTypes]);
-
-	const randomizeMasterEffectsHarmonic = useCallback(() => {
-		setMasterEffects((prevEffects) =>
-			prevEffects.map((effect) => {
-				const locks = lockState.masterEffects[effect.id];
-				if (!locks) return effect; // Should not happen if lockState is properly initialized
-
-				let newEffect = { ...effect };
-				let newParams = { ...effect.params };
-
-				switch (effect.type) {
-					case "distortion":
-						if (newParams.distortion && !locks.distortion?.amount) {
-							newParams.distortion = {
-								...newParams.distortion,
-								amount: getRandom(0.1, 0.8),
-							};
-						}
-						break;
-					case "delay":
-						if (newParams.delay && !locks.delay?.time) {
-							newParams.delay = {
-								...newParams.delay,
-								time: getRandom(0.1, 1.0),
-							};
-						}
-						if (newParams.delay && !locks.delay?.feedback) {
-							newParams.delay = {
-								...newParams.delay,
-								feedback: getRandom(0.2, 0.7),
-							};
-						}
-						if (newParams.delay && !locks.delay?.mix) {
-							newParams.delay = {
-								...newParams.delay,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "reverb":
-						if (newParams.reverb && !locks.reverb?.decay) {
-							newParams.reverb = {
-								...newParams.reverb,
-								decay: getRandom(1, 5),
-							};
-						}
-						if (newParams.reverb && !locks.reverb?.mix) {
-							newParams.reverb = {
-								...newParams.reverb,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "chorus":
-						if (newParams.chorus && !locks.chorus?.rate) {
-							newParams.chorus = {
-								...newParams.chorus,
-								rate: getRandom(0.5, 5),
-							};
-						}
-						if (newParams.chorus && !locks.chorus?.depth) {
-							newParams.chorus = {
-								...newParams.chorus,
-								depth: getRandom(0.2, 0.8),
-							};
-						}
-						if (newParams.chorus && !locks.chorus?.mix) {
-							newParams.chorus = {
-								...newParams.chorus,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "flanger":
-						if (newParams.flanger && !locks.flanger?.rate) {
-							newParams.flanger = {
-								...newParams.flanger,
-								rate: getRandom(0.1, 2),
-							};
-						}
-						if (newParams.flanger && !locks.flanger?.depth) {
-							newParams.flanger = {
-								...newParams.flanger,
-								depth: getRandom(0.3, 0.9),
-							};
-						}
-						if (newParams.flanger && !locks.flanger?.feedback) {
-							newParams.flanger = {
-								...newParams.flanger,
-								feedback: getRandom(0.3, 0.8),
-							};
-						}
-						if (newParams.flanger && !locks.flanger?.mix) {
-							newParams.flanger = {
-								...newParams.flanger,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "phaser":
-						if (newParams.phaser && !locks.phaser?.rate) {
-							newParams.phaser = {
-								...newParams.phaser,
-								rate: getRandom(0.5, 4),
-							};
-						}
-						if (newParams.phaser && !locks.phaser?.q) {
-							newParams.phaser = { ...newParams.phaser, q: getRandom(5, 15) };
-						}
-						if (newParams.phaser && !locks.phaser?.mix) {
-							newParams.phaser = {
-								...newParams.phaser,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "tremolo":
-						if (newParams.tremolo && !locks.tremolo?.rate) {
-							newParams.tremolo = {
-								...newParams.tremolo,
-								rate: getRandom(1, 10),
-							};
-						}
-						if (newParams.tremolo && !locks.tremolo?.depth) {
-							newParams.tremolo = {
-								...newParams.tremolo,
-								depth: getRandom(0.3, 0.9),
-							};
-						}
-						if (newParams.tremolo && !locks.tremolo?.mix) {
-							newParams.tremolo = {
-								...newParams.tremolo,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "eq":
-						if (newParams.eq && !locks.eq?.bands) {
-							newParams.eq = {
-								bands: newParams.eq.bands.map(() => getRandomInt(-6, 6)),
-							};
-						}
-						break;
-				}
-				return { ...newEffect, params: newParams };
-			})
-		);
-	}, [lockState]);
-
-	const randomizeLFOsRhythmic = useCallback(() => {
-		setLfos((prevLfos) =>
-			prevLfos.map((lfo) => {
-				const locks = lockState.lfos[lfo.id];
-				let newLfo = { ...lfo };
-
-				// Rhythmic rates based on BPM
-				const rhythmicRates = lfoSyncRates.map((rate) => {
-					const [numerator, denominator] = rate.split("/").map(Number);
-					return (bpm / 60) * (numerator / denominator);
-				});
-
-				if (!locks.rate) newLfo.rate = getRandomElement(rhythmicRates);
-				if (!locks.depth) newLfo.depth = getRandom(0.3, 0.9);
-				if (!locks.shape) newLfo.shape = getRandomElement(lfoShapes);
-				if (!locks.sync) newLfo.sync = true; // Rhythmic implies sync
-				if (newLfo.sync && !locks.syncRate)
-					newLfo.syncRate = getRandomElement(lfoSyncRates);
-
-				return newLfo;
-			})
-		);
-	}, [lockState, bpm, lfoShapes, lfoSyncRates]);
-
-	const randomizeFiltersRhythmic = useCallback(() => {
-		setFilter1State((prev) => {
-			const locks = lockState.filter1;
-			let newFilter = { ...prev };
-			if (!locks.enabled) newFilter.enabled = getRandomBool();
-			// Rhythmic cutoff: e.g., multiples of a base frequency related to BPM
-			if (!locks.cutoff)
-				newFilter.cutoff = getRandomElement([
-					125, 250, 500, 1000, 2000, 4000, 8000,
-				]);
-			if (!locks.resonance) newFilter.resonance = getRandom(0, 5);
-			if (!locks.type) newFilter.type = getRandomElement(filterTypes);
-			return newFilter;
-		});
-		setFilter2State((prev) => {
-			const locks = lockState.filter2;
-			let newFilter = { ...prev };
-			if (!locks.enabled) newFilter.enabled = getRandomBool();
-			if (!locks.cutoff)
-				newFilter.cutoff = getRandomElement([
-					125, 250, 500, 1000, 2000, 4000, 8000,
-				]);
-			if (!locks.resonance) newFilter.resonance = getRandom(0, 5);
-			if (!locks.type) newFilter.type = getRandomElement(filterTypes);
-			return newFilter;
-		});
-	}, [lockState, filterTypes]);
-
-	const randomizeMasterEffectsRhythmic = useCallback(() => {
-		setMasterEffects((prevEffects) =>
-			prevEffects.map((effect) => {
-				const locks = lockState.masterEffects[effect.id];
-				if (!locks) return effect;
-
-				let newEffect = { ...effect };
-				let newParams = { ...effect.params };
-
-				// Rhythmic values for time-based parameters
-				const rhythmicTimes = delaySyncRates.map((rate) => {
-					const [numerator, denominator] = rate
-						.split("/")
-						.map((part) => parseFloat(part.replace("d", "")));
-					const base = 60 / bpm;
-					if (rate.includes("d")) {
-						// Dotted notes
-						return base * (numerator / denominator) * 1.5;
-					}
-					return base * (numerator / denominator);
-				});
-
-				switch (effect.type) {
-					case "delay":
-						if (newParams.delay && !locks.delay?.time) {
-							newParams.delay = {
-								...newParams.delay,
-								time: getRandomElement(rhythmicTimes),
-							};
-						}
-						if (newParams.delay && !locks.delay?.feedback) {
-							newParams.delay = {
-								...newParams.delay,
-								feedback: getRandom(0.2, 0.7),
-							};
-						}
-						if (newParams.delay && !locks.delay?.mix) {
-							newParams.delay = {
-								...newParams.delay,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					case "tremolo":
-						if (newParams.tremolo && !locks.tremolo?.rate) {
-							newParams.tremolo = {
-								...newParams.tremolo,
-								rate: getRandomElement(
-									rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-								),
-							}; // Convert time to rate
-						}
-						if (newParams.tremolo && !locks.tremolo?.depth) {
-							newParams.tremolo = {
-								...newParams.tremolo,
-								depth: getRandom(0.3, 0.9),
-							};
-						}
-						if (newParams.tremolo && !locks.tremolo?.mix) {
-							newParams.tremolo = {
-								...newParams.tremolo,
-								mix: getRandom(0.3, 0.8),
-							};
-						}
-						break;
-					// Other effects can have rhythmic elements too, e.g., chorus/flanger rate
-					case "chorus":
-						if (newParams.chorus && !locks.chorus?.rate) {
-							newParams.chorus = {
-								...newParams.chorus,
-								rate: getRandomElement(
-									rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-								),
-							};
-						}
-						break;
-					case "flanger":
-						if (newParams.flanger && !locks.flanger?.rate) {
-							newParams.flanger = {
-								...newParams.flanger,
-								rate: getRandomElement(
-									rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-								),
-							};
-						}
-						break;
-					case "phaser":
-						if (newParams.phaser && !locks.phaser?.rate) {
-							newParams.phaser = {
-								...newParams.phaser,
-								rate: getRandomElement(
-									rhythmicTimes.filter((t) => t > 0).map((t) => 1 / t)
-								),
-							};
-						}
-						break;
-					case "distortion":
-					case "reverb":
-					case "eq":
-						// For effects where rhythmic randomization is less direct,
-						// we can still randomize other parameters if not locked.
-						if (
-							effect.type === "distortion" &&
-							newParams.distortion &&
-							!locks.distortion?.amount
-						) {
-							newParams.distortion = {
-								...newParams.distortion,
-								amount: getRandom(0.1, 0.8),
-							};
-						}
-						if (
-							effect.type === "reverb" &&
-							newParams.reverb &&
-							!locks.reverb?.decay
-						) {
-							newParams.reverb = {
-								...newParams.reverb,
-								decay: getRandom(1, 5),
-							};
-						}
-						if (effect.type === "eq" && newParams.eq && !locks.eq?.bands) {
-							newParams.eq = {
-								bands: newParams.eq.bands.map(() => getRandomInt(-6, 6)),
-							};
-						}
-						break;
-				}
-				return { ...newEffect, params: newParams };
-			})
-		);
-	}, [lockState, bpm, delaySyncRates]);
-
-	const handleGenerateSequence = useCallback(
-		async (engineId: string) => {
-			const engine = engines.find((e) => e.id === engineId);
-			if (!engine) return;
-
-			setIsGenerating(true);
-			try {
-				const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-				const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-				const prompt = `You are a creative music assistant for a polyrhythmic synthesizer.
-Create a compelling and interesting musical sequence.
-The sequence must have exactly ${engine.sequencerSteps} steps.
-Each step is a number: 0 for OFF, 1 for NOTE ON, or 2 for TIE (to continue the previous note).
-A tied note (2) must always be preceded by a note-on (1) or another tied note (2).
-Do not start the sequence with a 2.
-The pattern should be rhythmically interesting.
-
-Return the result as a single, flat JSON array of numbers. For example: [1, 2, 2, 0, 1, 0, 1, 0]`;
-
-				const result = await model.generateContent(prompt);
-				const response = await result.response;
-				const text = response.text();
-
-				// Clean the response
-				const cleanedText = text
-					.replace(/```json/g, "")
-					.replace(/```/g, "")
-					.trim();
-				let newSequence = JSON.parse(cleanedText);
-
-				// --- Validation ---
-				if (
-					!Array.isArray(newSequence) ||
-					newSequence.length !== engine.sequencerSteps
-				) {
-					throw new Error(
-						`Sequence is not an array of length ${engine.sequencerSteps}.`
-					);
-				}
-				if (newSequence.some((n) => ![0, 1, 2].includes(n))) {
-					throw new Error("Sequence contains invalid numbers.");
-				}
-				if (newSequence[0] === 2) {
-					throw new Error("Sequence cannot start with a tie.");
-				}
-				for (let i = 1; i < newSequence.length; i++) {
-					if (newSequence[i] === 2 && ![1, 2].includes(newSequence[i - 1])) {
-						// Attempt to self-correct
-						newSequence[i] = 0;
-					}
-				}
-
-				handleEngineUpdate(engineId, { sequence: newSequence });
-			} catch (error) {
-				console.error("Error generating sequence:", error);
-				// Optionally, show an error to the user
-			} finally {
-				setIsGenerating(false);
-			}
-		},
-		[engines, handleEngineUpdate]
-	);
-
-	const handleLoadSample = useCallback(
-		async (engineId: string, file: File) => {
-			if (!audioContext) return;
-			try {
-				const arrayBuffer = await file.arrayBuffer();
-				const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-				samplesRef.current.set(engineId, audioBuffer);
-				handleLayerUpdate(engineId, "sampler", { sampleName: file.name });
-				console.log(`Sample "${file.name}" loaded for ${engineId}`);
-			} catch (error) {
-				console.error("Error loading sample:", error);
-			}
-		},
-		[audioContext, handleLayerUpdate]
-	);
-
-	const handleRecordSample = useCallback(
-		async (engineId: string, buffer: AudioBuffer) => {
-			samplesRef.current.set(engineId, buffer);
-			handleLayerUpdate(engineId, "sampler", {
-				sampleName: `Recording-${new Date().toLocaleTimeString()}`,
-			});
-			console.log(`Recorded sample loaded for ${engineId}`);
-		},
-		[handleLayerUpdate]
-	);
-
-	const requestMicrophone = async (): Promise<MediaStream | null> => {
-		if (audioInputStream) return audioInputStream;
+	const initializeAudio = useCallback(() => {
+		if (isInitialized || !initialAppState) return;
 		try {
-			const stream = await navigator.mediaDevices.getUserMedia({
-				audio: {
-					echoCancellation: false,
-					noiseSuppression: false,
-					autoGainControl: false,
-				},
+			const context = new (window.AudioContext ||
+				(window as any).webkitAudioContext)();
+			const masterGain = context.createGain();
+			const analyser = context.createAnalyser();
+			// The final connection to destination is handled in the effects chain connection logic
+			
+			masterVolumeNodeRef.current = masterGain;
+			masterAnalyserNodeRef.current = analyser;
+
+			// Create a dummy gain to prevent LFOs from being garbage collected
+			const dummyGain = context.createGain();
+			dummyGain.gain.value = 0;
+			dummyGain.connect(context.destination);
+			dummyGainRef.current = dummyGain;
+
+
+			// Create Filters
+			const f1 = context.createBiquadFilter();
+			const f2 = context.createBiquadFilter();
+            const f1CutoffBus = context.createGain();
+            const f1ResoBus = context.createGain();
+            const f2CutoffBus = context.createGain();
+            const f2ResoBus = context.createGain();
+            f1CutoffBus.gain.value = 5000; // range for modulation
+            f1ResoBus.gain.value = 15; // range for modulation
+            f2CutoffBus.gain.value = 5000;
+            f2ResoBus.gain.value = 15;
+            f1CutoffBus.connect(f1.frequency);
+            f1ResoBus.connect(f1.Q);
+            f2CutoffBus.connect(f2.frequency);
+            f2ResoBus.connect(f2.Q);
+
+			filterNodesRef.current = {
+				filter1: { node: f1, cutoffModBus: f1CutoffBus, resonanceModBus: f1ResoBus },
+				filter2: { node: f2, cutoffModBus: f2CutoffBus, resonanceModBus: f2ResoBus },
+			};
+            
+			// Create LFOs and Busses
+			const engineModBussesMap = new Map<string, EngineModBusses>();
+            const lfoRoutingBusses: LfoRoutingBusses = {
+                filter1: { cutoffModBus: f1CutoffBus, resonanceModBus: f1ResoBus },
+                filter2: { cutoffModBus: f2CutoffBus, resonanceModBus: f2ResoBus },
+                engineModBusses: engineModBussesMap,
+            };
+            lfoRoutingBussesRef.current = lfoRoutingBusses;
+
+			// Create engine nodes
+			initialAppState.engines.forEach((engine) => {
+				const engineNodes: EngineAudioNodes = {
+					synth: { volumeGain: context.createGain() },
+					noise: { volumeGain: context.createGain() },
+					sampler: { volumeGain: context.createGain() },
+					engineMixer: context.createGain(),
+					sequencerGain: context.createGain(),
+					midiInputGain: context.createGain(),
+					sequencerModSource: context.createConstantSource(),
+					sequencerModGate: context.createGain(),
+					finalOutput: context.createGain(),
+					analyser: context.createAnalyser(),
+				};
+
+				engineNodes.sequencerModSource.offset.value = 1.0;
+				engineNodes.sequencerModSource.connect(engineNodes.sequencerModGate);
+				engineNodes.sequencerModSource.start();
+				engineNodes.sequencerModGate.gain.value = 0; // Gated by sequencer
+				
+				engineNodes.synth.volumeGain.connect(engineNodes.engineMixer);
+				engineNodes.noise.volumeGain.connect(engineNodes.engineMixer);
+				engineNodes.sampler.volumeGain.connect(engineNodes.engineMixer);
+
+				// Each engine's output goes to its own analyser, then to the final output gain
+				engineNodes.engineMixer.connect(engineNodes.analyser);
+				engineNodes.analyser.connect(engineNodes.finalOutput);
+				
+				audioNodesRef.current.set(engine.id, engineNodes);
+                
+                const modBusses: EngineModBusses = {
+                    vol: context.createGain(),
+                    synthFreq: context.createGain(),
+                    samplerTranspose: context.createGain(),
+                    grainSize: context.createGain(),
+                    grainDensity: context.createGain(),
+                    grainPosition: context.createGain(),
+                    grainJitter: context.createGain(),
+                };
+                modBusses.vol.connect(engineNodes.finalOutput.gain);
+                // The other busses will be connected to specific AudioParams as needed
+                engineModBussesMap.set(engine.id, modBusses);
 			});
+
+            // Create LFO nodes
+			// FIX: Explicitly type `lfo` as `LFOState` to resolve type inference issue.
+            initialAppState.lfos.forEach((lfo: LFOState) => {
+                const lfoNode = context.createOscillator();
+                const depthGain = context.createGain();
+                lfoNode.connect(depthGain);
+                lfoNode.start();
+                lfoNodesRef.current.set(lfo.id, { lfoNode, depthGain });
+            });
+
+
+			// Create Noise Buffers
+			noiseTypes.forEach(type => {
+				const bufferSize = context.sampleRate * 2; // 2 seconds of noise
+				const buffer = context.createBuffer(1, bufferSize, context.sampleRate);
+				const output = buffer.getChannelData(0);
+				let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+				for (let i = 0; i < bufferSize; i++) {
+					switch(type) {
+						case 'white':
+							output[i] = Math.random() * 2 - 1;
+							break;
+						case 'pink':
+							const white = Math.random() * 2 - 1;
+							b0 = 0.99886 * b0 + white * 0.0555179;
+							b1 = 0.99332 * b1 + white * 0.0750759;
+							b2 = 0.96900 * b2 + white * 0.1538520;
+							b3 = 0.86650 * b3 + white * 0.3104856;
+							b4 = 0.55000 * b4 + white * 0.5329522;
+							b5 = -0.7616 * b5 - white * 0.0168980;
+							output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+							output[i] *= 0.11; 
+							b6 = white * 0.115926;
+							break;
+						case 'brown':
+							const lastOutput = i > 0 ? output[i-1] : 0.0;
+							const brownWhite = Math.random() * 2 - 1;
+							output[i] = (lastOutput + (0.02 * brownWhite)) / 1.02;
+							break;
+					}
+				}
+				noiseBuffersRef.current.set(type, buffer);
+			});
+
+
+			setAudioContext(context);
+			setIsInitialized(true);
+		} catch (e) {
+			console.error("Web Audio API is not supported in this browser", e);
+			alert(
+				"This synthesizer requires a modern browser with Web Audio API support."
+			);
+		}
+	}, [isInitialized, initialAppState]);
+
+    // Master Volume Update
+    useEffect(() => {
+        if (masterVolumeNodeRef.current && audioContext) {
+            masterVolumeNodeRef.current.gain.setTargetAtTime(masterVolume, audioContext.currentTime, 0.01);
+        }
+    }, [masterVolume, audioContext]);
+	
+	const noteOff = useCallback((noteId: string, time: number) => {
+		if (!audioContext) return;
+		const voice = activeVoicesRef.current.get(noteId);
+		if (!voice) return;
+		
+		const engine = latestStateRef.current.engines.find(e => e.id === voice.engineId);
+		if(!engine) return;
+
+		if(voice.timeoutId) clearTimeout(voice.timeoutId);
+
+		const { release } = engine.adsr;
+		const { envelopeGain, sourceNodes } = voice;
+		
+		const now = audioContext.currentTime;
+		const scheduledTime = time > now ? time : now;
+		
+		envelopeGain.gain.cancelScheduledValues(scheduledTime);
+		envelopeGain.gain.setTargetAtTime(0.0001, scheduledTime, release / 5 + 0.001);
+
+		const stopTime = scheduledTime + release * 5; 
+		sourceNodes.forEach(node => {
+            try {
+                node.stop(stopTime)
+            } catch (e) {
+                // Ignore errors if node is already stopped
+            }
+        });
+		
+		const timeoutId = window.setTimeout(() => {
+			envelopeGain.disconnect();
+			activeVoicesRef.current.delete(noteId);
+		}, (stopTime - audioContext.currentTime) * 1000 + 100);
+        
+        activeVoicesRef.current.set(noteId, {...voice, timeoutId});
+
+	}, [audioContext]);
+	
+	const noteOn = useCallback((engineId: string, noteId: string, midiNote: number, time: number) => {
+		if (!audioContext) return;
+
+		const now = audioContext.currentTime;
+    	const scheduledTime = time > now ? time : now;
+		
+		const { engines, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, lfos, bpm } = latestStateRef.current;
+		const engine = engines.find(e => e.id === engineId);
+		
+		if (!engine) return;
+		const engineNodes = audioNodesRef.current.get(engine.id);
+		if (!engineNodes) return;
+	
+		// --- Voicing and Glide Logic ---
+		let startFrequency: number | undefined;
+		const targetFrequency = midiNoteToFrequency(midiNote, harmonicTuningSystem);
+		
+		if (voicingMode !== 'poly') {
+			noteOff(activeMonoNotePerEngineRef.current.get(engineId)?.note.toString()!, scheduledTime);
+
+			const lastNote = lastPlayedNotePerEngineRef.current.get(engineId);
+			if (lastNote && voicingMode === 'legato' && activeVoicesRef.current.size > 0) {
+				startFrequency = midiNoteToFrequency(lastNote, harmonicTuningSystem);
+			}
+			activeMonoNotePerEngineRef.current.set(engineId, { note: midiNote, freq: targetFrequency });
+		}
+		lastPlayedNotePerEngineRef.current.set(engineId, midiNote);
+	
+		// Clean up any previous voice with the same ID
+		noteOff(noteId, scheduledTime);
+	
+		const { attack, decay, sustain } = engine.adsr;
+		const envelopeGain = audioContext.createGain();
+		envelopeGain.connect(engineNodes.engineMixer);
+		
+		const sourceNodes: (AudioBufferSourceNode | OscillatorNode)[] = [];
+		let newVoice: ActiveVoice = { noteId, engineId, sourceNodes, envelopeGain };
+
+		// --- Layer Logic ---
+		if (engine.synth.enabled && engine.synth.volume > 0) {
+			const osc = audioContext.createOscillator();
+			osc.type = engine.synth.oscillatorType;
+			const modBus = lfoRoutingBussesRef.current?.engineModBusses.get(engineId)?.synthFreq;
+			if (modBus) modBus.connect(osc.frequency);
+	
+			const glideTimeSec = calculateTimeFromSync(bpm, isGlideSynced, glideSyncRateIndex, syncRates, glideTime) / 1000;
+	
+			if (startFrequency && glideTimeSec > 0) {
+				osc.frequency.setValueAtTime(startFrequency, scheduledTime);
+				osc.frequency.linearRampToValueAtTime(targetFrequency, scheduledTime + glideTimeSec);
+			} else {
+				osc.frequency.setValueAtTime(targetFrequency, scheduledTime);
+			}
+	
+			const synthGain = audioContext.createGain();
+			synthGain.gain.value = engine.synth.volume;
+			osc.connect(synthGain).connect(envelopeGain);
+			osc.start(scheduledTime);
+			sourceNodes.push(osc);
+		}
+	
+		if (engine.noise.enabled && engine.noise.volume > 0 && noiseBuffersRef.current.has(engine.noise.noiseType)) {
+			 const noiseSource = audioContext.createBufferSource();
+			 noiseSource.buffer = noiseBuffersRef.current.get(engine.noise.noiseType)!;
+			 noiseSource.loop = true;
+			 const noiseGain = audioContext.createGain();
+			 noiseGain.gain.value = engine.noise.volume;
+			 noiseSource.connect(noiseGain).connect(envelopeGain);
+			 noiseSource.start(scheduledTime);
+			 sourceNodes.push(noiseSource);
+		}
+	
+		if(engine.sampler.enabled && engine.sampler.volume > 0 && (samplesRef.current.has(engine.id) || engine.sampler.liveInputEnabled)) {
+			const samplerGain = audioContext.createGain();
+			samplerGain.gain.value = engine.sampler.volume;
+			samplerGain.connect(envelopeGain);
+	
+			if (engine.sampler.granularModeEnabled && !engine.sampler.liveInputEnabled && samplesRef.current.has(engine.id)) {
+				// Set up the voice for the central granular scheduler
+				newVoice.granularModeEnabled = true;
+				newVoice.nextGrainTime = scheduledTime;
+			} else if (!engine.sampler.granularModeEnabled && samplesRef.current.has(engine.id)) {
+				 const sampleSource = audioContext.createBufferSource();
+				 sampleSource.buffer = samplesRef.current.get(engine.id)!;
+				 // Assuming original pitch of sample is C4 (MIDI note 60)
+				 const playbackRate = Math.pow(2, (midiNote - 60 + engine.sampler.transpose) / 12);
+				 sampleSource.playbackRate.setValueAtTime(playbackRate, scheduledTime);
+				 sampleSource.connect(samplerGain);
+				 sampleSource.start(scheduledTime);
+				 sourceNodes.push(sampleSource);
+			}
+		}
+
+		envelopeGain.gain.cancelScheduledValues(scheduledTime);
+		envelopeGain.gain.setValueAtTime(0.0001, scheduledTime);
+		envelopeGain.gain.linearRampToValueAtTime(1, scheduledTime + attack);
+		envelopeGain.gain.setTargetAtTime(sustain, scheduledTime + attack, decay / 3 + 0.001); // decay to sustain level
+
+		activeVoicesRef.current.set(noteId, newVoice);
+
+	}, [audioContext, noteOff, harmonicTuningSystem, syncRates]);
+
+    // High-Precision Web Audio Sequencer
+    const schedulerState = useRef<{ timerId?: number; lookaheadTime: number; scheduleAheadTime: number }>({
+        lookaheadTime: 25.0, // How often we wake up to schedule, in ms
+        scheduleAheadTime: 0.1, // How far ahead to schedule audio, in seconds
+    });
+    const engineSchedulerStates = useRef<Map<string, { nextNoteTime: number; currentStep: number }>>(new Map());
+
+    useEffect(() => {
+        if (!isTransportPlaying) {
+            if (schedulerState.current.timerId) {
+                clearTimeout(schedulerState.current.timerId);
+                schedulerState.current.timerId = undefined;
+            }
+            // Reset sequencers
+            engineSchedulerStates.current.clear();
+			sequencerModEventsRef.current.clear();
+            setSequencerCurrentSteps(new Map());
+			activeVoicesRef.current.forEach(voice => noteOff(voice.noteId, 0));
+            return;
+        }
+
+        if (isTransportPlaying && audioContext) {
+            // Initialize all engines for scheduling
+            latestStateRef.current.engines.forEach(engine => {
+                if (!engineSchedulerStates.current.has(engine.id)) {
+                    engineSchedulerStates.current.set(engine.id, {
+                        nextNoteTime: audioContext.currentTime + 0.1, // Start scheduling shortly after play
+                        currentStep: 0,
+                    });
+                }
+            });
+            
+            const scheduler = () => {
+                if (!audioContext) return;
+                const now = audioContext.currentTime;
+                const scheduleUntil = now + schedulerState.current.scheduleAheadTime;
+
+				// Cleanup old sequencer modulation events
+				const cleanupTime = now - 2.0; // Clean up events older than 2s
+				sequencerModEventsRef.current.forEach((events, engineId) => {
+					const filteredEvents = events.filter(e => e.end > cleanupTime);
+					sequencerModEventsRef.current.set(engineId, filteredEvents);
+				});
+
+                // --- Schedule Sequencer Notes ---
+                latestStateRef.current.engines.forEach(engine => {
+                    if (!engine.sequencerEnabled) return;
+                    const engineSch = engineSchedulerStates.current.get(engine.id)!;
+                    const engineNodes = audioNodesRef.current.get(engine.id);
+					if (!engineNodes) return;
+                    
+                    const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
+
+                    while (engineSch.nextNoteTime < scheduleUntil) {
+                        const currentStepForNote = engineSch.currentStep;
+                        if (engine.sequence[currentStepForNote] === 1) {
+                            const noteId = `seq_${engine.id}_${currentStepForNote}_${engineSch.nextNoteTime}`;
+                            const freq = engine.melodicSequence[currentStepForNote];
+							const midiNote = frequencyToMidiNote(freq);
+                            noteOn(engine.id, noteId, midiNote, engineSch.nextNoteTime);
+                            
+                            const noteDuration = secondsPerStep * 0.8; // Note lasts 80% of step duration
+							const modGateDuration = secondsPerStep * 0.95; // Modulation gate is slightly longer
+                            noteOff(noteId, engineSch.nextNoteTime + noteDuration);
+
+							// Schedule the modulation gate for AudioParams
+							engineNodes.sequencerModGate.gain.setValueAtTime(1.0, engineSch.nextNoteTime);
+							engineNodes.sequencerModGate.gain.setValueAtTime(0.0, engineSch.nextNoteTime + modGateDuration);
+							
+							// Record modulation gate event for JS-based modulation (granular)
+							const modEvents = sequencerModEventsRef.current.get(engine.id) || [];
+							modEvents.push({ start: engineSch.nextNoteTime, end: engineSch.nextNoteTime + modGateDuration });
+							sequencerModEventsRef.current.set(engine.id, modEvents);
+                        }
+                        
+                        const stepTime = engineSch.nextNoteTime;
+                        setTimeout(() => {
+                            if (isTransportPlaying) { // check again in case it was stopped
+                                setSequencerCurrentSteps(prev => new Map(prev).set(engine.id, currentStepForNote));
+                            }
+                        }, (stepTime - now) * 1000);
+
+
+                        engineSch.nextNoteTime += secondsPerStep;
+                        engineSch.currentStep = (engineSch.currentStep + 1) % engine.sequencerSteps;
+                    }
+                });
+                
+                // --- Schedule Granular Synthesis ---
+                activeVoicesRef.current.forEach((voice) => {
+                    if (!voice.granularModeEnabled || !voice.nextGrainTime) return;
+
+                    const engine = latestStateRef.current.engines.find(e => e.id === voice.engineId);
+                    if (!engine || !engine.sampler.granularModeEnabled) {
+                        voice.granularModeEnabled = false; 
+                        return;
+                    }
+
+                    const sampleBuffer = samplesRef.current.get(voice.engineId);
+                    const engineNodes = audioNodesRef.current.get(voice.engineId);
+                    if (!sampleBuffer || !engineNodes) return;
+                    
+                    const density = engine.sampler.grainDensity;
+                    if (density <= 0) return;
+
+                    let nextGrainTime = voice.nextGrainTime;
+                    
+                    while (nextGrainTime < scheduleUntil) {
+						// --- Calculate JS-based modulation for this grain ---
+						let positionMod = 0, sizeMod = 0, densityMod = 0, jitterMod = 0;
+						const voiceEngineNum = voice.engineId.slice(-1);
+
+						const granularDestKeys = {
+							pos: `engine${voiceEngineNum}GrainPosition` as keyof LFORoutingState,
+							size: `engine${voiceEngineNum}GrainSize` as keyof LFORoutingState,
+							density: `engine${voiceEngineNum}GrainDensity` as keyof LFORoutingState,
+							jitter: `engine${voiceEngineNum}GrainJitter` as keyof LFORoutingState,
+						};
+						
+						// LFO Modulation
+						latestStateRef.current.lfos.forEach(lfo => {
+							const lfoVal = calculateLFOValue(lfo, nextGrainTime, latestStateRef.current.bpm);
+							if (lfo.routing[granularDestKeys.pos]) positionMod += lfoVal * 0.5; // Scale to +/- 0.5
+							if (lfo.routing[granularDestKeys.size]) sizeMod += lfoVal * 0.1; // Scale to +/- 100ms
+							if (lfo.routing[granularDestKeys.density]) densityMod += lfoVal * 50; // Scale to +/- 50
+							if (lfo.routing[granularDestKeys.jitter]) jitterMod += lfoVal * 0.5; // Scale to +/- 0.5
+						});
+
+						// Sequencer Modulation
+						latestStateRef.current.engines.forEach(sourceEngine => {
+							const modEvents = sequencerModEventsRef.current.get(sourceEngine.id);
+							let isGateOn = false;
+							if (modEvents) {
+								for (const event of modEvents) {
+									if (nextGrainTime >= event.start && nextGrainTime < event.end) {
+										isGateOn = true;
+										break;
+									}
+								}
+							}
+							if(isGateOn) {
+								if(sourceEngine.routing[granularDestKeys.pos]) positionMod += 0.5;
+								if(sourceEngine.routing[granularDestKeys.size]) sizeMod += 0.1;
+								if(sourceEngine.routing[granularDestKeys.density]) densityMod += 20;
+								if(sourceEngine.routing[granularDestKeys.jitter]) jitterMod += 0.5;
+							}
+						});
+
+
+                        const grainSource = audioContext.createBufferSource();
+                        grainSource.buffer = sampleBuffer;
+                        
+                        const basePosition = engine.sampler.playbackPosition;
+                        const jitter = (Math.random() - 0.5) * (engine.sampler.positionJitter + jitterMod);
+                        let finalPosition = basePosition + positionMod + jitter;
+                        finalPosition = Math.max(0, Math.min(1, finalPosition));
+
+						const grainSize = Math.max(0.005, engine.sampler.grainSize + sizeMod);
+
+                        const startOffset = Math.max(0, finalPosition * sampleBuffer.duration);
+                        const grainEnvelope = audioContext.createGain();
+                        const samplerGain = engineNodes.sampler.volumeGain;
+                        samplerGain.connect(voice.envelopeGain);
+                        
+                        grainEnvelope.connect(samplerGain);
+                        grainSource.connect(grainEnvelope);
+        
+                        grainSource.start(nextGrainTime, startOffset, grainSize * 2); 
+                        
+                        const attackTime = grainSize * 0.4;
+                        const releaseTime = grainSize * 0.4;
+        
+                        grainEnvelope.gain.setValueAtTime(0, nextGrainTime);
+                        grainEnvelope.gain.linearRampToValueAtTime(1, nextGrainTime + attackTime);
+                        grainEnvelope.gain.linearRampToValueAtTime(0, nextGrainTime + attackTime + releaseTime);
+        
+                        grainSource.stop(nextGrainTime + grainSize * 2);
+                        
+						const finalDensity = Math.max(1, density + densityMod);
+                        nextGrainTime += 1.0 / finalDensity;
+                    }
+                    
+                    voice.nextGrainTime = nextGrainTime;
+                });
+
+
+                schedulerState.current.timerId = window.setTimeout(scheduler, schedulerState.current.lookaheadTime);
+            };
+            
+            scheduler(); // Start the loop
+
+            return () => {
+                if (schedulerState.current.timerId) {
+                    clearTimeout(schedulerState.current.timerId);
+                }
+            };
+        }
+    }, [isTransportPlaying, audioContext, noteOn, noteOff]);
+
+	// MIDI Setup
+	useEffect(() => {
+		const setupMidi = async () => {
+			if (navigator.requestMIDIAccess) {
+				try {
+					const midiAccess = await navigator.requestMIDIAccess();
+					const inputs = Array.from(midiAccess.inputs.values());
+					setMidiInputs(inputs);
+
+					midiAccess.onstatechange = () => {
+						setMidiInputs(Array.from(midiAccess.inputs.values()));
+					};
+				} catch (error) {
+					console.error("MIDI access denied or not available.", error);
+				}
+			}
+		};
+		setupMidi();
+	}, []);
+	
+	// MIDI Message Handler
+	useEffect(() => {
+		const input = midiInputs.find(i => i.id === selectedMidiInputId);
+		if (input && audioContext) {
+			const handleMidiMessage = (event: MIDIMessageEvent) => {
+				const command = event.data[0] >> 4;
+				const note = event.data[1];
+				
+				setMidiActivity(true);
+				if(midiActivityTimeoutRef.current) clearTimeout(midiActivityTimeoutRef.current);
+				midiActivityTimeoutRef.current = window.setTimeout(() => setMidiActivity(false), 100);
+
+				const now = audioContext.currentTime;
+				if(command === 9 && event.data[2] > 0) { // Note On
+					latestStateRef.current.engines.forEach(engine => {
+						if(engine.midiControlled) {
+							noteOn(engine.id, `midi_${note}`, note, now);
+						}
+					})
+				} else if (command === 8 || (command === 9 && event.data[2] === 0)) { // Note Off
+					latestStateRef.current.engines.forEach(engine => {
+						if(engine.midiControlled) {
+							noteOff(`midi_${note}`, now);
+						}
+					})
+				}
+			}
+			input.onmidimessage = handleMidiMessage;
+			return () => { input.onmidimessage = null; }
+		}
+	}, [selectedMidiInputId, midiInputs, audioContext, noteOn, noteOff, harmonicTuningSystem]);
+
+	// Memoize a string representing the structure of the effects chain.
+    // This will only change if effects are added, removed, reordered, enabled/disabled,
+    // or if a phaser's number of stages changes.
+    		const masterEffectsChain = useMemo(() => {
+    			return masterEffects;
+    		}, [masterEffects]);
+    		// This useEffect handles STRUCTURAL changes to the audio graph:
+    		// creating/deleting nodes and connecting the final audio chain.
+    		useEffect(() => {
+    	        if (!audioContext || !masterVolumeNodeRef.current || !filterNodesRef.current || !masterAnalyserNodeRef.current) return;
+    	    
+    	        // 1. Create/Delete effect nodes based on structural changes
+    	        const currentEffectIds = masterEffects.map(e => e.id);
+    	        
+    	        effectNodesRef.current.forEach((_, id) => {
+    	            if (!currentEffectIds.includes(id)) {
+    	                effectNodesRef.current.get(id)?.input.disconnect();
+    	                effectNodesRef.current.delete(id);
+    	            }
+    	        });
+    	
+    	        masterEffects.forEach(effect => {
+    	            let effectNodes = effectNodesRef.current.get(effect.id);
+    	
+    	            // If phaser stages change, we must rebuild the node. This is a structural change.
+    	            if (effect.type === 'phaser' && effectNodes && effectNodes.nodes.filters.length !== effect.params.phaser?.stages) {
+    	                effectNodes.input.disconnect();
+    	                effectNodesRef.current.delete(effect.id);
+    	                effectNodes = undefined; // Force recreation
+    	            }
+    	
+    	            if (!effectNodes) {
+    	                const input = audioContext.createGain();
+    	                const output = audioContext.createGain();
+    	                let nodes: any = {};
+    	                 switch (effect.type) {
+    	                    case 'distortion':
+    	                        nodes.shaper = audioContext.createWaveShaper();
+    	                        input.connect(nodes.shaper).connect(output);
+    	                        break;
+    	                    case 'delay':
+    	                        nodes.delay = audioContext.createDelay(5.0);
+    	                        nodes.feedback = audioContext.createGain();
+    	                        nodes.wet = audioContext.createGain();
+    	                        nodes.dry = audioContext.createGain();
+    	                        input.connect(nodes.dry).connect(output);
+    	                        input.connect(nodes.delay).connect(nodes.feedback).connect(nodes.delay);
+    	                        nodes.delay.connect(nodes.wet).connect(output);
+    	                        break;
+    	                    case 'reverb':
+    	                        nodes.convolver = audioContext.createConvolver();
+    							nodes.wet = audioContext.createGain();
+    	                        nodes.dry = audioContext.createGain();
+    							input.connect(nodes.dry).connect(output);
+    							input.connect(nodes.convolver).connect(nodes.wet).connect(output);
+    	                        break;
+    						case 'chorus':
+    						case 'flanger':
+    							nodes.delay = audioContext.createDelay(1.0);
+    							nodes.lfo = audioContext.createOscillator();
+    							nodes.lfoGain = audioContext.createGain();
+    							nodes.feedback = audioContext.createGain();
+    							nodes.wet = audioContext.createGain();
+    	                        nodes.dry = audioContext.createGain();
+    							input.connect(nodes.dry).connect(output);
+    							input.connect(nodes.delay).connect(nodes.wet).connect(output);
+    							if(effect.type === 'flanger') {
+    								nodes.delay.connect(nodes.feedback).connect(nodes.delay);
+    							}
+    							nodes.lfo.connect(nodes.lfoGain).connect(nodes.delay.delayTime);
+    							nodes.lfo.start();
+    							if (dummyGainRef.current) {
+    								nodes.lfo.connect(dummyGainRef.current);
+    							}
+    							break;
+    						case 'phaser':
+    							nodes.filters = [];
+    							let lastPhaserNode: AudioNode = input;
+    							for(let i=0; i < (effect.params.phaser?.stages || 4); i++) {
+    								const filter = audioContext.createBiquadFilter();
+    								filter.type = 'allpass';
+    								nodes.filters.push(filter);
+    								lastPhaserNode.connect(filter);
+    								lastPhaserNode = filter;
+    							}
+    							nodes.lfo = audioContext.createOscillator();
+    							nodes.lfoGain = audioContext.createGain();
+    							nodes.filters.forEach(f => nodes.lfoGain.connect(f.frequency));
+    							nodes.lfo.connect(nodes.lfoGain);
+    							nodes.lfo.start();
+    							if (dummyGainRef.current) {
+    								nodes.lfo.connect(dummyGainRef.current);
+    							}
+    							nodes.wet = audioContext.createGain();
+    	                        nodes.dry = audioContext.createGain();
+    							input.connect(nodes.dry).connect(output);
+    							lastPhaserNode.connect(nodes.wet).connect(output);
+    							break;
+    						case 'tremolo':
+    							nodes.lfo = audioContext.createOscillator();
+    							nodes.lfoGain = audioContext.createGain();
+    							nodes.lfo.connect(nodes.lfoGain).connect(output.gain);
+    							nodes.lfo.start();
+    							if (dummyGainRef.current) {
+    								nodes.lfo.connect(dummyGainRef.current);
+    							}
+    							input.connect(output);
+    							break;
+    						case 'eq':
+    							nodes.bands = [];
+    							let lastEQNode: AudioNode = input;
+    							eqFrequencies.forEach((freq, i) => {
+    								const filter = audioContext.createBiquadFilter();
+    								if (i === 0) filter.type = 'lowshelf';
+    								else if (i === eqFrequencies.length - 1) filter.type = 'highshelf';
+    								else filter.type = 'peaking';
+    								filter.frequency.value = freq;
+    								nodes.bands.push(filter);
+    								lastEQNode.connect(filter);
+    								lastEQNode = filter;
+    							});
+    							lastEQNode.connect(output);
+    							break;
+    	                }
+    	                effectNodesRef.current.set(effect.id, { id: effect.id, type: effect.type, input, output, nodes });
+    	            }
+    	        });
+    	        
+    	        // 2. Connect the entire audio graph
+    	        const masterBus = audioContext.createGain();
+    	        const f1 = filterNodesRef.current.filter1.node;
+    	        const f2 = filterNodesRef.current.filter2.node;
+    	    
+    			// Disconnect everything first to be safe
+    			masterBus.disconnect();
+    			f1.disconnect();
+    			f2.disconnect();
+    			audioNodesRef.current.forEach(nodes => nodes.finalOutput.disconnect());
+    	
+    	        audioNodesRef.current.forEach(nodes => nodes.finalOutput.connect(masterBus));
+    	    
+    	        let lastNode: AudioNode = masterBus;
+    	    
+    	        if (filterRouting === 'series') {
+    	            if (filter1State.enabled) { lastNode.connect(f1); lastNode = f1; }
+    	            if (filter2State.enabled) { lastNode.connect(f2); lastNode = f2; }
+    	        } else { // Parallel
+    	            const parallelOutput = audioContext.createGain();
+    				let isAnyFilterEnabled = false;
+    	
+    				if (filter1State.enabled) {
+    					masterBus.connect(f1);
+    					f1.connect(parallelOutput);
+    					isAnyFilterEnabled = true;
+    				}
+    				if (filter2State.enabled) {
+    					masterBus.connect(f2);
+    					f2.connect(parallelOutput);
+    					isAnyFilterEnabled = true;
+    				}
+    				
+    				if (!isAnyFilterEnabled) {
+    					masterBus.connect(parallelOutput);
+    				}
+    	            
+    				lastNode = parallelOutput;
+    	        }
+    	
+    	        masterEffects.forEach(effect => {
+    	            if (effect.enabled) {
+    	                const effectNodes = effectNodesRef.current.get(effect.id);
+    	                if (effectNodes) {
+    	                    lastNode.connect(effectNodes.input);
+    	                    lastNode = effectNodes.output;
+    	                }
+    	            }
+    	        });
+    	
+    	        lastNode.connect(masterVolumeNodeRef.current);
+    	        masterVolumeNodeRef.current.connect(masterAnalyserNodeRef.current);
+    	        masterAnalyserNodeRef.current.connect(audioContext.destination);
+    	    
+    	        return () => { // Cleanup on unmount or re-run
+    	            masterBus.disconnect();
+    	            f1.disconnect();
+    	            f2.disconnect();
+    	            effectNodesRef.current.forEach(fx => {
+    	                fx.input.disconnect();
+    	            });
+    	            masterVolumeNodeRef.current?.disconnect();
+    	            masterAnalyserNodeRef.current?.disconnect();
+    	        };
+    	    
+    	    }, [audioContext, filter1State.enabled, filter2State.enabled, filterRouting, masterEffectsChain]);
+	// This useEffect handles PARAMETER changes for existing effect nodes,
+    // which does not require disconnecting the audio graph.
+    useEffect(() => {
+        if (!audioContext || !effectNodesRef.current.size) return;
+        const now = audioContext.currentTime;
+
+        masterEffects.forEach(effect => {
+            const effectNodes = effectNodesRef.current.get(effect.id);
+            if (!effectNodes) return;
+            
+            const { params } = effect;
+            const { nodes } = effectNodes;
+            switch(effect.type) {
+				case 'distortion':
+					nodes.shaper.curve = makeDistortionCurve(params.distortion!.amount, params.distortion!.mode);
+					break;
+				case 'delay':
+					nodes.delay.delayTime.setTargetAtTime(params.delay!.time, now, 0.01);
+					nodes.feedback.gain.setTargetAtTime(params.delay!.feedback, now, 0.01);
+					nodes.wet.gain.setTargetAtTime(params.delay!.mix, now, 0.01);
+					nodes.dry.gain.setTargetAtTime(1 - params.delay!.mix, now, 0.01);
+					break;
+				case 'reverb': {
+					const decay = Math.max(0.1, params.reverb!.decay);
+					const cacheKey = `${decay.toFixed(2)}`;
+					if (reverbImpulseCache.current.has(cacheKey)) {
+						nodes.convolver.buffer = reverbImpulseCache.current.get(cacheKey)!;
+					} else {
+						const newImpulse = makeReverbImpulse(audioContext, decay, decay);
+						nodes.convolver.buffer = newImpulse;
+						reverbImpulseCache.current.set(cacheKey, newImpulse);
+					}
+					nodes.wet.gain.setTargetAtTime(params.reverb!.mix, now, 0.01);
+					nodes.dry.gain.setTargetAtTime(1 - params.reverb!.mix, now, 0.01);
+					break;
+				}
+				case 'chorus':
+					nodes.lfo.frequency.setTargetAtTime(params.chorus!.rate, now, 0.01);
+					nodes.lfoGain.gain.setTargetAtTime(0.005 * params.chorus!.depth, now, 0.01); // 5ms depth
+					nodes.delay.delayTime.setTargetAtTime(0.02, now, 0.01); // 20ms delay
+					nodes.wet.gain.setTargetAtTime(params.chorus!.mix, now, 0.01);
+					nodes.dry.gain.setTargetAtTime(1 - params.chorus!.mix, now, 0.01);
+					break;
+				case 'flanger':
+					nodes.lfo.frequency.setTargetAtTime(params.flanger!.rate, now, 0.01);
+					nodes.lfoGain.gain.setTargetAtTime(params.flanger!.delay * params.flanger!.depth, now, 0.01);
+					nodes.delay.delayTime.setTargetAtTime(params.flanger!.delay, now, 0.01);
+					nodes.feedback.gain.setTargetAtTime(params.flanger!.feedback, now, 0.01);
+					nodes.wet.gain.setTargetAtTime(params.flanger!.mix, now, 0.01);
+					nodes.dry.gain.setTargetAtTime(1 - params.flanger!.mix, now, 0.01);
+					break;
+				case 'phaser':
+					nodes.lfo.frequency.setTargetAtTime(params.phaser!.rate, now, 0.01);
+					nodes.lfoGain.gain.setTargetAtTime(1000, now, 0.01); // Modulate over 1000Hz range
+					nodes.filters.forEach((f: BiquadFilterNode) => f.Q.setTargetAtTime(params.phaser!.q, now, 0.01));
+					nodes.wet.gain.setTargetAtTime(params.phaser!.mix, now, 0.01);
+					nodes.dry.gain.setTargetAtTime(1 - params.phaser!.mix, now, 0.01);
+					break;
+				case 'tremolo':
+					nodes.lfo.type = params.tremolo!.shape === 'ramp' ? 'sawtooth' : params.tremolo!.shape;
+					nodes.lfo.frequency.setTargetAtTime(params.tremolo!.rate, now, 0.01);
+					nodes.lfoGain.gain.setTargetAtTime(params.tremolo!.depth, now, 0.01);
+					// Tremolo mix is handled by depth
+					break;
+				case 'eq':
+					nodes.bands.forEach((band: BiquadFilterNode, i: number) => {
+						band.gain.setTargetAtTime(params.eq!.bands[i], now, 0.01);
+					});
+					break;
+			}
+        });
+    }, [audioContext, masterEffects]);
+
+    // Update Filter Params
+    useEffect(() => {
+        if (!audioContext || !filterNodesRef.current) return;
+        const { node: f1 } = filterNodesRef.current.filter1;
+        const { node: f2 } = filterNodesRef.current.filter2;
+        
+        const now = audioContext.currentTime;
+        f1.type = filter1State.type;
+        f1.frequency.setTargetAtTime(filter1State.cutoff, now, 0.01);
+        f1.Q.setTargetAtTime(filter1State.resonance, now, 0.01);
+
+        f2.type = filter2State.type;
+        f2.frequency.setTargetAtTime(filter2State.cutoff, now, 0.01);
+        f2.Q.setTargetAtTime(filter2State.resonance, now, 0.01);
+
+    }, [audioContext, filter1State, filter2State]);
+
+    // LFO Parameter and Routing Update
+    useEffect(() => {
+        if (!audioContext || !lfoNodesRef.current || !lfoRoutingBussesRef.current) return;
+		const now = audioContext.currentTime;
+
+        lfos.forEach(lfo => {
+            const lfoNodes = lfoNodesRef.current.get(lfo.id);
+            if (!lfoNodes) return;
+
+            const { lfoNode, depthGain } = lfoNodes;
+            lfoNode.type = lfo.shape === 'ramp' ? 'sawtooth' : lfo.shape; // Ramp is a sawtooth
+            depthGain.gain.setTargetAtTime(lfo.depth, now, 0.01);
+
+			let lfoFrequency = lfo.rate;
+			if (lfo.sync) {
+				const syncRate = lfo.syncRate;
+				let noteValueInBeats = 1;
+				// lfoSyncRates does not have dotted notes, but this is robust
+				const isDotted = syncRate.endsWith("d");
+				const cleanRate = syncRate.replace("d", "");
+
+				if (cleanRate.includes("/")) {
+					const parts = cleanRate.split("/");
+					const denominator = parseFloat(parts[1]);
+					if (denominator) noteValueInBeats = 4 / denominator;
+				} else {
+					const val = parseFloat(cleanRate);
+					if (val) noteValueInBeats = 4 / val;
+				}
+
+				if (isDotted) {
+					noteValueInBeats *= 1.5;
+				}
+
+				const durationInSeconds = noteValueInBeats * (60 / bpm);
+				if (durationInSeconds > 0) {
+					lfoFrequency = 1 / durationInSeconds;
+				}
+			}
+            lfoNode.frequency.setTargetAtTime(lfoFrequency, now, 0.01);
+
+            // Update routing
+            Object.entries(lfo.routing).forEach(([dest, isConnected]) => {
+				const destKey = dest as keyof LFORoutingState;
+				let targetBus: GainNode | undefined;
+				if (destKey.startsWith('filter')) {
+					const filterNum = destKey.includes('1') ? 'filter1' : 'filter2';
+					const param = destKey.includes('Cutoff') ? 'cutoffModBus' : 'resonanceModBus';
+					targetBus = lfoRoutingBussesRef.current![filterNum][param];
+				} else if (destKey.startsWith('engine')) {
+					const engineId = `engine${destKey.charAt(6)}`;
+					const paramKey = destKey.substring(7) as keyof EngineModBusses;
+					// lowercase first letter
+					const busKey = paramKey.charAt(0).toLowerCase() + paramKey.slice(1);
+					targetBus = lfoRoutingBussesRef.current!.engineModBusses.get(engineId)?.[busKey as keyof EngineModBusses];
+				}
+
+                if (targetBus) {
+					try { depthGain.disconnect(targetBus); } catch(e) {}
+                    if (isConnected) {
+						depthGain.connect(targetBus);
+					}
+                }
+            });
+        });
+    }, [audioContext, lfos, bpm]);
+
+	// Sequencer Modulation Routing Update
+	useEffect(() => {
+		if (!audioContext || !lfoRoutingBussesRef.current) return;
+	
+		engines.forEach(engine => {
+			const engineNodes = audioNodesRef.current.get(engine.id);
+			if (!engineNodes) return;
+	
+			const { sequencerModGate } = engineNodes;
+	
+			Object.entries(engine.routing).forEach(([dest, isConnected]) => {
+				const destKey = dest as keyof LFORoutingState;
+				let targetBus: GainNode | undefined;
+	
+				if (destKey.startsWith('filter')) {
+					const filterNum = destKey.includes('1') ? 'filter1' : 'filter2';
+					const param = destKey.includes('Cutoff') ? 'cutoffModBus' : 'resonanceModBus';
+					targetBus = lfoRoutingBussesRef.current![filterNum][param];
+				} else if (destKey.startsWith('engine')) {
+					const engineId = `engine${destKey.charAt(6)}`;
+					const paramKey = destKey.substring(7) as keyof EngineModBusses;
+					const busKey = paramKey.charAt(0).toLowerCase() + paramKey.slice(1);
+					targetBus = lfoRoutingBussesRef.current!.engineModBusses.get(engineId)?.[busKey as keyof EngineModBusses];
+				}
+	
+				if (targetBus) {
+					try {
+						sequencerModGate.disconnect(targetBus);
+					} catch (e) {
+						// Ignore disconnection errors
+					}
+					if (isConnected) {
+						sequencerModGate.connect(targetBus);
+					}
+				}
+			});
+		});
+	}, [audioContext, engines]);
+
+	// Morphing Animation Loop
+	useEffect(() => {
+		if (!isMorphing || !audioContext) return;
+		let animationFrameId: number;
+
+		const animate = () => {
+			const now = Date.now();
+			const startTime = morphStartTimeRef.current!;
+			const duration = calculateTimeFromSync(
+				latestStateRef.current.bpm,
+				isMorphSynced,
+				morphSyncRateIndex,
+				syncRates,
+				morphTime
+			);
+			const progress = Math.min((now - startTime) / duration, 1);
+
+			const startState = morphStartRef.current;
+			const targetState = morphTargetRef.current;
+			const audioNow = audioContext.currentTime;
+			const rampTime = 0.01;
+
+			// Direct AudioParam manipulation (for performance)
+			if (startState && targetState) {
+				audioNodesRef.current.forEach((nodes, id) => {
+					const start = startState.engines.find((e: EngineState) => e.id === id);
+					const target = targetState.engines.find((e: EngineState) => e.id === id);
+					if (!start || !target) return;
+
+					nodes.synth.volumeGain.gain.setTargetAtTime(lerp(start.synth.volume, target.synth.volume, progress), audioNow, rampTime);
+					nodes.noise.volumeGain.gain.setTargetAtTime(lerp(start.noise.volume, target.noise.volume, progress), audioNow, rampTime);
+					nodes.sampler.volumeGain.gain.setTargetAtTime(lerp(start.sampler.volume, target.sampler.volume, progress), audioNow, rampTime);
+				});
+				
+				if (filterNodesRef.current) {
+					filterNodesRef.current.filter1.node.frequency.setTargetAtTime(lerp(startState.filter1State.cutoff, targetState.filter1State.cutoff, progress), audioNow, rampTime);
+					filterNodesRef.current.filter1.node.Q.setTargetAtTime(lerp(startState.filter1State.resonance, targetState.filter1State.resonance, progress), audioNow, rampTime);
+					filterNodesRef.current.filter2.node.frequency.setTargetAtTime(lerp(startState.filter2State.cutoff, targetState.filter2State.cutoff, progress), audioNow, rampTime);
+					filterNodesRef.current.filter2.node.Q.setTargetAtTime(lerp(startState.filter2State.resonance, targetState.filter2State.resonance, progress), audioNow, rampTime);
+				}
+
+				lfoNodesRef.current.forEach((nodes, id) => {
+					const start = startState.lfos.find((l: LFOState) => l.id === id);
+					const target = targetState.lfos.find((l: LFOState) => l.id === id);
+					if (!start || !target) return;
+					nodes.lfoNode.frequency.setTargetAtTime(lerp(start.rate, target.rate, progress), audioNow, rampTime);
+					nodes.depthGain.gain.setTargetAtTime(lerp(start.depth, target.depth, progress), audioNow, rampTime);
+				});
+
+				effectNodesRef.current.forEach((fxNodes, id) => {
+					const start = startState.masterEffects.find((e: MasterEffect) => e.id === id);
+					const target = targetState.masterEffects.find((e: MasterEffect) => e.id === id);
+					if (!start || !target || start.type !== target.type) return;
+
+					const startParams = start.params;
+					const targetParams = target.params;
+					
+					switch (fxNodes.type) {
+						case "delay":
+							fxNodes.nodes.delay.delayTime.setTargetAtTime(lerp(startParams.delay!.time, targetParams.delay!.time, progress), audioNow, rampTime);
+							fxNodes.nodes.feedback.gain.setTargetAtTime(lerp(startParams.delay!.feedback, targetParams.delay!.feedback, progress), audioNow, rampTime);
+							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.delay!.mix, targetParams.delay!.mix, progress), audioNow, rampTime);
+							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.delay!.mix, targetParams.delay!.mix, progress), audioNow, rampTime);
+							break;
+						case "reverb":
+							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.reverb!.mix, targetParams.reverb!.mix, progress), audioNow, rampTime);
+							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.reverb!.mix, targetParams.reverb!.mix, progress), audioNow, rampTime);
+							break;
+						case "chorus":
+							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.chorus!.rate, targetParams.chorus!.rate, progress), audioNow, rampTime);
+							fxNodes.nodes.lfoGain.gain.setTargetAtTime(0.005 * lerp(startParams.chorus!.depth, targetParams.chorus!.depth, progress), audioNow, rampTime);
+							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.chorus!.mix, targetParams.chorus!.mix, progress), audioNow, rampTime);
+							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.chorus!.mix, targetParams.chorus!.mix, progress), audioNow, rampTime);
+							break;
+						case "flanger":
+							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.flanger!.rate, targetParams.flanger!.rate, progress), audioNow, rampTime);
+							const flangerLfoGain = lerp(startParams.flanger!.delay, targetParams.flanger!.delay, progress) * lerp(startParams.flanger!.depth, targetParams.flanger!.depth, progress);
+							fxNodes.nodes.lfoGain.gain.setTargetAtTime(flangerLfoGain, audioNow, rampTime);
+							fxNodes.nodes.delay.delayTime.setTargetAtTime(lerp(startParams.flanger!.delay, targetParams.flanger!.delay, progress), audioNow, rampTime);
+							fxNodes.nodes.feedback.gain.setTargetAtTime(lerp(startParams.flanger!.feedback, targetParams.flanger!.feedback, progress), audioNow, rampTime);
+							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.flanger!.mix, targetParams.flanger!.mix, progress), audioNow, rampTime);
+							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.flanger!.mix, targetParams.flanger!.mix, progress), audioNow, rampTime);
+							break;
+						case "phaser":
+							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.phaser!.rate, targetParams.phaser!.rate, progress), audioNow, rampTime);
+							fxNodes.nodes.filters.forEach((f: BiquadFilterNode) => f.Q.setTargetAtTime(lerp(startParams.phaser!.q, targetParams.phaser!.q, progress), audioNow, rampTime));
+							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.phaser!.mix, targetParams.phaser!.mix, progress), audioNow, rampTime);
+							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.phaser!.mix, targetParams.phaser!.mix, progress), audioNow, rampTime);
+							break;
+						case "tremolo":
+							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.tremolo!.rate, targetParams.tremolo!.rate, progress), audioNow, rampTime);
+							fxNodes.nodes.lfoGain.gain.setTargetAtTime(lerp(startParams.tremolo!.depth, targetParams.tremolo!.depth, progress), audioNow, rampTime);
+							break;
+						case "eq":
+							fxNodes.nodes.bands.forEach((band: BiquadFilterNode, i: number) => {
+								band.gain.setTargetAtTime(lerp(startParams.eq!.bands[i], targetParams.eq!.bands[i], progress), audioNow, rampTime);
+							});
+							break;
+					}
+				});
+
+				// React State manipulation for non-AudioParam values (like granular)
+				setEngines(currentEngines => currentEngines.map((engine, i) => {
+					const start = startState.engines[i];
+					const target = targetState.engines[i];
+					if (!start || !target) return engine;
+
+					return {
+						...engine,
+						sequencerPulses: Math.round(lerp(start.sequencerPulses, target.sequencerPulses, progress)),
+						sequencerRotate: Math.round(lerp(start.sequencerRotate, target.sequencerRotate, progress)),
+						sampler: {
+							...engine.sampler,
+							grainSize: lerp(start.sampler.grainSize, target.sampler.grainSize, progress),
+							grainDensity: lerp(start.sampler.grainDensity, target.sampler.grainDensity, progress),
+							playbackPosition: lerp(start.sampler.playbackPosition, target.sampler.playbackPosition, progress),
+							positionJitter: lerp(start.sampler.positionJitter, target.sampler.positionJitter, progress),
+						},
+						 adsr: {
+							attack: lerp(start.adsr.attack, target.adsr.attack, progress),
+							decay: lerp(start.adsr.decay, target.adsr.decay, progress),
+							sustain: lerp(start.adsr.sustain, target.adsr.sustain, progress),
+							release: lerp(start.adsr.release, target.adsr.release, progress),
+						}
+					}
+				}));
+			}
+
+			if (progress < 1) {
+				animationFrameId = requestAnimationFrame(animate);
+			} else {
+				// The morph is done. Set the final state, but be careful not to overwrite
+				// structural changes the user might have made during the animation (e.g., adding/removing effects).
+				const finalTargetState = morphTargetRef.current;
+
+				if (finalTargetState) {
+					// For master effects, we only update the PARAMS of effects that existed
+					// at the start of the morph. This preserves any user additions/removals to the LIST.
+					setMasterEffects(currentEffects => {
+						// Create a map of target parameters for easy lookup.
+						const targetParamsMap = new Map(
+							finalTargetState.masterEffects.map((e: MasterEffect) => [e.id, e.params])
+						);
+						
+						// Iterate over the CURRENT effects list.
+						return currentEffects.map(effect => {
+							// If the current effect was part of the morph...
+							if (targetParamsMap.has(effect.id)) {
+								// ...update its parameters to the final target state.
+								return { ...effect, params: targetParamsMap.get(effect.id)! };
+							}
+							// Otherwise, this effect was added mid-morph, so we keep it as is.
+							return effect;
+						});
+					});
+
+					// For other states, we can set them directly from the target.
+					setEngines(finalTargetState.engines);
+					setLfos(finalTargetState.lfos);
+					setFilter1State(finalTargetState.filter1State);
+					setFilter2State(finalTargetState.filter2State);
+				}
+				
+				setIsMorphing(false);
+				// Clear refs for safety
+				morphStartRef.current = null;
+				morphTargetRef.current = null;
+			}
+		};
+
+		animationFrameId = requestAnimationFrame(animate);
+		return () => cancelAnimationFrame(animationFrameId);
+	}, [isMorphing, audioContext, morphTime, isMorphSynced, morphSyncRateIndex, syncRates]);
+
+
+	// Initialize functions
+	const handleInitialize = useCallback((scope: string) => {
+		const initial = getInitialState();
+		if (scope.startsWith("engine")) {
+			const targetEngine = initial.engines.find((e: EngineState) => e.id === scope);
+			if (targetEngine) setEngines(prev => prev.map((e: EngineState) => e.id === scope ? targetEngine : e));
+		}
+		if (scope.startsWith("filter")) {
+			if (scope === 'filter1') setFilter1State(initial.filter1);
+			if (scope === 'filter2') setFilter2State(initial.filter2);
+		}
+		if (scope.startsWith("lfo")) {
+			const targetLfo = initial.lfos.find((l: LFOState) => l.id === scope);
+			if (targetLfo) setLfos(prev => prev.map((l: LFOState) => l.id === scope ? targetLfo : l));
+		}
+		if (scope.startsWith("masterEffect")) {
+			// This would require more specific logic
+		}
+	}, []);
+	
+	const handleInitializeAll = useCallback(() => {
+		const initial = getInitialState();
+		setEngines(initial.engines);
+		setLfos(initial.lfos);
+		setFilter1State(initial.filter1);
+		setFilter2State(initial.filter2);
+		setMasterEffects(initial.masterEffects);
+	}, []);
+
+	const handlePanic = useCallback(() => {
+		if (!audioContext || !masterVolumeNodeRef.current) return;
+		setIsTransportPlaying(false); // Stop sequencers
+
+		// Stop all active notes with a fast release
+		const now = audioContext.currentTime;
+		activeVoicesRef.current.forEach(voice => {
+			voice.envelopeGain.gain.cancelScheduledValues(now);
+			voice.envelopeGain.gain.setTargetAtTime(0.0, now, 0.01);
+		});
+		
+		// Flush effect tails by quickly ramping master volume
+		masterVolumeNodeRef.current.gain.cancelScheduledValues(now);
+		masterVolumeNodeRef.current.gain.setValueAtTime(masterVolumeNodeRef.current.gain.value, now);
+		masterVolumeNodeRef.current.gain.linearRampToValueAtTime(0.0, now + 0.05);
+		masterVolumeNodeRef.current.gain.linearRampToValueAtTime(masterVolume, now + 0.3);
+
+		setTimeout(() => activeVoicesRef.current.clear(), 100);
+
+	}, [audioContext, masterVolume]);
+
+	const handleRecordSampleRequest = useCallback(async () => {
+		if (!audioContext) return null;
+		if (audioInputStream) {
+			audioInputStream.getTracks().forEach(track => track.stop());
+		}
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			setAudioInputStream(stream);
 			return stream;
 		} catch (err) {
 			console.error("Microphone access denied:", err);
-			alert(
-				"Microphone access is required for this feature. Please grant permission in your browser settings."
-			);
+			alert("Microphone access is required for recording.");
 			return null;
 		}
-	};
+	}, [audioContext, audioInputStream]);
 
-	const handleToggleLiveInput = useCallback(
-		async (engineId: string, enabled: boolean) => {
-			if (enabled) {
-				const stream = await requestMicrophone();
-				if (!stream) return; // Permission denied or failed
-			}
-			handleLayerUpdate(engineId, "sampler", { liveInputEnabled: enabled });
-		},
-		[audioInputStream, handleLayerUpdate]
-	);
+	const handleRecordSample = useCallback((engineId: string, buffer: AudioBuffer) => {
+		samplesRef.current.set(engineId, buffer);
+		setEngines(prev => prev.map(e => e.id === engineId ? {...e, sampler: {...e.sampler, sampleName: `Rec-${new Date().toLocaleTimeString()}`}} : e));
+	}, []);
 
-	const initAudio = useCallback(async () => {
-		const context = new (window.AudioContext ||
-			(window as any).webkitAudioContext)();
-
-		// Master Volume, Analyser, and Safety Limiter
-		const masterGain = context.createGain();
-		masterGain.gain.value = masterVolume;
-		const masterAnalyser = context.createAnalyser();
-		masterAnalyser.fftSize = 2048;
-		const masterLimiter = context.createDynamicsCompressor();
-
-		// Configure as a brickwall limiter
-		masterLimiter.threshold.setValueAtTime(-0.1, context.currentTime);
-		masterLimiter.knee.setValueAtTime(0, context.currentTime);
-		masterLimiter.ratio.setValueAtTime(20, context.currentTime);
-		masterLimiter.attack.setValueAtTime(0.001, context.currentTime);
-		masterLimiter.release.setValueAtTime(0.05, context.currentTime);
-
-		masterGain.connect(masterAnalyser);
-		masterAnalyser.connect(masterLimiter);
-		masterLimiter.connect(context.destination);
-
-		masterVolumeNodeRef.current = masterGain;
-		masterAnalyserNodeRef.current = masterAnalyser;
-
-		// --- Setup Master Filters ---
-		const createFilter = (): FilterNodes => {
-			const node = context.createBiquadFilter();
-			const cutoffModBus = context.createGain();
-			cutoffModBus.gain.value = 1; // Start with no modulation
-			cutoffModBus.connect(node.frequency);
-			const resonanceModBus = context.createGain();
-			resonanceModBus.gain.value = 1;
-			resonanceModBus.connect(node.Q);
-			return { node, cutoffModBus, resonanceModBus };
-		};
-		filterNodesRef.current = {
-			filter1: createFilter(),
-			filter2: createFilter(),
-		};
-
-		// --- Setup LFOs and Routing Busses ---
-		const engineModBussesMap = new Map<string, EngineModBusses>();
-		engines.forEach((engine) => {
-			const busses: EngineModBusses = {
-				vol: context.createGain(),
-				synthFreq: context.createGain(),
-				samplerTranspose: context.createGain(),
-				grainSize: context.createGain(),
-				grainDensity: context.createGain(),
-				grainPosition: context.createGain(),
-				grainJitter: context.createGain(),
-			};
-			Object.values(busses).forEach((bus) => (bus.gain.value = 0));
-			engineModBussesMap.set(engine.id, busses);
-		});
-		lfoRoutingBussesRef.current = {
-			filter1: {
-				cutoffModBus: context.createGain(),
-				resonanceModBus: context.createGain(),
-			},
-			filter2: {
-				cutoffModBus: context.createGain(),
-				resonanceModBus: context.createGain(),
-			},
-			engineModBusses: engineModBussesMap,
-		};
-		// Connect LFO routing busses to filter mod inputs
-		lfoRoutingBussesRef.current.filter1.cutoffModBus.connect(
-			filterNodesRef.current.filter1.node.frequency
-		);
-		lfoRoutingBussesRef.current.filter1.resonanceModBus.connect(
-			filterNodesRef.current.filter1.node.Q
-		);
-		lfoRoutingBussesRef.current.filter2.cutoffModBus.connect(
-			filterNodesRef.current.filter2.node.frequency
-		);
-		lfoRoutingBussesRef.current.filter2.resonanceModBus.connect(
-			filterNodesRef.current.filter2.node.Q
-		);
-
-		lfos.forEach((lfo) => {
-			const lfoNode = context.createOscillator();
-			const depthGain = context.createGain();
-			lfoNode.connect(depthGain);
-			lfoNode.start();
-			lfoNodesRef.current.set(lfo.id, { lfoNode, depthGain });
-		});
-
-		// --- Setup Engines ---
-		engines.forEach((engine) => {
-			const engineNodes: EngineAudioNodes = {
-				synth: { volumeGain: context.createGain() },
-				noise: { volumeGain: context.createGain() },
-				sampler: { volumeGain: context.createGain() },
-				engineMixer: context.createGain(),
-				sequencerGain: context.createGain(),
-				midiInputGain: context.createGain(),
-				sequencerModSource: context.createConstantSource(),
-				sequencerModGate: context.createGain(),
-				finalOutput: context.createGain(),
-				analyser: context.createAnalyser(),
-			};
-			engineNodes.analyser.fftSize = 256;
-
-			const engineModBusses = lfoRoutingBussesRef.current!.engineModBusses.get(
-				engine.id
-			)!;
-			engineModBusses.vol.connect(engineNodes.finalOutput.gain); // Volume mod affects the final output gain of the engine
-
-			// Connect layers to engine mixer
-			engineNodes.synth.volumeGain.connect(engineNodes.engineMixer);
-			engineNodes.noise.volumeGain.connect(engineNodes.engineMixer);
-			engineNodes.sampler.volumeGain.connect(engineNodes.engineMixer);
-
-			// Sequencer and MIDI gain paths
-			engineNodes.sequencerGain.connect(engineNodes.engineMixer);
-			engineNodes.midiInputGain.connect(engineNodes.engineMixer);
-
-			// The combined output of seq+midi goes to the main engine mixer
-			engineNodes.engineMixer.connect(engineNodes.finalOutput);
-
-			// Connect final output to analyser and then to filters
-			engineNodes.finalOutput.connect(engineNodes.analyser);
-			engineNodes.finalOutput.connect(filterNodesRef.current!.filter1.node); // Start of filter chain
-
-			// Sequencer modulation source setup
-			engineNodes.sequencerModSource.offset.value = 1;
-			engineNodes.sequencerModSource.start();
-			engineNodes.sequencerModSource.connect(engineNodes.sequencerModGate);
-
-			audioNodesRef.current.set(engine.id, engineNodes);
-		});
-
-		// Connect filter chain
-		filterNodesRef.current.filter1.node.connect(
-			filterNodesRef.current.filter2.node
-		);
-		// The end of the filter chain will connect to the master effects chain start
-
-		setAudioContext(context);
-		setIsInitialized(true);
-
-		// --- MIDI Setup ---
-		try {
-			const midiAccess = await navigator.requestMIDIAccess();
-			const inputs = Array.from(midiAccess.inputs.values());
-			setMidiInputs(inputs);
-			if (inputs.length > 0) {
-				setSelectedMidiInputId(inputs[0].id);
-			}
-		} catch (error) {
-			console.error("MIDI access denied or not supported.", error);
-		}
-	}, [engines, lfos, masterVolume]);
-
-	// --- Audio Logic Hook ---
-	useAudio({
-		audioContext,
-		enginesRef,
-		lfos,
-		masterVolume,
-		bpm,
-		isTransportPlaying,
-		currentStep,
-		setCurrentStep,
-		samples: samplesRef.current,
-		audioNodes: audioNodesRef.current,
-		filterNodes: filterNodesRef.current,
-		masterVolumeNode: masterVolumeNodeRef.current,
-		lfoNodes: lfoNodesRef.current,
-		lfoRoutingBusses: lfoRoutingBussesRef.current,
-		filter1State,
-		filter2State,
-		filterRouting,
-		activeVoices: activeVoicesRef.current,
-		harmonicTuningSystem,
-		voicingMode,
-		glideTime,
-		isGlideSynced,
-		glideSyncRateIndex,
-		glideSyncRates: syncRates,
-		activeMonoNotePerEngineRef,
-		lastPlayedNotePerEngineRef,
-		masterEffects,
-		audioInputStream,
-		effectNodes: effectNodesRef.current,
-		scale,
-		transpose,
-	});
-
-	// --- Note Handlers ---
-	const handleNoteOff = useCallback(
-		(note: number, specificEngineId?: string) => {
-			if (!audioContext) return;
-			const now = audioContext.currentTime;
-
-			const enginesToProcess = specificEngineId
-				? engines.filter((e) => e.id === specificEngineId)
-				: engines;
-
-			enginesToProcess.forEach((engine) => {
-				const voiceKey = `${note}-${engine.id}`;
-				const voice = activeVoicesRef.current.get(voiceKey);
-
-				if (voice) {
-					const adsr = engine.adsr;
-					const currentGain = voice.envelopeGain.gain.value;
-					voice.envelopeGain.gain.cancelScheduledValues(now);
-					voice.envelopeGain.gain.setValueAtTime(currentGain, now);
-					voice.envelopeGain.gain.setTargetAtTime(0, now, adsr.release / 4);
-
-					const stopTime = now + adsr.release + 0.5;
-					voice.sourceNodes.forEach((node) => {
-						try {
-							node.stop(stopTime);
-						} catch (e) {
-							/* ignore */
-						}
-					});
-
-					voice.timeoutId = window.setTimeout(() => {
-						activeVoicesRef.current.delete(voiceKey);
-					}, (adsr.release + 0.6) * 1000);
-				}
-			});
-
-			if (voicingMode !== "poly") {
-				if (specificEngineId) {
-					if (
-						activeMonoNotePerEngineRef.current.get(specificEngineId) === note
-					) {
-						activeMonoNotePerEngineRef.current.delete(specificEngineId);
-					}
-				} else {
-					engines.forEach((engine) => {
-						if (activeMonoNotePerEngineRef.current.get(engine.id) === note) {
-							activeMonoNotePerEngineRef.current.delete(engine.id);
-						}
-					});
-				}
-			}
-
-			enginesToProcess.forEach((engine) => {
-				const engineNodes = audioNodesRef.current.get(engine.id);
-				if (engineNodes && engineNodes.sampler.granularMidiNote === note) {
-					if (engineNodes.sampler.granularSchedulerId) {
-						clearTimeout(engineNodes.sampler.granularSchedulerId);
-						engineNodes.sampler.granularSchedulerId = undefined;
-					}
-					engineNodes.sampler.granularMidiNote = undefined;
-				}
-			});
-		},
-		[audioContext, voicingMode, engines]
-	);
-
-	const handleNoteOn = useCallback(
-		(note: number, velocity: number) => {
-			if (!audioContext) return;
-			const now = audioContext.currentTime;
-
-			engines.forEach((engine) => {
-				if (!engine.midiControlled) return;
-
-				const voiceKey = `${note}-${engine.id}`;
-				const existingVoice = activeVoicesRef.current.get(voiceKey);
-				if (existingVoice && existingVoice.timeoutId) {
-					clearTimeout(existingVoice.timeoutId);
-				}
-
-				if (voicingMode === "mono" || voicingMode === "legato") {
-					const existingNote = activeMonoNotePerEngineRef.current.get(
-						engine.id
-					);
-					if (existingNote) {
-						handleNoteOff(existingNote, engine.id); // Stop previous note for this engine
-					}
-				}
-
-				const isLegatoTransition =
-					voicingMode === "legato" &&
-					activeMonoNotePerEngineRef.current.has(engine.id);
-				const glideDuration =
-					calculateTimeFromSync(
-						bpm,
-						isGlideSynced,
-						glideSyncRateIndex,
-						syncRates,
-						glideTime
-					) / 1000;
-				const targetFreq = midiNoteToFrequency(
-					note + transpose,
-					harmonicTuningSystem
-				);
-				const startFreq = isLegatoTransition
-					? midiNoteToFrequency(
-							activeMonoNotePerEngineRef.current.get(engine.id)! + transpose,
-							harmonicTuningSystem
-					  )
-					: targetFreq;
-
-				const adsr = engine.adsr;
-				const envelopeGain = audioContext.createGain();
-				envelopeGain.connect(
-					audioNodesRef.current.get(engine.id)!.midiInputGain
-				);
-
-				const peakAmp = velocity; // Volume is controlled at the layer level now
-				envelopeGain.gain.cancelScheduledValues(now);
-
-				if (isLegatoTransition) {
-					envelopeGain.gain.setValueAtTime(envelopeGain.gain.value, now); // Maintain current gain
-				} else {
-					envelopeGain.gain.setValueAtTime(0, now);
-					envelopeGain.gain.linearRampToValueAtTime(peakAmp, now + adsr.attack);
-					envelopeGain.gain.setTargetAtTime(
-						peakAmp * adsr.sustain,
-						now + adsr.attack,
-						adsr.decay / 4
-					); // Exponential decay
-				}
-
-				const activeVoice: ActiveVoice = { sourceNodes: [], envelopeGain };
-
-				// --- Synth Layer ---
-				if (engine.synth.enabled) {
-					const osc = audioContext.createOscillator();
-					osc.type = engine.synth.oscillatorType;
-
-					// Connect modulation
-					const modBus = lfoRoutingBussesRef.current!.engineModBusses.get(
-						engine.id
-					)!.synthFreq;
-					modBus.connect(osc.detune); // Modulate detune, not frequency directly
-
-					if (engine.synth.frequencyOverride) {
-						osc.frequency.value = engine.synth.frequency;
-					} else {
-						osc.frequency.setValueAtTime(startFreq, now);
-						osc.frequency.linearRampToValueAtTime(
-							targetFreq,
-							now + glideDuration
-						);
-					}
-
-					const vol = audioContext.createGain();
-					vol.gain.value = engine.synth.volume;
-					osc.connect(vol);
-					vol.connect(envelopeGain);
-
-					osc.start(now);
-					activeVoice.sourceNodes.push(osc);
-					lastPlayedNotePerEngineRef.current.set(`${engine.id}-synth`, note);
-				}
-				// --- Noise Layer ---
-				if (engine.noise.enabled) {
-					const noiseSource = createNoiseNode(
-						audioContext,
-						engine.noise.noiseType
-					);
-					const vol = audioContext.createGain();
-					vol.gain.value = engine.noise.volume;
-					noiseSource.connect(vol);
-					vol.connect(envelopeGain);
-					noiseSource.start(now);
-					activeVoice.sourceNodes.push(noiseSource);
-				}
-				// --- Sampler Layer ---
-				const sampleBuffer = samplesRef.current.get(engine.id);
-				if (
-					engine.sampler.enabled &&
-					sampleBuffer &&
-					!engine.sampler.granularModeEnabled &&
-					!engine.sampler.liveInputEnabled
-				) {
-					const source = audioContext.createBufferSource();
-					source.buffer = sampleBuffer;
-
-					// Connect modulation
-					const modBus = lfoRoutingBussesRef.current!.engineModBusses.get(
-						engine.id
-					)!.samplerTranspose;
-					modBus.connect(source.detune); // Modulate detune in cents
-
-					const basePlaybackRate = Math.pow(2, engine.sampler.transpose / 12);
-					const targetPlaybackRate =
-						basePlaybackRate * Math.pow(2, (note - 60) / 12); // Relative to C4
-					const startPlaybackRate = isLegatoTransition
-						? basePlaybackRate *
-						  Math.pow(
-								2,
-								(activeMonoNotePerEngineRef.current.get(engine.id)! - 60) / 12
-						  )
-						: targetPlaybackRate;
-
-					source.playbackRate.setValueAtTime(startPlaybackRate, now);
-					source.playbackRate.linearRampToValueAtTime(
-						targetPlaybackRate,
-						now + glideDuration
-					);
-
-					source.loop = true;
-
-					const vol = audioContext.createGain();
-					vol.gain.value = engine.sampler.volume;
-					source.connect(vol);
-					vol.connect(envelopeGain);
-
-					source.start(now);
-					activeVoice.sourceNodes.push(source);
-					lastPlayedNotePerEngineRef.current.set(`${engine.id}-sampler`, note);
-				}
-
-				// --- Granular Layer (MIDI Triggered) ---
-				if (
-					engine.sampler.enabled &&
-					sampleBuffer &&
-					engine.sampler.granularModeEnabled
-				) {
-					const engineNodes = audioNodesRef.current.get(engine.id);
-					if (engineNodes) {
-						if (engineNodes.sampler.granularSchedulerId) {
-							clearTimeout(engineNodes.sampler.granularSchedulerId);
-						}
-						engineNodes.sampler.granularMidiNote = note;
-						lastPlayedNotePerEngineRef.current.set(
-							`${engine.id}-sampler`,
-							note
-						);
-					}
-				}
-
-				if (activeVoice.sourceNodes.length > 0) {
-					activeVoicesRef.current.set(voiceKey, activeVoice);
-					if (voicingMode !== "poly") {
-						activeMonoNotePerEngineRef.current.set(engine.id, note);
-					}
-				}
-			});
-		},
-		[
-			audioContext,
-			engines,
-			voicingMode,
-			harmonicTuningSystem,
-			bpm,
-			isGlideSynced,
-			glideSyncRateIndex,
-			syncRates,
-			glideTime,
-			handleNoteOff,
-			transpose,
-		]
-	);
-
-	// --- MIDI Input Handling ---
-	useEffect(() => {
-		const currentInput = selectedMidiInputId
-			? midiInputs.find((i) => i.id === selectedMidiInputId)
-			: null;
-
-		const handleMidiMessage = (event: MIDIMessageEvent) => {
-			const [command, note, velocity] = event.data;
-			// command 144: noteOn, command 128: noteOff
-			if (command >= 144 && command < 160 && velocity > 0) {
-				// Note On on any channel
-				handleNoteOn(note, velocity / 127);
-				setMidiActivity(true);
-				if (midiActivityTimeoutRef.current)
-					clearTimeout(midiActivityTimeoutRef.current);
-				midiActivityTimeoutRef.current = window.setTimeout(
-					() => setMidiActivity(false),
-					100
-				);
-			} else if (
-				(command >= 128 && command < 144) ||
-				(command >= 144 && command < 160 && velocity === 0)
-			) {
-				// Note Off on any channel
-				handleNoteOff(note);
-			}
-		};
-
-		if (currentInput) {
-			currentInput.addEventListener("midimessage", handleMidiMessage);
-			console.log(`Listening to MIDI device: ${currentInput.name}`);
-		}
-
-		return () => {
-			if (currentInput) {
-				currentInput.removeEventListener("midimessage", handleMidiMessage);
-				console.log(`Stopped listening to MIDI device: ${currentInput.name}`);
-			}
-		};
-	}, [selectedMidiInputId, midiInputs, handleNoteOn, handleNoteOff]);
-
-	const handleToggleTransport = () => {
-		if (audioContext && audioContext.state === "suspended") {
-			audioContext.resume();
-		}
-		setIsTransportPlaying((prev) => !prev);
-		if (isTransportPlaying) {
-			setCurrentStep(0); // Reset on stop
-		}
-	};
-
-	// Morphing Logic
-	useEffect(() => {
-		let animationFrameId: number;
-
-		const effectiveMorphTime = calculateTimeFromSync(
-			bpm,
-			isMorphSynced,
-			morphSyncRateIndex,
-			syncRates,
-			morphTime
-		);
-
-		if (
-			isMorphing &&
-			morphStartRef.current &&
-			morphTargetRef.current &&
-			morphStartTimeRef.current
-		) {
-			const morphDurationInSeconds = effectiveMorphTime / 1000;
-			const update = () => {
-				const elapsedTime = (Date.now() - morphStartTimeRef.current!) / 1000;
-				const progress = Math.min(elapsedTime / morphDurationInSeconds, 1);
-
-				const lerp = (start: number, end: number, t: number) =>
-					start * (1 - t) + end * t;
-				const newState = { ...morphStartRef.current };
-
-				// Lerp engines
-				newState.engines = morphStartRef.current.engines.map(
-					(startEngine: EngineState, i: number) => {
-						const newSynth = {
-							...startEngine.synth,
-							volume: lerp(
-								startEngine.synth.volume,
-								morphTargetRef.current.engines[i].synth.volume,
-								progress
-							),
-							frequency:
-								startEngine.synth.frequencyOverride &&
-								morphTargetRef.current.engines[i].synth.frequencyOverride
-									? lerp(
-											startEngine.synth.frequency,
-											morphTargetRef.current.engines[i].synth.frequency,
-											progress
-									  )
-									: morphTargetRef.current.engines[i].synth.frequency, // Snap to target frequency if overridden
-							oscillatorType:
-								progress < 1
-									? startEngine.synth.oscillatorType
-									: morphTargetRef.current.engines[i].synth.oscillatorType, // Snap at end
-							solfeggioFrequency:
-								progress < 1
-									? startEngine.synth.solfeggioFrequency
-									: morphTargetRef.current.engines[i].synth.solfeggioFrequency, // Snap at end
-							frequencyOverride:
-								progress < 1
-									? startEngine.synth.frequencyOverride
-									: morphTargetRef.current.engines[i].synth.frequencyOverride, // Snap at end
-						};
-
-						const newMelodicSequence =
-							progress < 1
-								? startEngine.melodicSequence
-								: morphTargetRef.current.engines[i].melodicSequence; // Snap at end
-
-						return {
-							...startEngine,
-							sequencerSteps: lockState.engines[startEngine.id].sequencerSteps
-								? startEngine.sequencerSteps
-								: Math.round(
-										lerp(
-											startEngine.sequencerSteps,
-											morphTargetRef.current.engines[i].sequencerSteps,
-											progress
-										)
-								  ),
-							sequencerPulses: lockState.engines[startEngine.id].sequencerPulses
-								? startEngine.sequencerPulses
-								: Math.round(
-										lerp(
-											startEngine.sequencerPulses,
-											morphTargetRef.current.engines[i].sequencerPulses,
-											progress
-										)
-								  ),
-							sequencerRotate: lockState.engines[startEngine.id].sequencerRotate
-								? startEngine.sequencerRotate
-								: Math.round(
-										lerp(
-											startEngine.sequencerRotate,
-											morphTargetRef.current.engines[i].sequencerRotate,
-											progress
-										)
-								  ),
-							synth: newSynth,
-							melodicSequence: newMelodicSequence,
-							adsr: {
-								...startEngine.adsr,
-								attack: lerp(
-									startEngine.adsr.attack,
-									morphTargetRef.current.engines[i].adsr.attack,
-									progress
-								),
-								decay: lerp(
-									startEngine.adsr.decay,
-									morphTargetRef.current.engines[i].adsr.decay,
-									progress
-								),
-								sustain: lerp(
-									startEngine.adsr.sustain,
-									morphTargetRef.current.engines[i].adsr.sustain,
-									progress
-								),
-								release: lerp(
-									startEngine.adsr.release,
-									morphTargetRef.current.engines[i].adsr.release,
-									progress
-								),
-							},
-						};
-					}
-				);
-
-				// Lerp Filters
-				newState.filter1State = {
-					...morphStartRef.current.filter1State,
-					cutoff: lockState.filter1.cutoff
-						? morphStartRef.current.filter1State.cutoff
-						: lerp(
-								morphStartRef.current.filter1State.cutoff,
-								morphTargetRef.current.filter1State.cutoff,
-								progress
-						  ),
-					resonance: lockState.filter1.resonance
-						? morphStartRef.current.filter1State.resonance
-						: lerp(
-								morphStartRef.current.filter1State.resonance,
-								morphTargetRef.current.filter1State.resonance,
-								progress
-						  ),
-				};
-				newState.filter2State = {
-					...morphStartRef.current.filter2State,
-					cutoff: lockState.filter2.cutoff
-						? morphStartRef.current.filter2State.cutoff
-						: lerp(
-								morphStartRef.current.filter2State.cutoff,
-								morphTargetRef.current.filter2State.cutoff,
-								progress
-						  ),
-					resonance: lockState.filter2.resonance
-						? morphStartRef.current.filter2State.resonance
-						: lerp(
-								morphStartRef.current.filter2State.resonance,
-								morphTargetRef.current.filter2State.resonance,
-								progress
-						  ),
-				};
-
-				newState.lfos = morphStartRef.current.lfos.map(
-					(startLfo: LFOState, i: number) => {
-						const targetLfo = morphTargetRef.current.lfos[i];
-						return {
-							...startLfo,
-							rate: lerp(startLfo.rate, targetLfo.rate, progress),
-							depth: lerp(startLfo.depth, targetLfo.depth, progress),
-						};
-					}
-				);
-
-				newState.masterEffects = morphStartRef.current.masterEffects.map(
-					(startEffect: MasterEffect) => {
-						const targetEffect = morphTargetRef.current.masterEffects.find(
-							(e: MasterEffect) => e.id === startEffect.id
-						);
-						if (!targetEffect) return startEffect;
-						const newParams = { ...startEffect.params };
-						if (newParams.delay && targetEffect.params.delay) {
-							newParams.delay.time = lerp(
-								startEffect.params.delay!.time,
-								targetEffect.params.delay.time,
-								progress
-							);
-							newParams.delay.feedback = lerp(
-								startEffect.params.delay!.feedback,
-								targetEffect.params.delay.feedback,
-								progress
-							);
-							newParams.delay.mix = lerp(
-								startEffect.params.delay!.mix,
-								targetEffect.params.delay.mix,
-								progress
-							);
-						}
-						if (newParams.reverb && targetEffect.params.reverb) {
-							newParams.reverb.decay = lerp(
-								startEffect.params.reverb!.decay,
-								targetEffect.params.reverb.decay,
-								progress
-							);
-							newParams.reverb.mix = lerp(
-								startEffect.params.reverb!.mix,
-								targetEffect.params.reverb.mix,
-								progress
-							);
-						}
-						//... etc for other effects
-						return { ...startEffect, params: newParams };
-					}
-				);
-
-				setEngines(newState.engines);
-				setFilter1State(newState.filter1State);
-				setFilter2State(newState.filter2State);
-				setLfos(newState.lfos);
-				setMasterEffects(newState.masterEffects);
-
-				if (progress < 1) {
-					animationFrameId = requestAnimationFrame(update);
-				} else {
-					setIsMorphing(false);
-					morphStartTimeRef.current = null;
-				}
-			};
-			animationFrameId = requestAnimationFrame(update);
-		}
-		return () => cancelAnimationFrame(animationFrameId);
-	}, [
-		isMorphing,
-		morphTime,
-		isMorphSynced,
-		morphSyncRateIndex,
-		bpm,
-		syncRates,
-		lockState,
-	]);
-
-	// Randomization Logic
-	const availableTuningSystems: TuningSystem[] = [
-		"440_ET",
-		"432_ET",
-		"just_intonation_440",
-		"just_intonation_432",
-		"pythagorean_440",
-		"pythagorean_432",
-		"solfeggio",
-		"wholesome_scale",
-		"maria_renold_I",
-		"none",
-	];
-
-
-
-	const handleInitialize = (scope: string) => {
-		if (scope.startsWith("engine")) {
-			const defaultEngine = initialAppState.engines.find((e) => e.id === scope);
-			if (defaultEngine)
-				setEngines((prev) =>
-					prev.map((e) => (e.id === scope ? defaultEngine : e))
-				);
-		} else if (scope.startsWith("filter")) {
-			if (scope === "filter1") setFilter1State(initialAppState.filter1);
-			else setFilter2State(initialAppState.filter2);
-		} else if (scope.startsWith("lfo")) {
-			const defaultLfo = initialAppState.lfos.find((l) => l.id === scope);
-			if (defaultLfo)
-				setLfos((prev) => prev.map((l) => (l.id === scope ? defaultLfo : l)));
-		} else {
-			// Must be a master effect by its ID
-			setMasterEffects((prev) =>
-				prev.map((effect) => {
-					if (effect.id === scope) {
-						return { ...effect, params: getDefaultEffectParams(effect.type) };
-					}
-					return effect;
-				})
-			);
-		}
-	};
-
-	const handlePanic = useCallback(() => {
-		console.log("PANIC button clicked!");
-		if (audioContext) {
-			audioContext.close().then(() => {
-				console.log("Audio context closed. Re-initializing.");
-				initAudio();
-			});
-		} else {
-			initAudio();
-		}
-
-		activeVoicesRef.current.clear();
-		activeMonoNotePerEngineRef.current.clear();
-		setIsTransportPlaying(false);
-		setCurrentStep(0);
-	}, [audioContext, initAudio]);
-
-	if (!isInitialized) {
-		return (
-			<div className="init-overlay">
-				<button onClick={initAudio}>Initialize Audio Engine</button>
-			</div>
-		);
-	}
-
-	return (
-		<div className="app-container">
-			<TopBar
-				masterVolume={masterVolume}
-				setMasterVolume={setMasterVolume}
-				bpm={bpm}
-				setBPM={setBPM}
-				isTransportPlaying={isTransportPlaying}
-				onToggleTransport={handleToggleTransport}
-				onPanic={handlePanic}
-				midiInputs={midiInputs}
-				selectedMidiInputId={selectedMidiInputId}
-				onMidiInputChange={setSelectedMidiInputId}
-				midiActivity={midiActivity}
-				lockState={lockState}
-				onToggleLock={handleToggleLock}
-			/>
-
-			<MainControlPanel
-				onRandomize={handleRandomize}
-				isMorphing={isMorphing}
-				morphTime={morphTime}
-				setMorphTime={setMorphTime}
-				isMorphSynced={isMorphSynced}
-				setIsMorphSynced={setIsMorphSynced}
-				morphSyncRateIndex={morphSyncRateIndex}
-				setMorphSyncRateIndex={setMorphSyncRateIndex}
-				syncRates={syncRates}
-				harmonicTuningSystem={harmonicTuningSystem}
-				setHarmonicTuningSystem={setHarmonicTuningSystem}
-				voicingMode={voicingMode}
-				setVoicingMode={setVoicingMode}
-				glideTime={glideTime}
-				setGlideTime={setGlideTime}
-				isGlideSynced={isGlideSynced}
-				setIsGlideSynced={setIsGlideSynced}
-				glideSyncRateIndex={glideSyncRateIndex}
-				setGlideSyncRateIndex={setGlideSyncRateIndex}
-				glideSyncRates={syncRates}
-				scale={scale}
-				setScale={setScale}
-				transpose={transpose}
-				setTranspose={setTranspose}
-				isGlobalAutoRandomEnabled={isGlobalAutoRandomEnabled}
-				setIsGlobalAutoRandomEnabled={setIsGlobalAutoRandomEnabled}
-				globalAutoRandomInterval={globalAutoRandomInterval}
-				setGlobalAutoRandomInterval={setGlobalAutoRandomInterval}
-				globalAutoRandomMode={globalAutoRandomMode}
-				setGlobalAutoRandomMode={setGlobalAutoRandomMode}
-			/>
-
-			<div className="master-visualizer-container">
-				<div className="visualizer-wrapper">
-					<span className="visualizer-label">MASTER</span>
-					{masterAnalyserNodeRef.current && (
-						<Visualizer
-							analyserNode={masterAnalyserNodeRef.current}
-							type="waveform"
-						/>
-					)}
-				</div>
-			</div>
-
-			<div className="channels-container">
-				{engines.map((engine, index) => (
-					<EngineControls
-						key={engine.id}
-						engine={engine}
-						onUpdate={handleEngineUpdate}
-						onLayerUpdate={handleLayerUpdate}
-						onLoadSample={handleLoadSample}
-						onRecordSampleRequest={requestMicrophone}
-						onRecordSample={handleRecordSample}
-						onToggleLiveInput={handleToggleLiveInput}
-						onRandomize={handleRandomize}
-						onInitialize={handleInitialize}
-						analyserNode={audioNodesRef.current.get(engine.id)?.analyser}
-						currentStep={currentStep}
-						isTransportPlaying={isTransportPlaying}
-						audioContext={audioContext}
-						lockState={lockState}
-						onToggleLock={handleToggleLock}
-						harmonicTuningSystem={harmonicTuningSystem}
-					/>
-				))}
-			</div>
-
-			<div className="processing-container">
-				<div className="filters-container">
-					<div className="filters-container-header">
-						<h2>Master Filters</h2>
-						<div className="filter-routing-switch">
-							<button
-								className={filterRouting === "series" ? "active" : ""}
-								onClick={() => setFilterRouting("series")}
-							>
-								Series
-							</button>
-							<button
-								className={filterRouting === "parallel" ? "active" : ""}
-								onClick={() => setFilterRouting("parallel")}
-							>
-								Parallel
-							</button>
-						</div>
-					</div>
-					<div className="filters-grid">
-						<MasterFilterControls
-							title="Filter 1"
-							filterState={filter1State}
-							onUpdate={(updates) =>
-								setFilter1State((s) => ({ ...s, ...updates }))
-							}
-							onRandomize={handleRandomize}
-							onInitialize={handleInitialize}
-							lockState={lockState}
-							onToggleLock={handleToggleLock}
-						/>
-						<MasterFilterControls
-							title="Filter 2"
-							filterState={filter2State}
-							onUpdate={(updates) =>
-								setFilter2State((s) => ({ ...s, ...updates }))
-							}
-							onRandomize={handleRandomize}
-							onInitialize={handleInitialize}
-							lockState={lockState}
-							onToggleLock={handleToggleLock}
-						/>
-					</div>
-				</div>
-				<MasterEffects
-					effects={masterEffects}
-					setEffects={setMasterEffects}
-					onRandomize={handleRandomize}
-					onInitialize={handleInitialize}
-					lockState={lockState}
-					onToggleLock={handleToggleLock}
-				/>
-			</div>
-
-			<BottomTabs
-				lfoStates={lfos}
-				handleLfoUpdate={handleLfoUpdate}
-				engineStates={engines}
-				handleEngineUpdate={handleEngineUpdate}
-				onRandomize={handleRandomize}
-				onInitialize={handleInitialize}
-				bpm={bpm}
-				lockState={lockState}
-				onToggleLock={handleToggleLock}
-			/>
-		</div>
-	);
-};
-
-// --- Helper Functions for Audio Logic ---
-const calculateTimeFromSync = (
-	bpm: number,
-	isSynced: boolean,
-	syncIndex: number,
-	syncRates: string[],
-	timeMs: number
-) => {
-	if (!isSynced) return timeMs;
-	const rate = syncRates[syncIndex];
-	const beatDuration = 60 / bpm;
-	switch (rate) {
-		case "1/64":
-			return (beatDuration / 16) * 1000;
-		case "1/32":
-			return (beatDuration / 8) * 1000;
-		case "1/16":
-			return (beatDuration / 4) * 1000;
-		case "1/8":
-			return (beatDuration / 2) * 1000;
-		case "1/8d":
-			return (beatDuration / 2) * 1.5 * 1000;
-		case "1/4":
-			return beatDuration * 1000;
-		case "1/4d":
-			return beatDuration * 1.5 * 1000;
-		case "1/2":
-			return beatDuration * 2 * 1000;
-		default:
-			return timeMs;
-	}
-};
-
-const createNoiseNode = (
-	ctx: AudioContext,
-	type: NoiseType
-): AudioBufferSourceNode => {
-	const bufferSize = ctx.sampleRate * 2; // 2 seconds of noise
-	const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-	const output = buffer.getChannelData(0);
-	let lastOut = 0;
-	for (let i = 0; i < bufferSize; i++) {
-		switch (type) {
-			case "white":
-				output[i] = Math.random() * 2 - 1;
-				break;
-			case "pink":
-				const b0 = 0.99886 * lastOut + (Math.random() * 2 - 1) * 0.0555179;
-				const b1 = 0.99332 * lastOut + (Math.random() * 2 - 1) * 0.0750759;
-				const b2 = 0.969 * lastOut + (Math.random() * 2 - 1) * 0.153852;
-				lastOut = b0 + b1 + b2 + (Math.random() * 2 - 1) * 0.01;
-				output[i] = lastOut * 0.11;
-				break;
-			case "brown":
-				const white = Math.random() * 2 - 1;
-				output[i] = (lastOut + 0.02 * white) / 1.02;
-				lastOut = output[i];
-				output[i] *= 3.5;
-				break;
-		}
-	}
-	const noise = ctx.createBufferSource();
-	noise.buffer = buffer;
-	noise.loop = true;
-	return noise;
-};
-
-// --- Main Audio Processing Hook ---
-const useAudio = ({
-	audioContext,
-	enginesRef,
-	lfos,
-	masterVolume,
-	bpm,
-	isTransportPlaying,
-	currentStep,
-	setCurrentStep,
-	samples,
-	audioNodes,
-	filterNodes,
-	masterVolumeNode,
-	lfoNodes,
-	lfoRoutingBusses,
-	filter1State,
-	filter2State,
-	filterRouting,
-	activeVoices,
-	harmonicTuningSystem,
-	voicingMode,
-	glideTime,
-	isGlideSynced,
-	glideSyncRateIndex,
-	glideSyncRates,
-	activeMonoNotePerEngineRef,
-	lastPlayedNotePerEngineRef,
-	masterEffects,
-	audioInputStream,
-	effectNodes,
-	scale,
-	transpose,
-}: {
-	audioContext: AudioContext | null;
-	enginesRef: React.MutableRefObject<EngineState[]>;
-	lfos: LFOState[];
-	masterVolume: number;
-	bpm: number;
-	isTransportPlaying: boolean;
-	currentStep: number;
-	setCurrentStep: React.Dispatch<React.SetStateAction<number>>;
-	samples: Map<string, AudioBuffer>;
-	audioNodes: Map<string, EngineAudioNodes>;
-	filterNodes: { filter1: FilterNodes; filter2: FilterNodes } | null;
-	masterVolumeNode: GainNode | null;
-	lfoNodes: Map<string, { lfoNode: OscillatorNode; depthGain: GainNode }>;
-	lfoRoutingBusses: LfoRoutingBusses | null;
-	filter1State: FilterState;
-	filter2State: FilterState;
-	filterRouting: FilterRouting;
-	activeVoices: Map<string, ActiveVoice>;
-	harmonicTuningSystem: TuningSystem;
-	voicingMode: VoicingMode;
-	glideTime: number;
-	isGlideSynced: boolean;
-	glideSyncRateIndex: number;
-	glideSyncRates: string[];
-	activeMonoNotePerEngineRef: React.MutableRefObject<Map<string, number>>;
-	lastPlayedNotePerEngineRef: React.MutableRefObject<Map<string, number>>;
-	masterEffects: MasterEffect[];
-	audioInputStream: MediaStream | null;
-	effectNodes: Map<string, any>;
-	scale: ScaleName;
-	transpose: number;
-}) => {
-	const nextNoteTimeRef = useRef(0);
-	const currentStepRef = useRef(0);
-	const schedulerTimeoutIdRef = useRef<number | null>(null);
-	const currentVisualStepRef = useRef(0);
-	const uiUpdateIdRef = useRef<number | null>(null);
-
-	// Update master volume
-	useEffect(() => {
-		if (masterVolumeNode?.gain) {
-			masterVolumeNode.gain.value = masterVolume;
-		}
-	}, [masterVolume, masterVolumeNode]);
-
-	// Update filter settings
-	useEffect(() => {
-		if (filterNodes && audioContext) {
-			const now = audioContext.currentTime;
-			filterNodes.filter1.node.type = filter1State.enabled
-				? filter1State.type
-				: "allpass";
-			filterNodes.filter1.node.frequency.setTargetAtTime(
-				filter1State.enabled
-					? filter1State.cutoff
-					: audioContext.sampleRate / 2,
-				now,
-				0.01
-			);
-			filterNodes.filter1.node.Q.setTargetAtTime(
-				filter1State.enabled ? filter1State.resonance : 0,
-				now,
-				0.01
-			);
-
-			filterNodes.filter2.node.type = filter2State.enabled
-				? filter2State.type
-				: "allpass";
-			filterNodes.filter2.node.frequency.setTargetAtTime(
-				filter2State.enabled
-					? filter2State.cutoff
-					: audioContext.sampleRate / 2,
-				now,
-				0.01
-			);
-			filterNodes.filter2.node.Q.setTargetAtTime(
-				filter2State.enabled ? filter2State.resonance : 0,
-				now,
-				0.01
-			);
-		}
-	}, [filter1State, filter2State, filterNodes, audioContext]);
-
-	// Update LFO settings
-	useEffect(() => {
+	const handleToggleLiveInput = useCallback(async (engineId: string, enabled: boolean) => {
 		if (!audioContext) return;
-		const now = audioContext.currentTime;
-		lfos.forEach((lfoState) => {
-			const lfo = lfoNodes.get(lfoState.id);
-			if (lfo) {
-				lfo.lfoNode.type =
-					lfoState.shape === "ramp" ? "sawtooth" : lfoState.shape; // Ramp is just inverted saw visually
-				const rate = lfoState.sync
-					? bpm /
-					  60 /
-					  (lfoSyncRates.indexOf(lfoState.syncRate) === 4
-							? 1
-							: parseFloat(lfoState.syncRate) * 4)
-					: lfoState.rate;
-				lfo.lfoNode.frequency.setTargetAtTime(rate, now, 0.01);
-				lfo.depthGain.gain.setTargetAtTime(lfoState.depth, now, 0.01);
-			}
-		});
-	}, [lfos, lfoNodes, bpm, audioContext]);
+		const engineNodes = audioNodesRef.current.get(engineId);
+		if (!engineNodes) return;
 
-	// Update modulation routing
-	useEffect(() => {
-		if (!lfoRoutingBusses || !audioContext) return;
-
-		// Disconnect all LFOs and Sequencers first to clear old routings
-		lfoNodes.forEach(({ depthGain }) => depthGain.disconnect());
-		audioNodes.forEach((engineNode) =>
-			engineNode.sequencerModGate.disconnect()
-		);
-
-		// Reconnect LFOs based on current state
-		lfos.forEach((lfoState) => {
-			const lfo = lfoNodes.get(lfoState.id);
-			if (!lfo) return;
-			const routing = lfoState.routing;
-			if (routing.filter1Cutoff)
-				lfo.depthGain.connect(lfoRoutingBusses.filter1.cutoffModBus);
-			if (routing.filter1Resonance)
-				lfo.depthGain.connect(lfoRoutingBusses.filter1.resonanceModBus);
-			if (routing.filter2Cutoff)
-				lfo.depthGain.connect(lfoRoutingBusses.filter2.cutoffModBus);
-			if (routing.filter2Resonance)
-				lfo.depthGain.connect(lfoRoutingBusses.filter2.resonanceModBus);
-			enginesRef.current.forEach((engine) => {
-				const bus = lfoRoutingBusses.engineModBusses.get(engine.id);
-				if (bus) {
-					const engineKeyPrefix = `engine${engine.id.slice(-1)}`;
-					if (routing[`${engineKeyPrefix}Vol` as keyof LFORoutingState])
-						lfo.depthGain.connect(bus.vol);
-					if (routing[`${engineKeyPrefix}SynthFreq` as keyof LFORoutingState])
-						lfo.depthGain.connect(bus.synthFreq);
-					if (
-						routing[
-							`${engineKeyPrefix}SamplerTranspose` as keyof LFORoutingState
-						]
-					)
-						lfo.depthGain.connect(bus.samplerTranspose);
-					if (routing[`${engineKeyPrefix}GrainSize` as keyof LFORoutingState])
-						lfo.depthGain.connect(bus.grainSize);
-					if (
-						routing[`${engineKeyPrefix}GrainDensity` as keyof LFORoutingState]
-					)
-						lfo.depthGain.connect(bus.grainDensity);
-					if (
-						routing[`${engineKeyPrefix}GrainPosition` as keyof LFORoutingState]
-					)
-						lfo.depthGain.connect(bus.grainPosition);
-					if (routing[`${engineKeyPrefix}GrainJitter` as keyof LFORoutingState])
-						lfo.depthGain.connect(bus.grainJitter);
-				}
-			});
-		});
-
-		// Reconnect Sequencer mods based on current state
-		enginesRef.current.forEach((engineState) => {
-			const engineNodes = audioNodes.get(engineState.id);
-			if (!engineNodes) return;
-			const routing = engineState.routing;
-			if (routing.filter1Cutoff)
-				engineNodes.sequencerModGate.connect(
-					lfoRoutingBusses.filter1.cutoffModBus
-				);
-			if (routing.filter1Resonance)
-				engineNodes.sequencerModGate.connect(
-					lfoRoutingBusses.filter1.resonanceModBus
-				);
-			if (routing.filter2Cutoff)
-				engineNodes.sequencerModGate.connect(
-					lfoRoutingBusses.filter2.cutoffModBus
-				);
-			if (routing.filter2Resonance)
-				engineNodes.sequencerModGate.connect(
-					lfoRoutingBusses.filter2.resonanceModBus
-				);
-			enginesRef.current.forEach((targetEngine) => {
-				const bus = lfoRoutingBusses.engineModBusses.get(targetEngine.id);
-				if (bus) {
-					const engineKeyPrefix = `engine${targetEngine.id.slice(-1)}`;
-					if (routing[`${engineKeyPrefix}Vol` as keyof LFORoutingState])
-						engineNodes.sequencerModGate.connect(bus.vol);
-					if (routing[`${engineKeyPrefix}SynthFreq` as keyof LFORoutingState])
-						engineNodes.sequencerModGate.connect(bus.synthFreq);
-					if (
-						routing[
-							`${engineKeyPrefix}SamplerTranspose` as keyof LFORoutingState
-						]
-					)
-						engineNodes.sequencerModGate.connect(bus.samplerTranspose);
-				}
-			});
-		});
-
-		// Set modulation scaling
-		const now = audioContext.currentTime;
-		lfoRoutingBusses.filter1.cutoffModBus.gain.setTargetAtTime(
-			10000,
-			now,
-			0.01
-		); // Mod range in Hz
-		lfoRoutingBusses.filter1.resonanceModBus.gain.setTargetAtTime(
-			15,
-			now,
-			0.01
-		); // Mod range for Q
-		lfoRoutingBusses.filter2.cutoffModBus.gain.setTargetAtTime(
-			10000,
-			now,
-			0.01
-		);
-		lfoRoutingBusses.filter2.resonanceModBus.gain.setTargetAtTime(
-			15,
-			now,
-			0.01
-		);
-		enginesRef.current.forEach((engine) => {
-			const bus = lfoRoutingBusses.engineModBusses.get(engine.id);
-			if (bus) {
-				bus.vol.gain.setTargetAtTime(1.0, now, 0.01); // Full gain range
-				bus.synthFreq.gain.setTargetAtTime(1200, now, 0.01); // 12 semitones in cents
-				bus.samplerTranspose.gain.setTargetAtTime(2400, now, 0.01); // 24 semitones in cents for sampler/grain
-				bus.grainSize.gain.setTargetAtTime(0.49, now, 0.01); // a range of ~0.5s
-				bus.grainDensity.gain.setTargetAtTime(99, now, 0.01); // a range of ~100/s
-				bus.grainPosition.gain.setTargetAtTime(1.0, now, 0.01); // full sample length
-				bus.grainJitter.gain.setTargetAtTime(1.0, now, 0.01); // full jitter
-			}
-		});
-	}, [lfos, enginesRef, lfoNodes, lfoRoutingBusses, audioNodes, audioContext]);
-
-	// Handle Live Audio Input
-	useEffect(() => {
-		if (!audioContext) return;
-		enginesRef.current.forEach((engine) => {
-			const engineNodes = audioNodes.get(engine.id);
-			if (!engineNodes) return;
-
-			const liveSource = engineNodes.sampler.liveInputSource;
-
-			if (engine.sampler.liveInputEnabled && !liveSource && audioInputStream) {
-				const source = audioContext.createMediaStreamSource(audioInputStream);
+		if (enabled) {
+			try {
+				const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+				const source = audioContext.createMediaStreamSource(stream);
+				// Connect live input to sampler's gain, which then goes to the main engine mixer
 				source.connect(engineNodes.sampler.volumeGain);
-				engineNodes.sampler.liveInputSource = source;
-			} else if (!engine.sampler.liveInputEnabled && liveSource) {
-				liveSource.disconnect();
+				engineNodes.sampler.liveInputSource = source; // Store for later disconnection
+				setAudioInputStream(stream);
+				setEngines(prev => prev.map(e => e.id === engineId ? {...e, sampler: {...e.sampler, liveInputEnabled: true}} : e));
+			} catch (err) {
+				console.error("Could not get live audio input", err);
+				 alert("Microphone access is required for live input.");
+			}
+		} else {
+			if (engineNodes.sampler.liveInputSource) {
+				engineNodes.sampler.liveInputSource.disconnect();
 				engineNodes.sampler.liveInputSource = undefined;
 			}
-		});
-	}, [enginesRef, audioContext, audioInputStream, audioNodes]);
-
-	// --- Master Effects Chain Rebuilding ---
-	const masterEffectsChainStartRef = useRef<AudioNode | null>(null);
-
-	useEffect(() => {
-		if (!audioContext || !filterNodes || !masterVolumeNode) return;
-
-		// 1. Disconnect everything from the master volume to rebuild the chain
-		filterNodes.filter1.node.disconnect();
-		filterNodes.filter2.node.disconnect();
-
-		// 2. Route engine outputs to the start of the filter/effect chain
-		let filterChainInput: AudioNode;
-		let parallelOutput: GainNode | null = null;
-		if (filterRouting === "series") {
-			filterChainInput = filterNodes.filter1.node;
-			filterNodes.filter1.node.connect(filterNodes.filter2.node);
-			masterEffectsChainStartRef.current = filterNodes.filter2.node;
-		} else {
-			// Parallel
-			filterChainInput = audioContext.createGain();
-			parallelOutput = audioContext.createGain();
-			(filterChainInput as GainNode).connect(filterNodes.filter1.node);
-			(filterChainInput as GainNode).connect(filterNodes.filter2.node);
-			filterNodes.filter1.node.connect(parallelOutput);
-			filterNodes.filter2.node.connect(parallelOutput);
-			masterEffectsChainStartRef.current = parallelOutput;
+			if (audioInputStream) {
+				audioInputStream.getTracks().forEach(track => track.stop());
+				setAudioInputStream(null);
+			}
+			setEngines(prev => prev.map(e => e.id === engineId ? {...e, sampler: {...e.sampler, liveInputEnabled: false}} : e));
 		}
-		audioNodes.forEach((node) => {
-			node.finalOutput.disconnect(); // Disconnect from old path
-			node.finalOutput.connect(filterChainInput);
-		});
+	}, [audioContext, audioInputStream]);
 
-		let lastNode: AudioNode = masterEffectsChainStartRef.current;
-
-		// 3. Clear old effect nodes
-		effectNodes.forEach((nodes) => {
-			Object.values(nodes).forEach((node: any) => {
-				if (node instanceof AudioNode) node.disconnect();
-				if (node instanceof OscillatorNode) node.stop();
-			});
-		});
-		effectNodes.clear();
-
-		// 4. Build the new chain
-		masterEffects.forEach((effect) => {
-			if (!effect.enabled) return;
-			const p = effect.params;
-			let effectNode: any = {};
-
-			switch (effect.type) {
-				case "distortion":
-					effectNode.input = audioContext.createWaveShaper();
-					// Create curve...
-					effectNode.output = effectNode.input;
-					break;
-				case "delay":
-					effectNode.input = audioContext.createGain();
-					effectNode.delay = audioContext.createDelay(2.0);
-					effectNode.feedback = audioContext.createGain();
-					effectNode.wet = audioContext.createGain();
-					effectNode.dry = audioContext.createGain();
-					effectNode.output = audioContext.createGain();
-
-					effectNode.input.connect(effectNode.dry);
-					effectNode.input.connect(effectNode.delay);
-					effectNode.delay.connect(effectNode.feedback);
-					effectNode.feedback.connect(effectNode.delay);
-					effectNode.delay.connect(effectNode.wet);
-					effectNode.dry.connect(effectNode.output);
-					effectNode.wet.connect(effectNode.output);
-					break;
-				case "reverb":
-					effectNode.input = audioContext.createGain();
-					effectNode.convolver = audioContext.createConvolver();
-					effectNode.wet = audioContext.createGain();
-					effectNode.dry = audioContext.createGain();
-					effectNode.output = audioContext.createGain();
-
-					effectNode.input.connect(effectNode.dry);
-					effectNode.input.connect(effectNode.convolver);
-					effectNode.convolver.connect(effectNode.wet);
-
-					effectNode.dry.connect(effectNode.output);
-					effectNode.wet.connect(effectNode.output);
-					break;
-				case "chorus":
-				case "flanger":
-					effectNode.input = audioContext.createGain();
-					effectNode.output = audioContext.createGain();
-					effectNode.dry = audioContext.createGain();
-					effectNode.wet = audioContext.createGain();
-					effectNode.delay = audioContext.createDelay(1.0);
-					effectNode.lfo = audioContext.createOscillator();
-					effectNode.lfoGain = audioContext.createGain();
-					effectNode.feedback = audioContext.createGain();
-
-					effectNode.input.connect(effectNode.dry);
-					effectNode.input.connect(effectNode.delay);
-					effectNode.lfo.connect(effectNode.lfoGain);
-					effectNode.lfoGain.connect(effectNode.delay.delayTime);
-
-					if (effect.type === "flanger") {
-						effectNode.delay.connect(effectNode.feedback);
-						effectNode.feedback.connect(effectNode.delay);
-					}
-
-					effectNode.delay.connect(effectNode.wet);
-					effectNode.dry.connect(effectNode.output);
-					effectNode.wet.connect(effectNode.output);
-					effectNode.lfo.start();
-					break;
-				case "phaser":
-					effectNode.input = audioContext.createGain();
-					effectNode.output = audioContext.createGain();
-					effectNode.dry = audioContext.createGain();
-					effectNode.wet = audioContext.createGain();
-					effectNode.stages = [];
-					const stages = p.phaser?.stages || 4;
-					for (let i = 0; i < stages; i++) {
-						const stage = audioContext.createBiquadFilter();
-						stage.type = "allpass";
-						effectNode.stages.push(stage);
-					}
-					effectNode.lfo = audioContext.createOscillator();
-					effectNode.lfoGain = audioContext.createGain();
-					effectNode.lfo.connect(effectNode.lfoGain);
-					effectNode.stages.forEach((stage) =>
-						effectNode.lfoGain.connect(stage.frequency)
-					);
-
-					effectNode.input.connect(effectNode.dry);
-					let lastStage: AudioNode = effectNode.input;
-					effectNode.stages.forEach((stage) => {
-						lastStage.connect(stage);
-						lastStage = stage;
-					});
-					lastStage.connect(effectNode.wet);
-					effectNode.dry.connect(effectNode.output);
-					effectNode.wet.connect(effectNode.output);
-					effectNode.lfo.start();
-					break;
-				case "tremolo":
-					effectNode.input = audioContext.createGain();
-					effectNode.output = audioContext.createGain();
-					effectNode.wet = audioContext.createGain();
-					effectNode.dry = audioContext.createGain();
-					effectNode.lfo = audioContext.createOscillator();
-					effectNode.depth = audioContext.createGain();
-
-					// Unipolar LFO
-					const shaper = audioContext.createWaveShaper();
-					shaper.curve = new Float32Array([0.5, 0.5]); // DC offset
-					const shaperGain = audioContext.createGain();
-					shaperGain.gain.value = 0.5;
-					effectNode.lfo.connect(shaperGain);
-					effectNode.lfo.connect(shaper);
-					shaper.connect(effectNode.depth);
-					shaperGain.connect(effectNode.depth);
-
-					effectNode.input.connect(effectNode.wet);
-					effectNode.wet.connect(effectNode.depth);
-					effectNode.input.connect(effectNode.dry);
-					effectNode.dry.connect(effectNode.output);
-					effectNode.depth.connect(effectNode.output);
-
-					effectNode.lfo.start();
-					break;
-				case "eq":
-					effectNode.input = audioContext.createGain();
-					effectNode.bands = [];
-					let lastBand: AudioNode = effectNode.input;
-					eqFrequencies.forEach((freq, i) => {
-						const band = audioContext.createBiquadFilter();
-						band.type = "peaking";
-						band.frequency.value = freq;
-						band.Q.value = 1.41;
-						lastBand.connect(band);
-						lastBand = band;
-						effectNode.bands.push(band);
-					});
-					effectNode.output = lastBand;
-					break;
-			}
-
-			if (effectNode.input && effectNode.output) {
-				lastNode.connect(effectNode.input);
-				lastNode = effectNode.output;
-				effectNodes.set(effect.id, effectNode);
-			}
-		});
-
-		// 5. Connect the end of the chain to the master output
-		lastNode.connect(masterVolumeNode);
-	}, [
-		masterEffects,
-		audioContext,
-		filterNodes,
-		masterVolumeNode,
-		filterRouting,
-		effectNodes,
-	]);
-
-	// Update master effect parameters
-	useEffect(() => {
+	// Sample Loading
+	const handleLoadSample = useCallback(async (engineId: string, file: File) => {
 		if (!audioContext) return;
-		const now = audioContext.currentTime;
-		masterEffects.forEach((effect) => {
-			const nodes = effectNodes.get(effect.id);
-			if (!nodes || !effect.enabled) return;
-			const p = effect.params;
-
-			switch (effect.type) {
-				case "distortion":
-					if (p.distortion && nodes.input) {
-						(nodes.input as WaveShaperNode).curve = makeDistortionCurve(
-							p.distortion.amount,
-							p.distortion.mode
-						);
-					}
-					break;
-				case "delay":
-					if (p.delay && nodes.delay) {
-						nodes.delay.delayTime.setTargetAtTime(p.delay.time, now, 0.01);
-						nodes.feedback.gain.setTargetAtTime(p.delay.feedback, now, 0.01);
-						nodes.wet.gain.setTargetAtTime(p.delay.mix, now, 0.01);
-						nodes.dry.gain.setTargetAtTime(1.0 - p.delay.mix, now, 0.01);
-					}
-					break;
-				case "reverb":
-					if (p.reverb && nodes.convolver) {
-						nodes.convolver.buffer = makeReverbImpulse(
-							audioContext,
-							p.reverb.decay,
-							p.reverb.decay
-						);
-						nodes.wet.gain.value = p.reverb.mix;
-						nodes.dry.gain.value = 1 - p.reverb.mix;
-					}
-					break;
-				case "chorus":
-					if (p.chorus && nodes.lfo) {
-						nodes.lfo.frequency.setTargetAtTime(p.chorus.rate, now, 0.01);
-						nodes.lfoGain.gain.setTargetAtTime(
-							0.005 * p.chorus.depth,
-							now,
-							0.01
-						);
-						nodes.wet.gain.setTargetAtTime(p.chorus.mix, now, 0.01);
-						nodes.dry.gain.setTargetAtTime(1.0 - p.chorus.mix, now, 0.01);
-					}
-					break;
-				case "flanger":
-					if (p.flanger && nodes.lfo) {
-						nodes.lfo.frequency.setTargetAtTime(p.flanger.rate, now, 0.01);
-						nodes.lfoGain.gain.setTargetAtTime(
-							0.002 * p.flanger.depth,
-							now,
-							0.01
-						);
-						nodes.feedback.gain.setTargetAtTime(p.flanger.feedback, now, 0.01);
-						nodes.wet.gain.setTargetAtTime(p.flanger.mix, now, 0.01);
-						nodes.dry.gain.setTargetAtTime(1.0 - p.flanger.mix, now, 0.01);
-					}
-					break;
-				case "phaser":
-					if (p.phaser && nodes.lfo) {
-						nodes.lfo.frequency.setTargetAtTime(p.phaser.rate, now, 0.01);
-						nodes.lfoGain.gain.setTargetAtTime(1000, now, 0.01); // Center freq sweep
-						nodes.stages.forEach((stage: BiquadFilterNode) =>
-							stage.Q.setTargetAtTime(p.phaser!.q, now, 0.01)
-						);
-						nodes.wet.gain.setTargetAtTime(p.phaser.mix, now, 0.01);
-						nodes.dry.gain.setTargetAtTime(1.0 - p.phaser.mix, now, 0.01);
-					}
-					break;
-				case "tremolo":
-					if (p.tremolo && nodes.lfo) {
-						nodes.lfo.type =
-							p.tremolo.shape === "ramp" ? "sawtooth" : p.tremolo.shape;
-						nodes.lfo.frequency.setTargetAtTime(p.tremolo.rate, now, 0.01);
-						nodes.depth.gain.setTargetAtTime(p.tremolo.depth, now, 0.01);
-						// Tremolo mix is complex, better handled with gain nodes in chain
-					}
-					break;
-				case "eq":
-					if (p.eq && nodes.bands) {
-						p.eq.bands.forEach((gain, i) => {
-							if (nodes.bands[i]) {
-								nodes.bands[i].gain.setTargetAtTime(gain, now, 0.01);
-							}
-						});
-					}
-					break;
-			}
-		});
-	}, [masterEffects, audioContext, effectNodes]);
-
-	// Sequencer and Audio Engine Logic
-	useEffect(() => {
-		if (!audioContext) return;
-
-		const currentEngines = enginesRef.current; // Add this line
-
-		const scheduleNotesForStep = (step: number, time: number) => {
-			currentEngines.forEach((engine) => {
-				const engineNodes = audioNodes.get(engine.id);
-				if (!engineNodes) return;
-
-				const rateDivisor =
-					{ "1/32": 1, "1/16": 2, "1/8": 4, "1/4": 8 }[engine.sequencerRate] ||
-					2;
-				if (step % rateDivisor !== 0) {
-					engineNodes.sequencerModGate.gain.setTargetAtTime(0, time, 0.005);
-					return;
-				}
-
-				const engineStep = Math.floor(step / rateDivisor);
-				const pattern = rotatePattern(
-					generateEuclideanPattern(
-						engine.sequencerSteps,
-						engine.sequencerPulses
-					),
-					engine.sequencerRotate
-				);
-				const currentStepInPattern = engineStep % engine.sequencerSteps;
-				const isStepActive = pattern[currentStepInPattern] === 1;
-
-				engineNodes.sequencerModGate.gain.setTargetAtTime(
-					isStepActive ? 1 : 0,
-					time,
-					0.005
-				);
-
-				if (!isStepActive || !engine.sequencerEnabled) {
-					return;
-				}
-
-				const secondsPerBeat = 60.0 / bpm;
-				const rateDenominator = parseInt(engine.sequencerRate.split("/")[1]);
-				const stepDuration = (secondsPerBeat * 4) / rateDenominator;
-				const gateDuration = stepDuration * 0.9;
-
-				const adsr = engine.adsr;
-				const gateOnTime = time;
-				const gateOffTime = gateOnTime + gateDuration;
-				const noteEndTime = gateOffTime + adsr.release + 0.5; // Extra time for release tail
-
-				const baseNote =
-					lastPlayedNotePerEngineRef.current.get(`${engine.id}-synth`) || 60;
-				const currentScale = musicalScales[scale];
-				const noteInScale =
-					baseNote +
-					currentScale[currentStepInPattern % currentScale.length] +
-					transpose;
-
-				// --- Play Synth ---
-				if (engine.synth.enabled) {
-					const osc = audioContext.createOscillator();
-					osc.type = engine.synth.oscillatorType;
-
-					let frequencyToPlay = engine.synth.frequency; // Default to engine's base frequency
-
-					if (
-						engine.sequencerEnabled &&
-						engine.melodicSequence &&
-						engine.melodicSequence.length > currentStepInPattern
-					) {
-						frequencyToPlay = engine.melodicSequence[currentStepInPattern];
-					}
-
-					if (engine.synth.frequencyOverride) {
-						frequencyToPlay = engine.synth.frequency;
-					}
-
-					osc.frequency.value = frequencyToPlay;
-					console.log(
-						`Engine ${
-							engine.id
-						}, Step ${currentStepInPattern}: Playing frequency ${frequencyToPlay.toFixed(
-							2
-						)} Hz`
-					);
-					lfoRoutingBusses!.engineModBusses
-						.get(engine.id)!
-						.synthFreq.connect(osc.detune);
-
-					const gain = audioContext.createGain();
-					const peakVolume = engine.synth.volume;
-					const sustainVolume = peakVolume * adsr.sustain;
-
-					gain.gain.cancelScheduledValues(gateOnTime);
-					gain.gain.setValueAtTime(0, gateOnTime);
-					gain.gain.linearRampToValueAtTime(
-						peakVolume,
-						gateOnTime + adsr.attack
-					);
-					gain.gain.setTargetAtTime(
-						sustainVolume,
-						gateOnTime + adsr.attack,
-						adsr.decay / 4
-					);
-					gain.gain.setValueAtTime(sustainVolume, gateOffTime);
-					gain.gain.setTargetAtTime(0, gateOffTime, adsr.release / 4);
-
-					osc.connect(gain);
-					gain.connect(engineNodes.sequencerGain);
-					osc.start(gateOnTime);
-					osc.stop(noteEndTime);
-				}
-				// --- Play Noise ---
-				if (engine.noise.enabled) {
-					const noiseSource = createNoiseNode(
-						audioContext,
-						engine.noise.noiseType
-					);
-					const gain = audioContext.createGain();
-					const noiseDuration = Math.min(stepDuration, 0.2);
-					gain.gain.cancelScheduledValues(time);
-					gain.gain.setValueAtTime(0, time);
-					gain.gain.linearRampToValueAtTime(engine.noise.volume, time + 0.005);
-					gain.gain.exponentialRampToValueAtTime(0.0001, time + noiseDuration);
-					noiseSource.connect(gain);
-					gain.connect(engineNodes.sequencerGain);
-					noiseSource.start(time);
-					noiseSource.stop(time + noiseDuration + 0.01);
-				}
-				// --- Play Sampler ---
-				const sampleBuffer = samples.get(engine.id);
-				if (
-					engine.sampler.enabled &&
-					sampleBuffer &&
-					!engine.sampler.granularModeEnabled &&
-					!engine.sampler.liveInputEnabled
-				) {
-					const source = audioContext.createBufferSource();
-					source.buffer = sampleBuffer;
-					const basePlaybackRate = Math.pow(2, engine.sampler.transpose / 12);
-					const targetPlaybackRate =
-						basePlaybackRate * Math.pow(2, (noteInScale - 60) / 12); // Relative to C4
-					source.playbackRate.value = targetPlaybackRate;
-
-					const gain = audioContext.createGain();
-					const peakVolume = engine.sampler.volume;
-					const sustainVolume = peakVolume * adsr.sustain;
-
-					gain.gain.cancelScheduledValues(gateOnTime);
-					gain.gain.setValueAtTime(0, gateOnTime);
-					gain.gain.linearRampToValueAtTime(
-						peakVolume,
-						gateOnTime + adsr.attack
-					);
-					gain.gain.setTargetAtTime(
-						sustainVolume,
-						gateOnTime + adsr.attack,
-						adsr.decay / 4
-					);
-					gain.gain.setValueAtTime(sustainVolume, gateOffTime);
-					gain.gain.setTargetAtTime(0, gateOffTime, adsr.release / 4);
-
-					source.connect(gain);
-					gain.connect(engineNodes.sequencerGain);
-					source.start(gateOnTime);
-					source.stop(noteEndTime);
-				}
-			});
-		};
-
-		const scheduler = () => {
-			const lookahead = 0.1; // seconds
-			const scheduleAheadTime = 0.025; // 25ms
-			const secondsPerBeat = 60.0 / bpm;
-			const secondsPer32ndNote = secondsPerBeat / 8;
-
-			while (
-				isTransportPlaying &&
-				nextNoteTimeRef.current < audioContext.currentTime + lookahead
-			) {
-				scheduleNotesForStep(currentStepRef.current, nextNoteTimeRef.current);
-				nextNoteTimeRef.current += secondsPer32ndNote;
-				currentStepRef.current += 1;
-			}
-			if (isTransportPlaying) {
-				schedulerTimeoutIdRef.current = window.setTimeout(
-					scheduler,
-					scheduleAheadTime * 1000
-				);
-			}
-		};
-
-		const updateUI = () => {
-			if (isTransportPlaying) {
-				// Heuristic to keep UI step roughly in sync with audio step
-				const engine1 = enginesRef.current[0];
-				const rateDivisor =
-					{ "1/32": 1, "1/16": 2, "1/8": 4, "1/4": 8 }[engine1.sequencerRate] ||
-					2;
-				const engineStep = Math.floor(currentStepRef.current / rateDivisor);
-				const currentStepInPattern = engineStep % engine1.sequencerSteps;
-
-				if (currentVisualStepRef.current !== currentStepInPattern) {
-					setCurrentStep(currentStepInPattern);
-					currentVisualStepRef.current = currentStepInPattern;
-				}
-			}
-			uiUpdateIdRef.current = requestAnimationFrame(updateUI);
-		};
-
-		if (isTransportPlaying) {
-			if (audioContext.state === "suspended") audioContext.resume();
-			nextNoteTimeRef.current = audioContext.currentTime + 0.1;
-			currentStepRef.current = 0;
-			currentVisualStepRef.current = 0;
-			setCurrentStep(0);
-			scheduler();
-			uiUpdateIdRef.current = requestAnimationFrame(updateUI);
-		} else {
-			if (schedulerTimeoutIdRef.current)
-				clearTimeout(schedulerTimeoutIdRef.current);
-			if (uiUpdateIdRef.current) cancelAnimationFrame(uiUpdateIdRef.current);
-			setCurrentStep(0);
+		try {
+			const arrayBuffer = await file.arrayBuffer();
+			const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+			samplesRef.current.set(engineId, audioBuffer);
+			setEngines(prev => prev.map(e => e.id === engineId ? {...e, sampler: {...e.sampler, sampleName: file.name}} : e));
+		} catch (error) {
+			console.error("Error decoding audio file:", error);
+			alert("Failed to load audio file. Please try a different format.");
 		}
+	}, [audioContext]);
+	
+	const handleSnapToScale = useCallback((engineId: string) => {
+		const engine = engines.find(e => e.id === engineId);
+		if (!engine || scaleFrequencies.length === 0) return;
+		
+		const currentFreq = engine.synth.frequency;
+		const closest = scaleFrequencies.reduce((prev, curr) => 
+			Math.abs(curr.value - currentFreq) < Math.abs(prev.value - currentFreq) ? curr : prev
+		);
+		
+		setEngines(prev => prev.map(e => e.id === engineId ? {...e, synth: {...e.synth, frequency: closest.value}} : e));
 
-		// Granular scheduler
-		currentEngines.forEach((engine) => {
-			const engineNodes = audioNodes.get(engine.id);
-			const sampleBuffer = samples.get(engine.id);
-			if (
-				audioContext &&
-				engineNodes &&
-				sampleBuffer &&
-				engine.sampler.granularModeEnabled
-			) {
-				const isGranularActive =
-					(engine.sequencerEnabled && isTransportPlaying) ||
-					engineNodes.sampler.granularMidiNote !== undefined;
+	}, [engines, scaleFrequencies]);
 
-				if (!isGranularActive && engineNodes.sampler.granularSchedulerId) {
-					clearTimeout(engineNodes.sampler.granularSchedulerId);
-					engineNodes.sampler.granularSchedulerId = undefined;
-				} else if (
-					isGranularActive &&
-					!engineNodes.sampler.granularSchedulerId
-				) {
-					const playGrain = () => {
-						const now = audioContext.currentTime;
+	const handleEngineUpdate = useCallback((engineId: string, updates: Partial<EngineState>) => {
+		setEngines(prevEngines =>
+			prevEngines.map(engine => {
+				if (engine.id === engineId) {
+					const oldEngine = engine;
+					const newEngineState = { ...oldEngine, ...updates };
 
-						const note =
-							engineNodes.sampler.granularMidiNote ??
-							lastPlayedNotePerEngineRef.current.get(`${engine.id}-sampler`) ??
-							60;
+					const stepsChanged = updates.sequencerSteps !== undefined && updates.sequencerSteps !== oldEngine.sequencerSteps;
+					const pulsesChanged = updates.sequencerPulses !== undefined && updates.sequencerPulses !== oldEngine.sequencerPulses;
+                    const rotateChanged = updates.sequencerRotate !== undefined && updates.sequencerRotate !== oldEngine.sequencerRotate;
 
-						const modBus = lfoRoutingBusses!.engineModBusses.get(
-							engine.id
-						)!.samplerTranspose;
-						// For simplicity, we can't easily get the live LFO value here. We will connect the modBus to detune.
+					if (stepsChanged) {
+						const newSteps = newEngineState.sequencerSteps;
+						// Clamp pulses to be within the new valid range.
+						if (newEngineState.sequencerPulses > newSteps) {
+							newEngineState.sequencerPulses = newSteps;
+						}
+						// Clamp rotate
+						if (newEngineState.sequencerRotate >= newSteps) {
+							newEngineState.sequencerRotate = newSteps > 0 ? newSteps - 1 : 0;
+						}
 
-						const basePlaybackRate = Math.pow(2, engine.sampler.transpose / 12);
-						const finalPlaybackRate =
-							basePlaybackRate * Math.pow(2, (note - 60) / 12);
+						// Resize melodic sequence
+						const oldMelodic = oldEngine.melodicSequence;
+						const newMelodic = Array(newSteps).fill(oldMelodic[0] || 220);
+						for (let i = 0; i < newSteps; i++) {
+							newMelodic[i] = oldMelodic[i % oldMelodic.length];
+						}
+						newEngineState.melodicSequence = newMelodic;
+					}
 
-						const grain = audioContext.createBufferSource();
-						grain.buffer = sampleBuffer;
-						grain.playbackRate.value = finalPlaybackRate;
-						modBus.connect(grain.detune);
+					// Regenerate euclidean sequence if any rhythmic parameter changed
+					if (stepsChanged || pulsesChanged || rotateChanged) {
+						const pattern = generateEuclideanPattern(newEngineState.sequencerSteps, newEngineState.sequencerPulses);
+						newEngineState.sequence = rotatePattern(pattern, newEngineState.sequencerRotate);
+					}
 
-						const grainGain = audioContext.createGain();
-						const attack = engine.sampler.grainSize * 0.1;
-						const release = engine.sampler.grainSize * 0.9;
-						grainGain.gain.setValueAtTime(0, now);
-						grainGain.gain.linearRampToValueAtTime(
-							engine.sampler.volume,
-							now + attack
-						);
-						grainGain.gain.linearRampToValueAtTime(0, now + attack + release);
-
-						grain.connect(grainGain);
-						grainGain.connect(engineNodes.midiInputGain); // Use MIDI path for granular
-
-						const startOffset =
-							engine.sampler.playbackPosition +
-							(Math.random() - 0.5) * engine.sampler.positionJitter;
-						const boundedOffset =
-							Math.max(0, Math.min(startOffset, 1)) * sampleBuffer.duration;
-
-						grain.start(now, boundedOffset, engine.sampler.grainSize * 2);
-						grain.onended = () => {
-							modBus.disconnect(grain.detune);
-						};
-
-						const interval = 1000 / engine.sampler.grainDensity;
-						engineNodes.sampler.granularSchedulerId = window.setTimeout(
-							playGrain,
-							interval
-						);
-					};
-					playGrain();
+					return newEngineState;
 				}
-			}
-		});
+				return engine;
+			})
+		);
+	}, []);
 
-		return () => {
-			if (schedulerTimeoutIdRef.current)
-				clearTimeout(schedulerTimeoutIdRef.current);
-			if (uiUpdateIdRef.current) cancelAnimationFrame(uiUpdateIdRef.current);
-			enginesRef.current.forEach((engine) => {
-				const engineNodes = audioNodes.get(engine.id);
-				if (engineNodes && engineNodes.sampler.granularSchedulerId) {
-					clearTimeout(engineNodes.sampler.granularSchedulerId);
-					engineNodes.sampler.granularSchedulerId = undefined;
-				}
-			});
-		};
-	}, [
-		isTransportPlaying,
-		bpm,
-		audioContext,
-		samples,
-		lfos,
-		lastPlayedNotePerEngineRef,
-		enginesRef,
-	]);
+	return (
+		<>
+			{!isInitialized && (
+				<div className="init-overlay">
+					<button onClick={initializeAudio}>Initialize Synthesizer</button>
+				</div>
+			)}
+			{isInitialized && masterAnalyserNodeRef.current && (
+				<div className="app-container">
+					<TopBar
+						masterVolume={masterVolume}
+						setMasterVolume={setMasterVolume}
+						bpm={bpm}
+						setBPM={setBPM}
+						isTransportPlaying={isTransportPlaying}
+						onToggleTransport={() => setIsTransportPlaying(p => !p)}
+						onPanic={handlePanic}
+						midiInputs={midiInputs}
+						selectedMidiInputId={selectedMidiInputId}
+						onMidiInputChange={setSelectedMidiInputId}
+						midiActivity={midiActivity}
+						lockState={lockState}
+						onToggleLock={handleToggleLock}
+					/>
+	
+					<MainControlPanel
+						onRandomize={handleRandomize}
+						onInitializeAll={handleInitializeAll}
+						isMorphing={isMorphing}
+						morphTime={morphTime}
+						setMorphTime={setMorphTime}
+						isMorphSynced={isMorphSynced}
+						setIsMorphSynced={setIsMorphSynced}
+						morphSyncRateIndex={morphSyncRateIndex}
+						setMorphSyncRateIndex={setMorphSyncRateIndex}
+						syncRates={syncRates}
+						harmonicTuningSystem={harmonicTuningSystem}
+						setHarmonicTuningSystem={setHarmonicTuningSystem}
+						voicingMode={voicingMode}
+						setVoicingMode={setVoicingMode}
+						glideTime={glideTime}
+						setGlideTime={setGlideTime}
+						isGlideSynced={isGlideSynced}
+						setIsGlideSynced={setIsGlideSynced}
+						glideSyncRateIndex={glideSyncRateIndex}
+						setGlideSyncRateIndex={setGlideSyncRateIndex}
+						glideSyncRates={syncRates} /* Assuming same rates */
+						scale={scale}
+						setScale={setScale}
+						transpose={transpose}
+						setTranspose={setTranspose}
+						isGlobalAutoRandomEnabled={isGlobalAutoRandomEnabled}
+						setIsGlobalAutoRandomEnabled={setIsGlobalAutoRandomEnabled}
+						globalAutoRandomInterval={globalAutoRandomInterval}
+						setGlobalAutoRandomInterval={setGlobalAutoRandomInterval}
+						globalAutoRandomMode={globalAutoRandomMode}
+						setGlobalAutoRandomMode={setGlobalAutoRandomMode}
+						isAutoRandomSynced={isAutoRandomSynced}
+						setIsAutoRandomSynced={setIsAutoRandomSynced}
+						autoRandomSyncRateIndex={autoRandomSyncRateIndex}
+						setAutoRandomSyncRateIndex={setAutoRandomSyncRateIndex}
+					/>
+	
+					<div className="master-visualizer-container">
+						<div className="visualizer-wrapper">
+							<div className="visualizer-label">MASTER</div>
+							<Visualizer analyserNode={masterAnalyserNodeRef.current} type="waveform" />
+						</div>
+					</div>
+	
+					<div className="channels-container">
+						{engines.map((engine) => (
+							<EngineControls
+								key={engine.id}
+								engine={engine}
+								onUpdate={handleEngineUpdate}
+								onLayerUpdate={(engineId, layer, updates) =>
+									setEngines(prev => prev.map(e => e.id === engineId ? {...e, [layer]: {...e[layer], ...updates}} : e))
+								}
+								onLoadSample={handleLoadSample}
+								onRecordSampleRequest={handleRecordSampleRequest}
+								onRecordSample={handleRecordSample}
+								onToggleLiveInput={handleToggleLiveInput}
+								onRandomize={handleRandomize}
+								onInitialize={handleInitialize}
+								analyserNode={audioNodesRef.current.get(engine.id)?.analyser}
+								currentStep={sequencerCurrentSteps.get(engine.id) ?? 0}
+								isTransportPlaying={isTransportPlaying}
+								audioContext={audioContext}
+								lockState={lockState}
+								onToggleLock={handleToggleLock}
+								harmonicTuningSystem={harmonicTuningSystem}
+								scaleFrequencies={scaleFrequencies}
+								onSnapToScale={handleSnapToScale}
+							/>
+						))}
+					</div>
+					
+					<div className="processing-container">
+						<div className="filters-container">
+							 <div className="filters-container-header">
+								<h2>Filters</h2>
+								<div className="filter-routing-switch">
+									<button className={filterRouting === 'series' ? 'active' : ''} onClick={() => setFilterRouting('series')}>Series</button>
+									<button className={filterRouting === 'parallel' ? 'active' : ''} onClick={() => setFilterRouting('parallel')}>Parallel</button>
+								</div>
+							</div>
+							<div className="filters-grid">
+								<MasterFilterControls
+									title="Filter 1"
+									filterState={filter1State}
+									onUpdate={(updates) => setFilter1State(s => ({...s, ...updates}))}
+									onRandomize={handleRandomize}
+									onInitialize={handleInitialize}
+									lockState={lockState}
+									onToggleLock={handleToggleLock}
+								/>
+								{/* FIX: Corrected missing props for MasterFilterControls and fixed malformed onRandomize prop */}
+								<MasterFilterControls
+									title="Filter 2"
+									filterState={filter2State}
+									onUpdate={(updates) => setFilter2State(s => ({...s, ...updates}))}
+									onRandomize={handleRandomize}
+									onInitialize={handleInitialize}
+									lockState={lockState}
+									onToggleLock={handleToggleLock}
+								/>
+							</div>
+						</div>
+						<MasterEffects
+							effects={masterEffects}
+							setEffects={setMasterEffects}
+							onRandomize={handleRandomize}
+							onInitialize={handleInitialize}
+							lockState={lockState}
+							onToggleLock={handleToggleLock}
+						/>
+					</div>
+
+					<BottomTabs 
+						lfoStates={lfos}
+						handleLfoUpdate={(lfoId, updates) => setLfos(prev => prev.map(l => l.id === lfoId ? {...l, ...updates} : l))}
+						engineStates={engines}
+						handleEngineUpdate={handleEngineUpdate}
+						onRandomize={handleRandomize}
+						onInitialize={handleInitialize}
+						bpm={bpm}
+						lockState={lockState}
+						onToggleLock={handleToggleLock}
+					/>
+				</div>
+			)}
+		</>
+	);
 };
 
-const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
+const container = document.getElementById("root");
+if (container) {
+	const root = createRoot(container);
+	root.render(<App />);
+}
