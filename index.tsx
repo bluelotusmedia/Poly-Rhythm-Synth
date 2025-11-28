@@ -1507,6 +1507,7 @@ const TopBar: React.FC<TopBarProps> = ({
 						onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
 						disabled={lockState.master.volume}
 					/>
+					<span>{Math.round(masterVolume * 100)}%</span>
 					<LockIcon
 						isLocked={lockState.master.volume}
 						onClick={() => onToggleLock("master.volume")}
@@ -2131,6 +2132,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 										})
 									}
 								/>
+								<span>{Math.round(engine.synth.volume * 100)}%</span>
 								<LockIcon
 									isLocked={getLock(`engines.${engine.id}.synth.volume`)}
 									onClick={() =>
@@ -2264,6 +2266,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 										})
 									}
 								/>
+								<span>{Math.round(engine.noise.volume * 100)}%</span>
 								<LockIcon
 									isLocked={getLock(`engines.${engine.id}.noise.volume`)}
 									onClick={() =>
@@ -2374,6 +2377,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 										})
 									}
 								/>
+								<span>{Math.round(engine.sampler.volume * 100)}%</span>
 								<LockIcon
 									isLocked={getLock(`engines.${engine.id}.sampler.volume`)}
 									onClick={() =>
@@ -2471,7 +2475,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 												})
 											}
 										/>
-										<span>{engine.sampler.grainDensity} /s</span>
+										<span>{engine.sampler.grainDensity.toFixed(1)} /s</span>
 										<LockIcon
 											isLocked={getLock(
 												`engines.${engine.id}.sampler.grainDensity`
@@ -2500,6 +2504,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 												})
 											}
 										/>
+										<span>{engine.sampler.playbackPosition.toFixed(2)}</span>
 										<LockIcon
 											isLocked={getLock(
 												`engines.${engine.id}.sampler.playbackPosition`
@@ -2528,6 +2533,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 												})
 											}
 										/>
+										<span>{engine.sampler.positionJitter.toFixed(2)}</span>
 										<LockIcon
 											isLocked={getLock(
 												`engines.${engine.id}.sampler.positionJitter`
@@ -3125,6 +3131,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.distortion.amount.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -3144,6 +3151,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.delay.time.toFixed(2)}s</span>
 							</div>
 							<div className="control-row">
 								<label>Feedback</label>
@@ -3162,6 +3170,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.delay.feedback.toFixed(2)}</span>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
@@ -3177,6 +3186,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.delay.mix.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -3199,6 +3209,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.reverb.decay.toFixed(1)}s</span>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
@@ -3214,6 +3225,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.reverb.mix.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -3236,6 +3248,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.chorus.rate.toFixed(1)} Hz</span>
 							</div>
 							<div className="control-row">
 								<label>Depth</label>
@@ -3254,6 +3267,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.chorus.depth.toFixed(2)}</span>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
@@ -3269,6 +3283,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.chorus.mix.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -3291,6 +3306,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.flanger.rate.toFixed(1)} Hz</span>
 							</div>
 							<div className="control-row">
 								<label>Depth</label>
@@ -3309,6 +3325,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.flanger.depth.toFixed(2)}</span>
 							</div>
 							<div className="control-row">
 								<label>Feedback</label>
@@ -3327,6 +3344,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.flanger.feedback.toFixed(2)}</span>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
@@ -3345,6 +3363,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.flanger.mix.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -3367,6 +3386,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.phaser.rate.toFixed(1)} Hz</span>
 							</div>
 							<div className="control-row">
 								<label>Stages</label>
@@ -3400,6 +3420,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.phaser.q.toFixed(1)}</span>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
@@ -3415,6 +3436,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.phaser.mix.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -3437,6 +3459,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.tremolo.rate.toFixed(1)} Hz</span>
 							</div>
 							<div className="control-row">
 								<label>Depth</label>
@@ -3455,6 +3478,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.tremolo.depth.toFixed(2)}</span>
 							</div>
 							<div className="control-row">
 								<label>Shape</label>
@@ -3493,6 +3517,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 										})
 									}
 								/>
+								<span>{p.tremolo.mix.toFixed(2)}</span>
 							</div>
 						</>
 					)}
@@ -5407,6 +5432,52 @@ const App: React.FC = () => {
 						}
 					}
 				}));
+
+				setLfos((currentLfos) =>
+					currentLfos.map((lfo, i) => {
+						const start = startState.lfos[i];
+						const target = targetState.lfos[i];
+						if (!start || !target) return lfo;
+
+						return {
+							...lfo,
+							rate: lerp(start.rate, target.rate, progress),
+							depth: lerp(start.depth, target.depth, progress),
+						};
+					})
+				);
+
+				if (startState.filter1State && targetState.filter1State) {
+					setFilter1State((prev) => ({
+						...prev,
+						cutoff: lerp(
+							startState.filter1State.cutoff,
+							targetState.filter1State.cutoff,
+							progress
+						),
+						resonance: lerp(
+							startState.filter1State.resonance,
+							targetState.filter1State.resonance,
+							progress
+						),
+					}));
+				}
+
+				if (startState.filter2State && targetState.filter2State) {
+					setFilter2State((prev) => ({
+						...prev,
+						cutoff: lerp(
+							startState.filter2State.cutoff,
+							targetState.filter2State.cutoff,
+							progress
+						),
+						resonance: lerp(
+							startState.filter2State.resonance,
+							targetState.filter2State.resonance,
+							progress
+						),
+					}));
+				}
 			}
 
 			if (progress < 1) {
