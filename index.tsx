@@ -5477,6 +5477,187 @@ const App: React.FC = () => {
 						),
 					}));
 				}
+
+				setMasterEffects((currentEffects) =>
+					currentEffects.map((effect) => {
+						const start = startState.masterEffects.find(
+							(e: MasterEffect) => e.id === effect.id
+						);
+						const target = targetState.masterEffects.find(
+							(e: MasterEffect) => e.id === effect.id
+						);
+
+						if (!start || !target || start.type !== target.type) return effect;
+
+						const startParams = start.params;
+						const targetParams = target.params;
+						const newParams = { ...effect.params };
+
+						switch (effect.type) {
+							case "distortion":
+								if (startParams.distortion && targetParams.distortion) {
+									newParams.distortion = {
+										...newParams.distortion!,
+										amount: lerp(
+											startParams.distortion.amount,
+											targetParams.distortion.amount,
+											progress
+										),
+									};
+								}
+								break;
+							case "delay":
+								if (startParams.delay && targetParams.delay) {
+									newParams.delay = {
+										...newParams.delay!,
+										time: lerp(
+											startParams.delay.time,
+											targetParams.delay.time,
+											progress
+										),
+										feedback: lerp(
+											startParams.delay.feedback,
+											targetParams.delay.feedback,
+											progress
+										),
+										mix: lerp(
+											startParams.delay.mix,
+											targetParams.delay.mix,
+											progress
+										),
+									};
+								}
+								break;
+							case "reverb":
+								if (startParams.reverb && targetParams.reverb) {
+									newParams.reverb = {
+										...newParams.reverb!,
+										decay: lerp(
+											startParams.reverb.decay,
+											targetParams.reverb.decay,
+											progress
+										),
+										mix: lerp(
+											startParams.reverb.mix,
+											targetParams.reverb.mix,
+											progress
+										),
+									};
+								}
+								break;
+							case "chorus":
+								if (startParams.chorus && targetParams.chorus) {
+									newParams.chorus = {
+										...newParams.chorus!,
+										rate: lerp(
+											startParams.chorus.rate,
+											targetParams.chorus.rate,
+											progress
+										),
+										depth: lerp(
+											startParams.chorus.depth,
+											targetParams.chorus.depth,
+											progress
+										),
+										mix: lerp(
+											startParams.chorus.mix,
+											targetParams.chorus.mix,
+											progress
+										),
+									};
+								}
+								break;
+							case "flanger":
+								if (startParams.flanger && targetParams.flanger) {
+									newParams.flanger = {
+										...newParams.flanger!,
+										rate: lerp(
+											startParams.flanger.rate,
+											targetParams.flanger.rate,
+											progress
+										),
+										depth: lerp(
+											startParams.flanger.depth,
+											targetParams.flanger.depth,
+											progress
+										),
+										feedback: lerp(
+											startParams.flanger.feedback,
+											targetParams.flanger.feedback,
+											progress
+										),
+										mix: lerp(
+											startParams.flanger.mix,
+											targetParams.flanger.mix,
+											progress
+										),
+										delay: lerp(
+											startParams.flanger.delay,
+											targetParams.flanger.delay,
+											progress
+										),
+									};
+								}
+								break;
+							case "phaser":
+								if (startParams.phaser && targetParams.phaser) {
+									newParams.phaser = {
+										...newParams.phaser!,
+										rate: lerp(
+											startParams.phaser.rate,
+											targetParams.phaser.rate,
+											progress
+										),
+										q: lerp(
+											startParams.phaser.q,
+											targetParams.phaser.q,
+											progress
+										),
+										mix: lerp(
+											startParams.phaser.mix,
+											targetParams.phaser.mix,
+											progress
+										),
+									};
+								}
+								break;
+							case "tremolo":
+								if (startParams.tremolo && targetParams.tremolo) {
+									newParams.tremolo = {
+										...newParams.tremolo!,
+										rate: lerp(
+											startParams.tremolo.rate,
+											targetParams.tremolo.rate,
+											progress
+										),
+										depth: lerp(
+											startParams.tremolo.depth,
+											targetParams.tremolo.depth,
+											progress
+										),
+										mix: lerp(
+											startParams.tremolo.mix,
+											targetParams.tremolo.mix,
+											progress
+										),
+									};
+								}
+								break;
+							case "eq":
+								if (startParams.eq && targetParams.eq) {
+									newParams.eq = {
+										...newParams.eq!,
+										bands: startParams.eq.bands.map((startBand, i) =>
+											lerp(startBand, targetParams.eq!.bands[i], progress)
+										),
+									};
+								}
+								break;
+						}
+
+						return { ...effect, params: newParams };
+					})
+				);
 			}
 
 			if (progress < 1) {
