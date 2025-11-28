@@ -505,6 +505,36 @@
         margin: 0;
         font-size: 1rem;
       }
+      .drag-handle {
+        cursor: grab;
+        margin-right: 0.25rem;
+        color: #666;
+        display: flex;
+        align-items: center;
+        transition: color 0.2s;
+      }
+      .effect-header:hover .drag-handle {
+        color: var(--on-surface-color);
+      }
+      .drop-indicator {
+        height: 4px;
+        background-color: var(--secondary-color);
+        margin: 4px 0;
+        border-radius: 2px;
+        box-shadow: 0 0 8px var(--secondary-color);
+        animation: pulse 1.5s infinite;
+      }
+      @keyframes pulse {
+        0% { opacity: 0.6; }
+        50% { opacity: 1; }
+        100% { opacity: 0.6; }
+      }
+      .effect-module.dragging {
+        opacity: 0.5;
+        border-color: var(--secondary-color);
+        transform: scale(0.99);
+        box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+      }
       .effect-controls {
         padding: 0 0.75rem 0.75rem 0.75rem;
         display: flex;

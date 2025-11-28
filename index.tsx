@@ -1438,18 +1438,30 @@ const LockIcon = ({
 
 const AccordionIcon = ({ isExpanded }: { isExpanded: boolean }) => (
 	<svg
-		xmlns="http://www.w3.org/2000/svg"
-		viewBox="0 0 24 24"
-		fill="currentColor"
+		width="12"
+		height="12"
+		viewBox="0 0 12 12"
 		style={{
-			width: "16px",
-			height: "16px",
-			transition: "transform 0.2s",
 			transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+			transition: "transform 0.2s",
+			fill: "currentColor",
 		}}
 	>
-		<path d="M10 17l5-5-5-5v10z" />
+		<path d="M4 2L8 6L4 10" />
 	</svg>
+);
+
+const DragHandleIcon = () => (
+	<div className="drag-handle">
+		<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+			<circle cx="4" cy="2" r="1" />
+			<circle cx="8" cy="2" r="1" />
+			<circle cx="4" cy="6" r="1" />
+			<circle cx="8" cy="6" r="1" />
+			<circle cx="4" cy="10" r="1" />
+			<circle cx="8" cy="10" r="1" />
+		</svg>
+	</div>
 );
 
 const TopBar: React.FC<TopBarProps> = ({
@@ -3036,6 +3048,7 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 				onDragEnd={onDragEnd}
 			>
 				<div className="effect-header-title-group">
+					<DragHandleIcon />
 					<AccordionIcon isExpanded={isExpanded} />
 					<h3>{type.charAt(0).toUpperCase() + type.slice(1)}</h3>
 				</div>
@@ -3654,7 +3667,6 @@ const MasterEffects: React.FC<MasterEffectsProps> = ({
 			<div
 				className="effects-chain"
 				onDragEnd={handleDragEnd}
-				onDragLeave={() => setDropIndex(null)}
 			>
 				{effects.length === 0 ? (
 					<div className="effects-chain-empty">
