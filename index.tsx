@@ -852,7 +852,7 @@ const createRandomizedEffectParams = (
 			return {
 				delay: {
 					time: shouldRandomize("rhythmic") ? getRandom(0.01, 1.0) : p.time,
-					feedback: shouldRandomize("melodic") ? getRandom(0.0, 0.85) : p.feedback, // Cap feedback to prevent self-oscillation
+					feedback: shouldRandomize("melodic") ? getRandom(0.0, 0.8) : p.feedback, // Cap feedback to prevent self-oscillation
 					mix: shouldRandomize("melodic") ? getRandom(0.0, 0.6) : p.mix,
 				},
 			};
@@ -886,7 +886,7 @@ const createRandomizedEffectParams = (
 					delay: shouldRandomize("rhythmic")
 						? getRandom(0.001, 0.02)
 						: p.delay,
-					feedback: shouldRandomize("melodic") ? getRandom(0, 0.95) : p.feedback,
+					feedback: shouldRandomize("melodic") ? getRandom(0, 0.8) : p.feedback,
 					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
 				},
 			};
@@ -4295,7 +4295,7 @@ const App: React.FC = () => {
 			try {
 				voice.envelopeGain.gain.cancelScheduledValues(now);
 				voice.envelopeGain.gain.setValueAtTime(voice.envelopeGain.gain.value, now);
-				voice.envelopeGain.gain.linearRampToValueAtTime(0, now + 0.05);
+				voice.envelopeGain.gain.linearRampToValueAtTime(0, now + 0.01);
 				
 				voice.sourceNodes.forEach(node => {
 					try {
@@ -4498,9 +4498,9 @@ const App: React.FC = () => {
 					if (mode === "rhythmic")
 						setAdsr([0.001, 0.1], [0.05, 0.3], [0.0, 0.5], [0.05, 0.4]);
 					else if (mode === "melodic")
-						setAdsr([0.1, 2.0], [0.2, 2.0], [0.4, 1.0], [0.2, 3.0]);
+						setAdsr([0.1, 2.0], [0.2, 2.0], [0.4, 1.0], [0.2, 1.5]);
 					else if (mode === "chaos")
-						setAdsr([0.001, 3.0], [0.05, 3.0], [0.0, 1.0], [0.05, 5.0]);
+						setAdsr([0.001, 3.0], [0.05, 3.0], [0.0, 1.0], [0.05, 2.0]);
 
 					return {
 						...engine,
@@ -4878,7 +4878,11 @@ const App: React.FC = () => {
 		
 		const timeoutId = window.setTimeout(() => {
 			envelopeGain.disconnect();
-			activeVoicesRef.current.delete(noteId);
+			// Fix: Only delete if the voice in the map is STILL this specific voice object.
+			// This prevents deleting a NEW voice that might have reused the same ID (race condition).
+			if (activeVoicesRef.current.get(noteId) === voice) {
+				activeVoicesRef.current.delete(noteId);
+			}
 		}, (stopTime - audioContext.currentTime) * 1000 + 100);
         
         activeVoicesRef.current.set(noteId, {...voice, timeoutId});
@@ -4995,6 +4999,8 @@ const App: React.FC = () => {
 
     // High-Precision Web Audio Sequencer
 	const advanceSequencer = useCallback((time: number) => {
+		if (isRandomizingRef.current) return;
+
 		latestStateRef.current.engines.forEach(engine => {
 			// if (!engine.sequencerEnabled) return; // REMOVED: Allow running in background
 			const engineSch = engineSchedulerStates.current.get(engine.id)!;
@@ -5117,6 +5123,10 @@ const App: React.FC = () => {
             
             const scheduler = () => {
                 if (!audioContext) return;
+				if (isRandomizingRef.current) {
+					schedulerState.current.timerId = window.setTimeout(scheduler, 100);
+					return;
+				}
 				if (latestStateRef.current.clockSource === "midi") return; // Skip internal scheduling if MIDI synced
 
                 const now = audioContext.currentTime;
@@ -5220,10 +5230,9 @@ const App: React.FC = () => {
 
                         const startOffset = Math.max(0, finalPosition * sampleBuffer.duration);
                         const grainEnvelope = audioContext.createGain();
-                        const samplerGain = engineNodes.sampler.volumeGain;
-                        samplerGain.connect(voice.envelopeGain);
                         
-                        grainEnvelope.connect(samplerGain);
+                        // FIX: Connect directly to voice envelope to prevent crosstalk through shared samplerGain
+                        grainEnvelope.connect(voice.envelopeGain);
                         grainSource.connect(grainEnvelope);
         
                         grainSource.start(nextGrainTime, startOffset, grainSize * 2); 
@@ -5232,7 +5241,8 @@ const App: React.FC = () => {
                         const releaseTime = grainSize * 0.4;
         
                         grainEnvelope.gain.setValueAtTime(0, nextGrainTime);
-                        grainEnvelope.gain.linearRampToValueAtTime(1, nextGrainTime + attackTime);
+                        // Apply sampler volume here since we bypassed the shared node
+                        grainEnvelope.gain.linearRampToValueAtTime(engine.sampler.volume, nextGrainTime + attackTime);
                         grainEnvelope.gain.linearRampToValueAtTime(0, nextGrainTime + attackTime + releaseTime);
         
                         grainSource.stop(nextGrainTime + grainSize * 2);
@@ -5291,7 +5301,9 @@ const App: React.FC = () => {
 			if ((!isNoteInput && !isClockInput) || isRandomizingRef.current) return;
 
 			const command = event.data[0] >> 4;
+			const channel = event.data[0] & 0xf;
 			const note = event.data[1];
+			const velocity = event.data[2];
 			
 			// Only show activity for non-clock messages to avoid constant light
 			if (isNoteInput && event.data[0] !== 0xF8) {
@@ -5304,18 +5316,26 @@ const App: React.FC = () => {
 
 			// Note Handling (Only if matches Note Input)
 			if (isNoteInput) {
-				if(command === 9 && event.data[2] > 0) { // Note On
+				if(command === 9 && velocity > 0) { // Note On
 					latestStateRef.current.engines.forEach(engine => {
 						if(engine.midiControlled) {
-							noteOn(engine.id, `midi_${note}`, note, now);
+							noteOn(engine.id, `midi_${engine.id}_${channel}_${note}`, note, now);
 						}
 					})
-				} else if (command === 8 || (command === 9 && event.data[2] === 0)) { // Note Off
+				} else if (command === 8 || (command === 9 && velocity === 0)) { // Note Off
 					latestStateRef.current.engines.forEach(engine => {
 						if(engine.midiControlled) {
-							noteOff(`midi_${note}`, now);
+							noteOff(`midi_${engine.id}_${channel}_${note}`, now);
 						}
 					})
+				} else if (command === 0xB) { // Control Change
+					// Check for All Sound Off (120) or All Notes Off (123)
+					if (note === 120 || note === 123) {
+						allNotesOff();
+					}
+				} else if (event.data[0] === 0xFC) { // Stop (Realtime Message)
+					// Always handle Stop from the Note Input device, even if Sync is Internal
+					allNotesOff();
 				}
 			}
 			
