@@ -569,7 +569,7 @@ const getInitialState = () => {
 			routing: { ...DEFAULT_LFO_ROUTING_STATE },
 			adsr: { attack: 0.01, decay: 0.2, sustain: 0.8, release: 0.5 },
 			melodicSequence: Array.from({ length: 16 }, () => []), // Initialize with empty arrays for polyphony
-			useMelodicSequence: true,
+			useMelodicSequence: false,
 		},
 		{
 			id: "engine2",
@@ -605,7 +605,7 @@ const getInitialState = () => {
 			adsr: { attack: 0.02, decay: 0.3, sustain: 0.7, release: 0.8 },
 			sequence: new Array(12).fill(0), // Initialize sequence for engine2
 			melodicSequence: Array.from({ length: 12 }, () => []), // Initialize with empty arrays for polyphony
-			useMelodicSequence: true,
+			useMelodicSequence: false,
 		},
 		{
 			id: "engine3",
@@ -640,7 +640,7 @@ const getInitialState = () => {
 			routing: { ...DEFAULT_LFO_ROUTING_STATE },
 			adsr: { attack: 0.1, decay: 0.1, sustain: 0.9, release: 0.3 },
 			melodicSequence: Array.from({ length: 7 }, () => []), // Initialize with empty arrays for polyphony
-			useMelodicSequence: true,
+			useMelodicSequence: false,
 		},
 	];
 
@@ -1996,7 +1996,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 	onSnapToScale,
 	onOpenMelodyEditor,
 }) => {
-	const [activeTab, setActiveTab] = useState<EngineLayerType>("sampler");
+	const [activeTab, setActiveTab] = useState<EngineLayerType>("synth");
 	const dropZoneRef = useRef<HTMLDivElement>(null);
 
 	const [isRecording, setIsRecording] = useState(false);

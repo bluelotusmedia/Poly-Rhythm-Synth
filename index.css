@@ -53,13 +53,14 @@
 .melody-grid-labels {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    padding-top: 5px; /* Align with cell center */
-    padding-bottom: 5px;
-    min-width: 60px;
+    justify-content: flex-start; /* Align to top */
+    padding-top: 0; /* Remove padding to match grid */
+    padding-bottom: 0;
+    min-width: 120px; /* Increased width for longer Solfeggio labels */
     text-align: right;
     font-size: 0.75rem;
     color: #a6accd;
+    border-right: 1px solid rgba(255, 255, 255, 0.1); /* Separator */
 }
 
 .grid-label {
@@ -67,6 +68,9 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    padding-right: 10px;
+    border-bottom: 1px solid transparent; /* Placeholder to match row border if needed, or just rely on height */
+    box-sizing: border-box;
 }
 
 .melody-grid-container {
@@ -82,12 +86,17 @@
     display: flex;
     flex-direction: column;
     min-width: 100%;
+    gap: 1px; /* Use gap for horizontal lines */
+    background-color: rgba(255, 255, 255, 0.05); /* Color of the lines */
+    border: 1px solid rgba(255, 255, 255, 0.05); /* Outer border */
 }
 
 .piano-roll-row {
     display: flex;
     height: 30px; /* Fixed height per row */
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    background-color: #1e1e2e; /* Row background to contrast with gap */
+    gap: 1px; /* Use gap for vertical lines */
+    box-sizing: border-box;
 }
 
 .piano-roll-row:last-child {
@@ -97,7 +106,7 @@
 .piano-roll-cell {
     flex: 1;
     min-width: 30px;
-    border-right: 1px solid rgba(255, 255, 255, 0.05);
+    background-color: rgba(0, 0, 0, 0.2); /* Cell background */
     cursor: pointer;
     transition: background-color 0.1s;
 }
