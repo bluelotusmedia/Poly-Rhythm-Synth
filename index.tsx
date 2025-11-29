@@ -294,9 +294,14 @@ interface TopBarProps {
 	midiInputs: MIDIInput[];
 	selectedMidiInputId: string | null;
 	onMidiInputChange: (id: string) => void;
+	selectedMidiClockInputId: string | null;
+	onMidiClockInputChange: (id: string) => void;
 	midiActivity: boolean;
+	midiClockActivity: boolean;
 	lockState: LockState;
 	onToggleLock: (path: string) => void;
+	clockSource: "internal" | "midi";
+	onClockSourceChange: (source: "internal" | "midi") => void;
 }
 
 interface MainControlPanelProps {
@@ -846,9 +851,9 @@ const createRandomizedEffectParams = (
 			const p = currentParams.delay!;
 			return {
 				delay: {
-					time: shouldRandomize("rhythmic") ? getRandom(0.01, 2) : p.time,
-					feedback: shouldRandomize("melodic") ? getRandom(0, 0.95) : p.feedback,
-					mix: shouldRandomize("melodic") ? getRandom(0.1, 1) : p.mix,
+					time: shouldRandomize("rhythmic") ? getRandom(0.01, 1.0) : p.time,
+					feedback: shouldRandomize("melodic") ? getRandom(0.0, 0.85) : p.feedback, // Cap feedback to prevent self-oscillation
+					mix: shouldRandomize("melodic") ? getRandom(0.0, 0.6) : p.mix,
 				},
 			};
 		}
@@ -857,8 +862,8 @@ const createRandomizedEffectParams = (
 			if (!shouldRandomize("melodic")) return { reverb: p };
 			return {
 				reverb: {
-					decay: getRandom(0.5, 8),
-					mix: getRandom(0.1, 1),
+					decay: getRandom(0.1, 5.0), // Cap decay
+					mix: getRandom(0.0, 0.6),
 				},
 			};
 		}
@@ -1602,6 +1607,8 @@ const DragHandleIcon = () => (
 	</div>
 );
 
+
+
 const TopBar: React.FC<TopBarProps> = ({
 	masterVolume,
 	setMasterVolume,
@@ -1613,9 +1620,14 @@ const TopBar: React.FC<TopBarProps> = ({
 	midiInputs,
 	selectedMidiInputId,
 	onMidiInputChange,
+	selectedMidiClockInputId,
+	onMidiClockInputChange,
 	midiActivity,
+	midiClockActivity,
 	lockState,
 	onToggleLock,
+	clockSource,
+	onClockSourceChange,
 }) => {
 	return (
 		<div className="top-bar">
@@ -1623,7 +1635,7 @@ const TopBar: React.FC<TopBarProps> = ({
 				<h2>Poly-Rhythm Synth</h2>
 			</div>
 			<div className="top-bar-group">
-				<label>MIDI Input</label>
+				<label>MIDI Note Input</label>
 				<div
 					className="midi-indicator"
 					style={{
@@ -1644,6 +1656,47 @@ const TopBar: React.FC<TopBarProps> = ({
 						</option>
 					))}
 				</select>
+			</div>
+			<div className="top-bar-group">
+				<label>MIDI Clock Input</label>
+				<div
+					className="midi-indicator"
+					style={{
+						backgroundColor: midiClockActivity ? "var(--secondary-color)" : "#333",
+					}}
+					title="MIDI Clock Activity"
+				/>
+				<select
+					value={selectedMidiClockInputId || ""}
+					onChange={(e) => onMidiClockInputChange(e.target.value)}
+					disabled={midiInputs.length === 0}
+				>
+					<option value="">
+						{midiInputs.length > 0 ? "Select Device" : "No MIDI Devices"}
+					</option>
+					{midiInputs.map((input) => (
+						<option key={input.id} value={input.id}>
+							{input.name}
+						</option>
+					))}
+				</select>
+			</div>
+			<div className="top-bar-group">
+				<label>Sync</label>
+				<div className="toggle-group">
+					<button
+						className={clockSource === "internal" ? "active" : ""}
+						onClick={() => onClockSourceChange("internal")}
+					>
+						INT
+					</button>
+					<button
+						className={clockSource === "midi" ? "active" : ""}
+						onClick={() => onClockSourceChange("midi")}
+					>
+						MIDI
+					</button>
+				</div>
 			</div>
 			<div className="top-bar-group">
 				<label>Master</label>
@@ -2154,6 +2207,32 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 			</div>
 
 			<div className="control-row">
+				<label>Seq Melody</label>
+				<div className="toggle-group">
+					<button
+						className={engine.useMelodicSequence ? "active" : ""}
+						onClick={() =>
+							onUpdate(engine.id, {
+								useMelodicSequence: !engine.useMelodicSequence,
+							})
+						}
+						title="Toggle between sequenced melody and fixed note"
+					>
+						{engine.useMelodicSequence ? "SEQ" : "FIXED"}
+					</button>
+					{engine.useMelodicSequence && (
+						<button
+							className="small"
+							onClick={() => onOpenMelodyEditor(engine.id)}
+							title="Edit Melodic Sequence"
+						>
+							Edit
+						</button>
+					)}
+				</div>
+			</div>
+
+			<div className="control-row">
 				<label>Rate</label>
 				<div className="control-with-lock">
 					<select
@@ -2399,31 +2478,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 								</button>
 							</div>
 						</div>
-						<div className="control-row">
-							<label>Seq Melody</label>
-							<div className="toggle-group">
-								<button
-									className={engine.useMelodicSequence ? "active" : ""}
-									onClick={() =>
-										onUpdate(engine.id, {
-											useMelodicSequence: !engine.useMelodicSequence,
-										})
-									}
-									title="Toggle between sequenced melody and fixed note"
-								>
-									{engine.useMelodicSequence ? "SEQ" : "FIXED"}
-								</button>
-								{engine.useMelodicSequence && (
-									<button
-										className="small"
-										onClick={() => onOpenMelodyEditor(engine.id)}
-										title="Edit Melodic Sequence"
-									>
-										Edit
-									</button>
-								)}
-							</div>
-						</div>
+
 					</>
 				)}
 				{activeTab === "noise" && (
@@ -4105,7 +4160,7 @@ const App: React.FC = () => {
     const noiseBuffersRef = useRef<Map<NoiseType, AudioBuffer>>(new Map());
 	const reverbImpulseCache = useRef<Map<string, AudioBuffer>>(new Map());
 	const dummyGainRef = useRef<GainNode | null>(null);
-	const sequencerModEventsRef = useRef<Map<string, {start: number, end: number}[]>>(new Map());
+	const sequencerModEventsRef = useRef<Map<string, {start: number, end: number, value?: number}[]>>(new Map());
 
 	// --- State Management ---
 	const initialAppState = useMemo(() => getInitialState(), []);
@@ -4137,6 +4192,7 @@ const App: React.FC = () => {
 
 
 	const [masterVolume, setMasterVolume] = useState(0.7);
+	const [clockSource, setClockSource] = useState<"internal" | "midi">("internal");
 	const [isTransportPlaying, setIsTransportPlaying] = useState(false);
 	const [sequencerCurrentSteps, setSequencerCurrentSteps] = useState<Map<string, number>>(new Map());
 	const [harmonicTuningSystem, setHarmonicTuningSystem] =
@@ -4150,10 +4206,11 @@ const App: React.FC = () => {
 	const [morphSyncRateIndex, setMorphSyncRateIndex] = useState(3);
 
 	// Use a ref to get the latest state in audio callbacks
-	const latestStateRef = useRef({ engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose });
+	// Use a ref to get the latest state in audio callbacks
+	const latestStateRef = useRef({ engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose, clockSource });
 	useEffect(() => {
-		latestStateRef.current = { engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose };
-	}, [engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose]);
+		latestStateRef.current = { engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose, clockSource };
+	}, [engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose, clockSource]);
 
 	const morphTargetRef = useRef<any>(null);
 	const morphStartRef = useRef<any>(null);
@@ -4162,8 +4219,13 @@ const App: React.FC = () => {
 	const [selectedMidiInputId, setSelectedMidiInputId] = useState<string | null>(
 		null
 	);
+	const [selectedMidiClockInputId, setSelectedMidiClockInputId] = useState<string | null>(null);
 	const [midiActivity, setMidiActivity] = useState(false);
 	const midiActivityTimeoutRef = useRef<number | null>(null);
+	const [midiClockActivity, setMidiClockActivity] = useState(false);
+	const midiClockActivityTimeoutRef = useRef<number | null>(null);
+	const midiClockCounterRef = useRef(0);
+	const isRandomizingRef = useRef(false);
 	const [audioInputStream, setAudioInputStream] = useState<MediaStream | null>(
 		null
 	);
@@ -4223,9 +4285,91 @@ const App: React.FC = () => {
 			(a, b) => a.value - b.value
 		);
 	}, [harmonicTuningSystem, scale, transpose]);
+	
+	const allNotesOff = useCallback(() => {
+		if (!audioContext) return;
+		const now = audioContext.currentTime;
+		
+		// 1. Stop all active voices
+		activeVoicesRef.current.forEach(voice => {
+			try {
+				voice.envelopeGain.gain.cancelScheduledValues(now);
+				voice.envelopeGain.gain.setValueAtTime(voice.envelopeGain.gain.value, now);
+				voice.envelopeGain.gain.linearRampToValueAtTime(0, now + 0.05);
+				
+				voice.sourceNodes.forEach(node => {
+					try {
+						node.stop(now + 0.1);
+					} catch (e) { /* ignore */ }
+				});
+				
+				setTimeout(() => {
+					voice.envelopeGain.disconnect();
+				}, 200);
+			} catch (e) {
+				console.error("Error stopping voice:", e);
+			}
+		});
+		activeVoicesRef.current.clear();
+
+		// 2. Clear sequencer modulation events
+		sequencerModEventsRef.current.clear();
+		
+		// 3. Reset sequencer visual state
+		setSequencerCurrentSteps(new Map());
+		
+		// 4. Reset engine scheduler states
+		engineSchedulerStates.current.forEach((val) => {
+			val.currentStep = 0;
+			val.nextNoteTime = now;
+		});
+
+		// 5. Force disconnect all engine audio nodes as a failsafe
+		audioNodesRef.current.forEach((nodes, engineId) => {
+			try {
+				// Cancel any scheduled values on volume gains AND set to 0
+				nodes.synth.volumeGain.gain.cancelScheduledValues(now);
+				nodes.synth.volumeGain.gain.setValueAtTime(0, now);
+				
+				nodes.noise.volumeGain.gain.cancelScheduledValues(now);
+				nodes.noise.volumeGain.gain.setValueAtTime(0, now);
+				
+				nodes.sampler.volumeGain.gain.cancelScheduledValues(now);
+				nodes.sampler.volumeGain.gain.setValueAtTime(0, now);
+				
+				// If we can track source nodes directly attached to the engine, stop them here too.
+				// But we don't store them on the engine node structure, only in activeVoices.
+				// So we rely on activeVoicesRef being accurate.
+				
+				// However, we can force the engine mixer to 0 temporarily to kill any sound
+				nodes.engineMixer.gain.cancelScheduledValues(now);
+				nodes.engineMixer.gain.setValueAtTime(0, now);
+				nodes.engineMixer.gain.linearRampToValueAtTime(1, now + 0.1); // Ramp back up quickly? No, that might restart sound.
+				// Actually, we shouldn't mute the mixer because it might affect future notes.
+				// But we can mute the individual layer volumes if they are stuck open?
+				// No, those are controlled by envelopes.
+				
+				// Let's just ensure the sequencer gate is closed.
+				nodes.sequencerModGate.gain.cancelScheduledValues(now);
+				nodes.sequencerModGate.gain.setValueAtTime(0, now);
+			} catch(e) {
+				console.error(`Error cleaning up engine ${engineId}:`, e);
+			}
+		});
+
+	}, [audioContext]);
 
 	const handleRandomize = useCallback(
 		(mode: RandomizeMode, scope: string) => {
+			// Block MIDI and stop notes
+			isRandomizingRef.current = true;
+			allNotesOff();
+
+			// Release lock after a short delay to allow state to settle
+			setTimeout(() => {
+				isRandomizingRef.current = false;
+			}, 100);
+
 			const randomizeRouting = () => {
 				const newState = { ...DEFAULT_LFO_ROUTING_STATE };
 				const keys = Object.keys(newState) as (keyof LFORoutingState)[];
@@ -4474,6 +4618,7 @@ const App: React.FC = () => {
 			scale,
 			transpose,
 			scaleFrequencies,
+			allNotesOff,
 		]
 	);
 
@@ -4694,8 +4839,17 @@ const App: React.FC = () => {
         }
     }, [masterVolume, audioContext]);
 	
+
+
 	const noteOff = useCallback((noteId: string, time: number) => {
 		if (!audioContext) return;
+		
+		// If noteId is "all", kill everything
+		if (noteId === "all") {
+			allNotesOff();
+			return;
+		}
+
 		const voice = activeVoicesRef.current.get(noteId);
 		if (!voice) return;
 		
@@ -4743,6 +4897,11 @@ const App: React.FC = () => {
 		if (!engine) return;
 		const engineNodes = audioNodesRef.current.get(engine.id);
 		if (!engineNodes) return;
+
+		// Check if voice already exists and stop it (stealing)
+		if (activeVoicesRef.current.has(noteId)) {
+			noteOff(noteId, now);
+		}
 	
 		// --- Voicing and Glide Logic ---
 		let startFrequency: number | undefined;
@@ -4835,6 +4994,94 @@ const App: React.FC = () => {
 	}, [audioContext, noteOff, harmonicTuningSystem, syncRates]);
 
     // High-Precision Web Audio Sequencer
+	const advanceSequencer = useCallback((time: number) => {
+		latestStateRef.current.engines.forEach(engine => {
+			// if (!engine.sequencerEnabled) return; // REMOVED: Allow running in background
+			const engineSch = engineSchedulerStates.current.get(engine.id)!;
+			const engineNodes = audioNodesRef.current.get(engine.id);
+			if (!engineNodes) return;
+
+			const currentStepForNote = engineSch.currentStep;
+			
+			if (engine.sequence[currentStepForNote] === 1) {
+				const noteIdBase = `seq_${engine.id}_${currentStepForNote}_${time}`;
+				
+				// Only trigger notes if sequencer is enabled
+				if (engine.sequencerEnabled) {
+					if (engine.useMelodicSequence) {
+						const freqs = engine.melodicSequence[currentStepForNote];
+						if (Array.isArray(freqs)) {
+							freqs.forEach((freq, i) => {
+								const noteId = `${noteIdBase}_${i}`;
+								const midiNote = frequencyToMidiNote(freq);
+								noteOn(engine.id, noteId, midiNote, time, freq);
+							});
+						}
+					} else {
+						const freq = engine.synth.frequency;
+						const midiNote = frequencyToMidiNote(freq);
+						noteOn(engine.id, noteIdBase, midiNote, time, freq);
+					}
+				}
+				
+				const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
+				const noteDuration = secondsPerStep * 0.8; 
+				const modGateDuration = secondsPerStep * 0.95;
+
+				if (engine.sequencerEnabled) {
+					if (!engine.useMelodicSequence) {
+						noteOff(noteIdBase, time + noteDuration);
+					} else {
+						const freqs = engine.melodicSequence[currentStepForNote];
+						if (Array.isArray(freqs)) {
+							freqs.forEach((_, i) => {
+								noteOff(`${noteIdBase}_${i}`, time + noteDuration);
+							});
+						}
+					}
+				}
+
+				// Calculate modulation value based on pitch if melodic
+				let modValue = 1.0;
+				if (engine.useMelodicSequence) {
+					const freqs = engine.melodicSequence[currentStepForNote];
+					if (Array.isArray(freqs) && freqs.length > 0) {
+						// Use the first note's pitch for modulation
+						const midiNote = frequencyToMidiNote(freqs[0]);
+						// Normalize MIDI note (0-127) to 0-1 range
+						modValue = Math.max(0, Math.min(1, midiNote / 127));
+					}
+				}
+
+				// Modulation events happen regardless of sequencerEnabled
+				// Set the modulation source offset (value) for this step
+				engineNodes.sequencerModSource.offset.setValueAtTime(modValue, time);
+				
+				// Open the gate
+				engineNodes.sequencerModGate.gain.setValueAtTime(1.0, time);
+				engineNodes.sequencerModGate.gain.setValueAtTime(0.0, time + modGateDuration);
+				
+				const modEvents = sequencerModEventsRef.current.get(engine.id) || [];
+				modEvents.push({ start: time, end: time + modGateDuration, value: modValue });
+				sequencerModEventsRef.current.set(engine.id, modEvents);
+			}
+
+			const now = audioContext?.currentTime || 0;
+			setTimeout(() => {
+				if (isTransportPlaying) {
+					setSequencerCurrentSteps(prev => new Map(prev).set(engine.id, currentStepForNote));
+				}
+			}, Math.max(0, (time - now) * 1000));
+
+			engineSch.currentStep = (engineSch.currentStep + 1) % engine.sequencerSteps;
+			
+			if (latestStateRef.current.clockSource === "internal") {
+				const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
+				engineSch.nextNoteTime += secondsPerStep;
+			}
+		});
+	}, [isTransportPlaying, audioContext, noteOn, noteOff]);
+
     const schedulerState = useRef<{ timerId?: number; lookaheadTime: number; scheduleAheadTime: number }>({
         lookaheadTime: 25.0, // How often we wake up to schedule, in ms
         scheduleAheadTime: 0.1, // How far ahead to schedule audio, in seconds
@@ -4865,11 +5112,16 @@ const App: React.FC = () => {
                     });
                 }
             });
+
+
             
             const scheduler = () => {
                 if (!audioContext) return;
+				if (latestStateRef.current.clockSource === "midi") return; // Skip internal scheduling if MIDI synced
+
                 const now = audioContext.currentTime;
                 const scheduleUntil = now + schedulerState.current.scheduleAheadTime;
+
 
 				// Cleanup old sequencer modulation events
 				const cleanupTime = now - 2.0; // Clean up events older than 2s
@@ -4880,7 +5132,7 @@ const App: React.FC = () => {
 
                 // --- Schedule Sequencer Notes ---
                 latestStateRef.current.engines.forEach(engine => {
-                    if (!engine.sequencerEnabled) return;
+                    // if (!engine.sequencerEnabled) return; // REMOVED: Allow running in background
                     const engineSch = engineSchedulerStates.current.get(engine.id)!;
                     const engineNodes = audioNodesRef.current.get(engine.id);
 					if (!engineNodes) return;
@@ -4888,69 +5140,9 @@ const App: React.FC = () => {
                     const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
 
                     while (engineSch.nextNoteTime < scheduleUntil) {
-                        const currentStepForNote = engineSch.currentStep;
-                        if (engine.sequence[currentStepForNote] === 1) {
-                            const noteIdBase = `seq_${engine.id}_${currentStepForNote}_${engineSch.nextNoteTime}`;
-                            
-							if (engine.useMelodicSequence) {
-								const freqs = engine.melodicSequence[currentStepForNote];
-								if (Array.isArray(freqs)) {
-									freqs.forEach((freq, i) => {
-										const noteId = `${noteIdBase}_${i}`;
-										const midiNote = frequencyToMidiNote(freq);
-										noteOn(engine.id, noteId, midiNote, engineSch.nextNoteTime, freq);
-									});
-								}
-							} else {
-								const freq = engine.synth.frequency;
-								const midiNote = frequencyToMidiNote(freq);
-								noteOn(engine.id, noteIdBase, midiNote, engineSch.nextNoteTime, freq);
-							}
-                            
-                            const noteDuration = secondsPerStep * 0.8; // Note lasts 80% of step duration
-							const modGateDuration = secondsPerStep * 0.95; // Modulation gate is slightly longer
-                            
-							// Fix: Use noteIdBase for mono/legacy noteOff if needed, but for polyphony we rely on timeout in noteOn
-							// However, noteOff is mainly for cleaning up the activeVoices map.
-							// For polyphony, we might want to track all generated IDs.
-							// For simplicity in this refactor, we can skip explicit noteOff here as noteOn handles its own timeout.
-							// But to keep existing logic for mono/synth:
-							if (!engine.useMelodicSequence) {
-								noteOff(noteIdBase, engineSch.nextNoteTime + noteDuration);
-							} else {
-								// For polyphony, we iterate and turn off each
-								const freqs = engine.melodicSequence[currentStepForNote];
-								if (Array.isArray(freqs)) {
-									freqs.forEach((_, i) => {
-										noteOff(`${noteIdBase}_${i}`, engineSch.nextNoteTime + noteDuration);
-									});
-								}
-							}
-
-							// Schedule the modulation gate for AudioParams
-							engineNodes.sequencerModGate.gain.setValueAtTime(1.0, engineSch.nextNoteTime);
-							engineNodes.sequencerModGate.gain.setValueAtTime(0.0, engineSch.nextNoteTime + modGateDuration);
-							
-							// Record modulation gate event for JS-based modulation (granular)
-							const modEvents = sequencerModEventsRef.current.get(engine.id) || [];
-							modEvents.push({ start: engineSch.nextNoteTime, end: engineSch.nextNoteTime + modGateDuration });
-							sequencerModEventsRef.current.set(engine.id, modEvents);
-                        }
-                        
-                        const stepTime = engineSch.nextNoteTime;
-                        setTimeout(() => {
-                            if (isTransportPlaying) { // check again in case it was stopped
-                                setSequencerCurrentSteps(prev => new Map(prev).set(engine.id, currentStepForNote));
-                            }
-                        }, (stepTime - now) * 1000);
-
-
-                        engineSch.nextNoteTime += secondsPerStep;
-                        engineSch.currentStep = (engineSch.currentStep + 1) % engine.sequencerSteps;
+						advanceSequencer(engineSch.nextNoteTime);
                     }
                 });
-                
-                // --- Schedule Granular Synthesis ---
                 activeVoicesRef.current.forEach((voice) => {
                     if (!voice.granularModeEnabled || !voice.nextGrainTime) return;
 
@@ -4993,22 +5185,27 @@ const App: React.FC = () => {
 						// Sequencer Modulation
 						latestStateRef.current.engines.forEach(sourceEngine => {
 							const modEvents = sequencerModEventsRef.current.get(sourceEngine.id);
+							let activeModValue = 0;
 							let isGateOn = false;
+							
 							if (modEvents) {
 								for (const event of modEvents) {
 									if (nextGrainTime >= event.start && nextGrainTime < event.end) {
 										isGateOn = true;
+										// Use the stored value if available, otherwise default to 1.0 (backward compatibility)
+										activeModValue = (event as any).value !== undefined ? (event as any).value : 1.0;
 										break;
 									}
 								}
 							}
 							if(isGateOn) {
-								if(sourceEngine.routing[granularDestKeys.pos]) positionMod += 0.5;
-								if(sourceEngine.routing[granularDestKeys.size]) sizeMod += 0.1;
-								if(sourceEngine.routing[granularDestKeys.density]) densityMod += 20;
-								if(sourceEngine.routing[granularDestKeys.jitter]) jitterMod += 0.5;
+								if(sourceEngine.routing[granularDestKeys.pos]) positionMod += 0.5 * activeModValue;
+								if(sourceEngine.routing[granularDestKeys.size]) sizeMod += 0.1 * activeModValue;
+								if(sourceEngine.routing[granularDestKeys.density]) densityMod += 20 * activeModValue;
+								if(sourceEngine.routing[granularDestKeys.jitter]) jitterMod += 0.5 * activeModValue;
 							}
 						});
+
 
 
                         const grainSource = audioContext.createBufferSource();
@@ -5082,18 +5279,31 @@ const App: React.FC = () => {
 	}, []);
 	
 	// MIDI Message Handler
+	const lastClockTimeRef = useRef(0);
+	const bpmHistoryRef = useRef<number[]>([]);
+
 	useEffect(() => {
-		const input = midiInputs.find(i => i.id === selectedMidiInputId);
-		if (input && audioContext) {
-			const handleMidiMessage = (event: MIDIMessageEvent) => {
-				const command = event.data[0] >> 4;
-				const note = event.data[1];
-				
+		const handleMidiMessage = (event: MIDIMessageEvent) => {
+			const inputId = (event.target as MIDIInput).id;
+			const isNoteInput = inputId === selectedMidiInputId;
+			const isClockInput = inputId === selectedMidiClockInputId;
+
+			if ((!isNoteInput && !isClockInput) || isRandomizingRef.current) return;
+
+			const command = event.data[0] >> 4;
+			const note = event.data[1];
+			
+			// Only show activity for non-clock messages to avoid constant light
+			if (isNoteInput && event.data[0] !== 0xF8) {
 				setMidiActivity(true);
 				if(midiActivityTimeoutRef.current) clearTimeout(midiActivityTimeoutRef.current);
 				midiActivityTimeoutRef.current = window.setTimeout(() => setMidiActivity(false), 100);
+			}
 
-				const now = audioContext.currentTime;
+			const now = audioContext?.currentTime || 0;
+
+			// Note Handling (Only if matches Note Input)
+			if (isNoteInput) {
 				if(command === 9 && event.data[2] > 0) { // Note On
 					latestStateRef.current.engines.forEach(engine => {
 						if(engine.midiControlled) {
@@ -5108,10 +5318,88 @@ const App: React.FC = () => {
 					})
 				}
 			}
-			input.onmidimessage = handleMidiMessage;
-			return () => { input.onmidimessage = null; }
+			
+			// Clock Handling (Only if matches Clock Input)
+			if (isClockInput && latestStateRef.current.clockSource === "midi") {
+				// Flash clock activity light
+				if (event.data[0] === 0xF8) { // Clock
+					setMidiClockActivity(true);
+					if (midiClockActivityTimeoutRef.current) {
+						window.clearTimeout(midiClockActivityTimeoutRef.current);
+					}
+					midiClockActivityTimeoutRef.current = window.setTimeout(() => {
+						setMidiClockActivity(false);
+					}, 50); // Short flash for clock
+				}
+
+				// MIDI Clock Handling
+				if (event.data[0] === 0xF8) { // Clock
+					midiClockCounterRef.current++;
+					
+					// BPM Detection
+					if (midiClockCounterRef.current % 24 === 0) {
+						const lastTime = lastClockTimeRef.current;
+						if (lastTime > 0) {
+							const elapsed = now - lastTime;
+							if (elapsed > 0) {
+								// 24 pulses per beat. elapsed is time for 1 beat.
+								const instantBpm = 60 / elapsed;
+								
+								// Simple smoothing
+								const history = bpmHistoryRef.current;
+								history.push(instantBpm);
+								if (history.length > 4) history.shift(); // Keep last 4 beats
+								
+								const avgBpm = history.reduce((a, b) => a + b, 0) / history.length;
+								
+								// Only update if difference is significant to avoid jitter
+								if (Math.abs(avgBpm - latestStateRef.current.bpm) > 1) {
+									setBPM(Math.round(avgBpm));
+								}
+							}
+						}
+						lastClockTimeRef.current = now;
+					}
+
+					if (midiClockCounterRef.current % 6 === 0) {
+						// Advance step every 6 pulses (16th note)
+						// Only advance if transport is playing!
+						if (isTransportPlaying) {
+							advanceSequencer(now);
+						}
+					}
+				} else if (event.data[0] === 0xFA) { // Start
+					setIsTransportPlaying(true);
+					midiClockCounterRef.current = 0;
+					lastClockTimeRef.current = 0;
+					bpmHistoryRef.current = [];
+					// Reset sequencers
+					engineSchedulerStates.current.forEach((val) => {
+						val.currentStep = -1; // Will become 0 on next advance
+						val.nextNoteTime = now;
+					});
+					sequencerCurrentSteps.forEach((_, key) => {
+						setSequencerCurrentSteps(prev => new Map(prev).set(key, 0));
+					});
+				} else if (event.data[0] === 0xFC) { // Stop
+					setIsTransportPlaying(false);
+					allNotesOff();
+				} else if (event.data[0] === 0xFB) { // Continue
+					setIsTransportPlaying(true);
+				}
+			}
 		}
-	}, [selectedMidiInputId, midiInputs, audioContext, noteOn, noteOff, harmonicTuningSystem]);
+
+		midiInputs.forEach(input => {
+			input.onmidimessage = handleMidiMessage;
+		});
+
+		return () => { 
+			midiInputs.forEach(input => {
+				input.onmidimessage = null; 
+			});
+		}
+	}, [selectedMidiInputId, selectedMidiClockInputId, midiInputs, audioContext, noteOn, noteOff, harmonicTuningSystem, isTransportPlaying]);
 
 	// Memoize a string representing the structure of the effects chain.
     // This will only change if effects are added, removed, reordered, enabled/disabled,
@@ -5988,22 +6276,17 @@ const App: React.FC = () => {
 		if (!audioContext || !masterVolumeNodeRef.current) return;
 		setIsTransportPlaying(false); // Stop sequencers
 
-		// Stop all active notes with a fast release
-		const now = audioContext.currentTime;
-		activeVoicesRef.current.forEach(voice => {
-			voice.envelopeGain.gain.cancelScheduledValues(now);
-			voice.envelopeGain.gain.setTargetAtTime(0.0, now, 0.01);
-		});
+		// Use the robust allNotesOff function
+		allNotesOff();
 		
 		// Flush effect tails by quickly ramping master volume
+		const now = audioContext.currentTime;
 		masterVolumeNodeRef.current.gain.cancelScheduledValues(now);
 		masterVolumeNodeRef.current.gain.setValueAtTime(masterVolumeNodeRef.current.gain.value, now);
 		masterVolumeNodeRef.current.gain.linearRampToValueAtTime(0.0, now + 0.05);
 		masterVolumeNodeRef.current.gain.linearRampToValueAtTime(masterVolume, now + 0.3);
 
-		setTimeout(() => activeVoicesRef.current.clear(), 100);
-
-	}, [audioContext, masterVolume]);
+	}, [audioContext, masterVolume, allNotesOff]);
 
 	const handleRecordSampleRequest = useCallback(async () => {
 		if (!audioContext) return null;
@@ -6148,9 +6431,14 @@ const App: React.FC = () => {
 						midiInputs={midiInputs}
 						selectedMidiInputId={selectedMidiInputId}
 						onMidiInputChange={setSelectedMidiInputId}
+						selectedMidiClockInputId={selectedMidiClockInputId}
+						onMidiClockInputChange={setSelectedMidiClockInputId}
 						midiActivity={midiActivity}
+						midiClockActivity={midiClockActivity}
 						lockState={lockState}
 						onToggleLock={handleToggleLock}
+						clockSource={clockSource}
+						onClockSourceChange={setClockSource}
 					/>
 	
 					<MainControlPanel
