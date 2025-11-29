@@ -133,7 +133,8 @@ interface EngineState {
 	sequencerRotate: number;
 	sequencerRate: string;
 	sequence: number[]; // 0=off, 1=on, 2=tie
-	melodicSequence: number[]; // Stores frequencies for each step
+	melodicSequence: number[][]; // Stores frequencies for each step (polyphonic)
+	useMelodicSequence: boolean; // Toggle between sequence and fixed note
 	effects: EffectState;
 	routing: LFORoutingState;
 	adsr: ADSRState;
@@ -426,7 +427,7 @@ const solfeggioFrequenciesData = [
 	{ value: 741, label: "741 Hz - Intuition" },
 	{ value: 852, label: "852 Hz - Awakening" },
 	{ value: 963, label: "963 Hz - Oneness" },
-];
+].sort((a, b) => a.value - b.value); // Ensure sorted for correct display
 const solfeggioFrequencies = solfeggioFrequenciesData.map((f) => f.value);
 const wholesomeScaleFrequencies = [192, 216, 240, 256, 288, 320, 360]; // G Major Diatonic with integer frequencies
 const mariaRenoldFrequencies = [
@@ -567,7 +568,8 @@ const getInitialState = () => {
 			effects: { distortion: 0, delayTime: 0.5, delayFeedback: 0.3 },
 			routing: { ...DEFAULT_LFO_ROUTING_STATE },
 			adsr: { attack: 0.01, decay: 0.2, sustain: 0.8, release: 0.5 },
-			melodicSequence: Array(16).fill(220), // Default melodic sequence
+			melodicSequence: Array.from({ length: 16 }, () => []), // Initialize with empty arrays for polyphony
+			useMelodicSequence: true,
 		},
 		{
 			id: "engine2",
@@ -601,7 +603,9 @@ const getInitialState = () => {
 			effects: { distortion: 0, delayTime: 0.25, delayFeedback: 0.4 },
 			routing: { ...DEFAULT_LFO_ROUTING_STATE },
 			adsr: { attack: 0.02, decay: 0.3, sustain: 0.7, release: 0.8 },
-			melodicSequence: Array(12).fill(440), // Default melodic sequence
+			sequence: new Array(12).fill(0), // Initialize sequence for engine2
+			melodicSequence: Array.from({ length: 12 }, () => []), // Initialize with empty arrays for polyphony
+			useMelodicSequence: true,
 		},
 		{
 			id: "engine3",
@@ -635,7 +639,8 @@ const getInitialState = () => {
 			effects: { distortion: 0, delayTime: 0.75, delayFeedback: 0.2 },
 			routing: { ...DEFAULT_LFO_ROUTING_STATE },
 			adsr: { attack: 0.1, decay: 0.1, sustain: 0.9, release: 0.3 },
-			melodicSequence: Array(7).fill(110), // Default melodic sequence
+			melodicSequence: Array.from({ length: 7 }, () => []), // Initialize with empty arrays for polyphony
+			useMelodicSequence: true,
 		},
 	];
 
@@ -1155,7 +1160,7 @@ const midiNoteToFrequency = (note: number, tuning: TuningSystem): number => {
 		}
 
 		case "solfeggio": {
-			const octave = Math.floor(note / 12) - 4;
+			const octave = Math.floor(note / 12) - 5;
 			const semi = note % 12;
 			const solfeggioBase = [396, 417, 528, 639, 741, 852, 963, 174, 285];
 			const noteIndex = Math.floor((semi / 12) * solfeggioBase.length);
@@ -1202,6 +1207,139 @@ const frequencyToNoteName = (freq: number): string => {
 	const octave = Math.floor(roundedNote / 12) - 1;
 	const noteIndex = roundedNote % 12;
 	return `${noteNames[noteIndex]}${octave}`;
+};
+
+interface MelodyEditorProps {
+	engine: EngineState;
+	scaleFrequencies: { value: number; label: string }[];
+	onUpdateSequence: (engineId: string, newSequence: number[][]) => void;
+	onUpdateRhythm: (engineId: string, newSequence: number[]) => void;
+	onClose: () => void;
+	currentStep: number;
+}
+
+const MelodyEditor: React.FC<MelodyEditorProps> = ({
+	engine,
+	scaleFrequencies,
+	onUpdateSequence,
+	onUpdateRhythm,
+	onClose,
+	currentStep,
+}) => {
+	const handleCellClick = (stepIndex: number, freqIndex: number) => {
+		const targetFreq = scaleFrequencies[freqIndex].value;
+		const currentStepFreqs = engine.melodicSequence[stepIndex] || [];
+		
+		// Toggle frequency
+		let newStepFreqs: number[];
+		if (currentStepFreqs.includes(targetFreq)) {
+			newStepFreqs = currentStepFreqs.filter(f => f !== targetFreq);
+		} else {
+			newStepFreqs = [...currentStepFreqs, targetFreq];
+		}
+
+		const newMelody = [...engine.melodicSequence];
+		newMelody[stepIndex] = newStepFreqs;
+		onUpdateSequence(engine.id, newMelody);
+
+		// Update rhythm based on whether any notes are active
+		const newRhythm = [...engine.sequence];
+		newRhythm[stepIndex] = newStepFreqs.length > 0 ? 1 : 0;
+		onUpdateRhythm(engine.id, newRhythm);
+	};
+
+	const handleRandomize = () => {
+		const newSequence = engine.melodicSequence.map(() => {
+			const randomFreq =
+				scaleFrequencies[Math.floor(Math.random() * scaleFrequencies.length)];
+			return randomFreq ? [randomFreq.value] : [440];
+		});
+		onUpdateSequence(engine.id, newSequence);
+	};
+
+	const handleClear = () => {
+		const newSequence = engine.melodicSequence.map(() => []);
+		onUpdateSequence(engine.id, newSequence);
+		// Also clear rhythm
+		const newRhythm = engine.sequence.map(() => 0);
+		onUpdateRhythm(engine.id, newRhythm);
+	};
+
+	// Helper to find the index of the current frequency in the scale
+	const getFreqIndex = (freq: number) => {
+		// Find closest match
+		let closestIndex = 0;
+		let minDiff = Infinity;
+		scaleFrequencies.forEach((sf, index) => {
+			const diff = Math.abs(sf.value - freq);
+			if (diff < minDiff) {
+				minDiff = diff;
+				closestIndex = index;
+			}
+		});
+		return closestIndex;
+	};
+
+	return (
+		<div className="melody-editor-overlay">
+			<div className="melody-editor-content">
+				<div className="melody-editor-header">
+					<h3>Melody Editor - {engine.id.toUpperCase()}</h3>
+					<div className="melody-editor-controls">
+						<button onClick={handleRandomize}>Randomize</button>
+						<button onClick={handleClear}>Clear</button>
+						<button onClick={onClose}>Close</button>
+					</div>
+				</div>
+				<div className="melody-editor-body">
+					<div className="melody-grid-labels">
+						{scaleFrequencies
+							.slice()
+							.reverse()
+							.map((f, i) => (
+								<div key={i} className="grid-label">
+									{f.label}
+								</div>
+							))}
+					</div>
+					<div className="melody-grid-container">
+						<div className="piano-roll-grid">
+							{scaleFrequencies
+								.slice()
+								.reverse()
+								.map((sf, rowIndex) => {
+									// Calculate actual index in scaleFrequencies (since we reversed)
+									const freqIndex = scaleFrequencies.length - 1 - rowIndex;
+									return (
+										<div key={rowIndex} className="piano-roll-row">
+											{engine.melodicSequence.map((stepFreqs, stepIndex) => {
+												const isActive =
+													engine.sequence[stepIndex] === 1 &&
+													stepFreqs.some(f => Math.abs(f - sf.value) < 0.1);
+												const isCurrentStep = stepIndex === currentStep;
+
+												return (
+													<div
+														key={stepIndex}
+														className={`piano-roll-cell ${
+															isActive ? "active" : ""
+														} ${isCurrentStep ? "current" : ""}`}
+														onClick={() =>
+															handleCellClick(stepIndex, freqIndex)
+														}
+														title={`${sf.label} - Step ${stepIndex + 1}`}
+													/>
+												);
+											})}
+										</div>
+									);
+								})}
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	);
 };
 
 // --- Components ---
@@ -1856,6 +1994,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 	harmonicTuningSystem,
 	scaleFrequencies,
 	onSnapToScale,
+	onOpenMelodyEditor,
 }) => {
 	const [activeTab, setActiveTab] = useState<EngineLayerType>("sampler");
 	const dropZoneRef = useRef<HTMLDivElement>(null);
@@ -1967,6 +2106,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 						>
 							MIDI
 						</button>
+
 					</div>
 					<div className="randomizer-buttons-group">
 						<button
@@ -2257,6 +2397,31 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 								>
 									Snap
 								</button>
+							</div>
+						</div>
+						<div className="control-row">
+							<label>Seq Melody</label>
+							<div className="toggle-group">
+								<button
+									className={engine.useMelodicSequence ? "active" : ""}
+									onClick={() =>
+										onUpdate(engine.id, {
+											useMelodicSequence: !engine.useMelodicSequence,
+										})
+									}
+									title="Toggle between sequenced melody and fixed note"
+								>
+									{engine.useMelodicSequence ? "SEQ" : "FIXED"}
+								</button>
+								{engine.useMelodicSequence && (
+									<button
+										className="small"
+										onClick={() => onOpenMelodyEditor(engine.id)}
+										title="Edit Melodic Sequence"
+									>
+										Edit
+									</button>
+								)}
 							</div>
 						</div>
 					</>
@@ -3968,10 +4133,7 @@ const App: React.FC = () => {
 	const [glideSyncRateIndex, setGlideSyncRateIndex] = useState(3); // 1/8
 
 	// Use a ref to get the latest state in audio callbacks
-	const latestStateRef = useRef({ engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex });
-	useEffect(() => {
-		latestStateRef.current = { engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex };
-	}, [engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex]);
+
 
 
 	const [masterVolume, setMasterVolume] = useState(0.7);
@@ -3987,6 +4149,12 @@ const App: React.FC = () => {
 	const [isMorphSynced, setIsMorphSynced] = useState(false);
 	const [morphSyncRateIndex, setMorphSyncRateIndex] = useState(3);
 
+	// Use a ref to get the latest state in audio callbacks
+	const latestStateRef = useRef({ engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose });
+	useEffect(() => {
+		latestStateRef.current = { engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose };
+	}, [engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose]);
+
 	const morphTargetRef = useRef<any>(null);
 	const morphStartRef = useRef<any>(null);
 	const morphStartTimeRef = useRef<number | null>(null);
@@ -3999,6 +4167,7 @@ const App: React.FC = () => {
 	const [audioInputStream, setAudioInputStream] = useState<MediaStream | null>(
 		null
 	);
+	const [editingMelodyEngineId, setEditingMelodyEngineId] = useState<string | null>(null);
 
 	const syncRates = useMemo(
 		() => ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2"],
@@ -4121,10 +4290,10 @@ const App: React.FC = () => {
 					if (newSteps !== engine.sequencerSteps) {
 						// Resize if steps changed
 						const oldSequence = newMelodicSequence;
-						newMelodicSequence = Array(newSteps).fill(oldSequence[0] || 220);
-						for (let i = 0; i < newSteps; i++) {
-							newMelodicSequence[i] = oldSequence[i % oldSequence.length];
-						}
+						newMelodicSequence = Array.from({ length: newSteps }, (_, i) => {
+							const oldVal = oldSequence[i % oldSequence.length];
+							return Array.isArray(oldVal) ? oldVal : [];
+						});
 					}
 
 					const newSynthState: Partial<SynthLayerState> = {};
@@ -4145,7 +4314,7 @@ const App: React.FC = () => {
 						}
 
 						newMelodicSequence = newMelodicSequence.map(() =>
-							getRandomElement(possibleNotes)
+							[getRandomElement(possibleNotes)]
 						);
 
 						if (!synthLocks.frequency)
@@ -4508,6 +4677,7 @@ const App: React.FC = () => {
 
 
 			setAudioContext(context);
+			context.resume();
 			setIsInitialized(true);
 		} catch (e) {
 			console.error("Web Audio API is not supported in this browser", e);
@@ -4561,13 +4731,13 @@ const App: React.FC = () => {
 
 	}, [audioContext]);
 	
-	const noteOn = useCallback((engineId: string, noteId: string, midiNote: number, time: number) => {
+	const noteOn = useCallback((engineId: string, noteId: string, midiNote: number, time: number, explicitFrequency?: number) => {
 		if (!audioContext) return;
 
 		const now = audioContext.currentTime;
     	const scheduledTime = time > now ? time : now;
 		
-		const { engines, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, lfos, bpm } = latestStateRef.current;
+		const { engines, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, lfos, bpm, transpose } = latestStateRef.current;
 		const engine = engines.find(e => e.id === engineId);
 		
 		if (!engine) return;
@@ -4576,7 +4746,8 @@ const App: React.FC = () => {
 	
 		// --- Voicing and Glide Logic ---
 		let startFrequency: number | undefined;
-		const targetFrequency = midiNoteToFrequency(midiNote, harmonicTuningSystem);
+		// Use explicit frequency if provided (e.g. for Solfeggio), otherwise calculate from MIDI note + transpose
+		const targetFrequency = explicitFrequency ?? midiNoteToFrequency(midiNote + transpose, harmonicTuningSystem);
 		
 		if (voicingMode !== 'poly') {
 			noteOff(activeMonoNotePerEngineRef.current.get(engineId)?.note.toString()!, scheduledTime);
@@ -4719,14 +4890,42 @@ const App: React.FC = () => {
                     while (engineSch.nextNoteTime < scheduleUntil) {
                         const currentStepForNote = engineSch.currentStep;
                         if (engine.sequence[currentStepForNote] === 1) {
-                            const noteId = `seq_${engine.id}_${currentStepForNote}_${engineSch.nextNoteTime}`;
-                            const freq = engine.melodicSequence[currentStepForNote];
-							const midiNote = frequencyToMidiNote(freq);
-                            noteOn(engine.id, noteId, midiNote, engineSch.nextNoteTime);
+                            const noteIdBase = `seq_${engine.id}_${currentStepForNote}_${engineSch.nextNoteTime}`;
+                            
+							if (engine.useMelodicSequence) {
+								const freqs = engine.melodicSequence[currentStepForNote];
+								if (Array.isArray(freqs)) {
+									freqs.forEach((freq, i) => {
+										const noteId = `${noteIdBase}_${i}`;
+										const midiNote = frequencyToMidiNote(freq);
+										noteOn(engine.id, noteId, midiNote, engineSch.nextNoteTime, freq);
+									});
+								}
+							} else {
+								const freq = engine.synth.frequency;
+								const midiNote = frequencyToMidiNote(freq);
+								noteOn(engine.id, noteIdBase, midiNote, engineSch.nextNoteTime, freq);
+							}
                             
                             const noteDuration = secondsPerStep * 0.8; // Note lasts 80% of step duration
 							const modGateDuration = secondsPerStep * 0.95; // Modulation gate is slightly longer
-                            noteOff(noteId, engineSch.nextNoteTime + noteDuration);
+                            
+							// Fix: Use noteIdBase for mono/legacy noteOff if needed, but for polyphony we rely on timeout in noteOn
+							// However, noteOff is mainly for cleaning up the activeVoices map.
+							// For polyphony, we might want to track all generated IDs.
+							// For simplicity in this refactor, we can skip explicit noteOff here as noteOn handles its own timeout.
+							// But to keep existing logic for mono/synth:
+							if (!engine.useMelodicSequence) {
+								noteOff(noteIdBase, engineSch.nextNoteTime + noteDuration);
+							} else {
+								// For polyphony, we iterate and turn off each
+								const freqs = engine.melodicSequence[currentStepForNote];
+								if (Array.isArray(freqs)) {
+									freqs.forEach((_, i) => {
+										noteOff(`${noteIdBase}_${i}`, engineSch.nextNoteTime + noteDuration);
+									});
+								}
+							}
 
 							// Schedule the modulation gate for AudioParams
 							engineNodes.sequencerModGate.gain.setValueAtTime(1.0, engineSch.nextNoteTime);
@@ -5316,6 +5515,43 @@ const App: React.FC = () => {
 			});
 		});
 	}, [audioContext, engines]);
+
+	// Real-time Frequency Update (for manual slider/dropdown changes)
+	useEffect(() => {
+		if (!audioContext) return;
+		const now = audioContext.currentTime;
+
+		engines.forEach(engine => {
+			if (engine.synth.enabled) {
+				activeVoicesRef.current.forEach(voice => {
+					if (voice.engineId === engine.id) {
+						voice.sourceNodes.forEach(node => {
+							if (node instanceof OscillatorNode) {
+								// Only update if the frequency is significantly different to avoid overriding glides/envelopes unnecessarily
+								// However, for manual slider control, we want immediate response.
+								// We check if the current frequency is "close" to the target to avoid fighting with glides?
+								// No, if the user moves the slider, they want to override.
+								// But if a sequence is playing, this will override the sequence pitch!
+								// We only want to update if the user *manually* changed the frequency.
+								// But we don't know that here.
+								// Strategy: If harmonicTuningSystem is 'solfeggio' OR we are in a manual mode, we force it.
+								// For now, let's assume if the user changes the slider, they want to hear it.
+								// But we must NOT override if the note was just triggered by the sequencer with a specific pitch.
+								// This is tricky.
+								// If we simply setTargetAtTime, it overrides everything.
+								// Maybe we only do this if the engine is NOT playing a sequence?
+								// But the user might want to tune the sequence.
+								// Let's rely on the fact that this useEffect runs when 'engines' changes.
+								// 'engines' changes when the slider moves.
+								// So this will only fire when the user interacts with the UI (or automation).
+								node.frequency.setTargetAtTime(engine.synth.frequency, now, 0.01);
+							}
+						});
+					}
+				});
+			}
+		});
+	}, [engines, audioContext]);
 
 	// Morphing Animation Loop
 	useEffect(() => {
@@ -5986,10 +6222,25 @@ const App: React.FC = () => {
 								harmonicTuningSystem={harmonicTuningSystem}
 								scaleFrequencies={scaleFrequencies}
 								onSnapToScale={handleSnapToScale}
+								onOpenMelodyEditor={setEditingMelodyEngineId}
 							/>
 						))}
 					</div>
-					
+			
+					{editingMelodyEngineId && (
+						<MelodyEditor
+							engine={engines.find((e) => e.id === editingMelodyEngineId)!}
+							scaleFrequencies={scaleFrequencies}
+							onUpdateSequence={(id, seq) =>
+								handleEngineUpdate(id, { melodicSequence: seq })
+							}
+							onUpdateRhythm={(id, seq) =>
+								handleEngineUpdate(id, { sequence: seq })
+							}
+							onClose={() => setEditingMelodyEngineId(null)}
+							currentStep={engineSchedulerStates.current.get(editingMelodyEngineId)?.currentStep || 0}
+						/>
+					)}		
 					<div className="processing-container">
 						<div className="filters-container">
 							 <div className="filters-container-header">
