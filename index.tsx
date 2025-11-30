@@ -5532,7 +5532,7 @@ const App: React.FC = () => {
 						noise: { ...engine.noise, ...newNoiseState },
 						sampler: { ...engine.sampler, ...newSamplerState },
 						adsr: { ...engine.adsr, ...newAdsrState },
-						routing: mode === "chaos" ? randomizeRouting() : engine.routing,
+						routing: (mode === "chaos" && scope === "global") ? randomizeRouting() : engine.routing,
 						melodicSequence: newMelodicSequence,
 					};
 				});
@@ -5557,7 +5557,7 @@ const App: React.FC = () => {
 						}
 					}
 					if (mode === "chaos" && !locks.smoothing) newState.smoothing = getRandom(0, 1);
-					if (mode === "chaos") newState.routing = randomizeRouting();
+					if (mode === "chaos" && scope === "global") newState.routing = randomizeRouting();
 
 					return { ...lfo, ...newState };
 				});
