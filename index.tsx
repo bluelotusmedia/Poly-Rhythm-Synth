@@ -157,6 +157,7 @@ interface LFOState {
 	routing: LFORoutingState;
 	customShape?: number[]; // Array of values 0-1 for custom LFO
 	smoothing: number; // 0 to 1
+	gridSize?: number; // 0 = off, >0 = number of steps
 }
 
 // --- Parameter Lock State ---
@@ -3892,7 +3893,20 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 			
 			{lfoState.shape === 'custom' && (
 				<div className="control-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-					<label style={{ marginBottom: '0.5rem' }}>Draw Shape</label>
+					<div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginBottom: '0.5rem', alignItems: 'center' }}>
+						<label>Draw Shape</label>
+						<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+							<label style={{ fontSize: '0.8rem', color: '#888' }}>Grid:</label>
+							<input 
+								type="number" 
+								min="0" 
+								max="32" 
+								value={lfoState.gridSize || 0} 
+								onChange={(e) => onUpdate({ gridSize: parseInt(e.target.value) })}
+								style={{ width: '40px', padding: '2px' }}
+							/>
+						</div>
+					</div>
 					<canvas
 						width={200}
 						height={100}
@@ -3919,30 +3933,100 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 
 							let lastIndex: number | null = null;
 							let lastVal: number | null = null;
+							const gridSize = lfoState.gridSize || 0;
 
-							const draw = (clientX: number, clientY: number) => {
-								const x = Math.max(0, Math.min(canvas.width, clientX - rect.left));
-								const y = Math.max(0, Math.min(canvas.height, clientY - rect.top));
+							const draw = (e: MouseEvent | React.MouseEvent) => {
+								const clientX = e.clientX;
+								const clientY = e.clientY;
+								let x = Math.max(0, Math.min(canvas.width, clientX - rect.left));
+								let y = Math.max(0, Math.min(canvas.height, clientY - rect.top));
 								
+								// Grid Snapping
+								if (gridSize > 0) {
+									const stepX = canvas.width / gridSize;
+									const stepY = canvas.height / gridSize;
+									x = Math.round(x / stepX) * stepX;
+									y = Math.round(y / stepY) * stepY;
+									
+									// Clamp to bounds after snapping
+									x = Math.max(0, Math.min(canvas.width, x));
+									y = Math.max(0, Math.min(canvas.height, y));
+								}
+
 								// Normalize Y to -1 to 1 range (inverted because canvas Y is down)
 								const normalizedY = 1 - (y / canvas.height) * 2;
 								
 								// Update custom shape array
-								const index = Math.floor((x / canvas.width) * len);
+								const index = Math.min(len - 1, Math.floor((x / canvas.width) * len));
 								
 								if (index >= 0 && index < len) {
-									currentShape[index] = normalizedY;
-									
-									// Interpolate if we skipped points
-									if (lastIndex !== null && Math.abs(index - lastIndex) > 1) {
-										const start = Math.min(lastIndex, index);
-										const end = Math.max(lastIndex, index);
-										const startVal = lastIndex < index ? lastVal! : normalizedY;
-										const endVal = lastIndex < index ? normalizedY : lastVal!;
+									const updateRange = (startIdx: number, endIdx: number, val: number) => {
+										for (let i = startIdx; i < endIdx; i++) {
+											currentShape[i] = val;
+										}
+									};
+
+									// Determine which grid steps to update
+									if (gridSize > 0 && (e.shiftKey || e.altKey)) {
+										const stepWidth = len / gridSize;
 										
-										for (let i = start + 1; i < end; i++) {
-											const t = (i - start) / (end - start);
-											currentShape[i] = startVal + (endVal - startVal) * t;
+										// Fibonacci sequence generator
+										const getFibonacciSteps = (max: number) => {
+											const steps = new Set<number>();
+											let a = 0, b = 1;
+											while (a < max) {
+												steps.add(a);
+												const next = a + b;
+												a = b;
+												b = next;
+											}
+											return steps;
+										};
+
+										const fibSteps = (e.shiftKey && e.altKey) ? getFibonacciSteps(gridSize) : null;
+
+										for (let step = 0; step < gridSize; step++) {
+											let shouldUpdate = false;
+											
+											if (e.shiftKey && e.altKey) {
+												// Fibonacci Mode
+												if (fibSteps?.has(step)) shouldUpdate = true;
+											} else if (e.shiftKey) {
+												// Even steps
+												if (step % 2 === 0) shouldUpdate = true;
+											} else if (e.altKey) {
+												// Odd steps
+												if (step % 2 !== 0) shouldUpdate = true;
+											}
+
+											if (shouldUpdate) {
+												const start = Math.floor(step * stepWidth);
+												const end = Math.floor((step + 1) * stepWidth);
+												updateRange(start, Math.min(len, end), normalizedY);
+											}
+										}
+										// Also update the current one to ensure feedback? 
+										// The loop covers all even/odd/fib, so if the current one falls in that category it updates.
+										// If user clicks on an ODD step while holding SHIFT (even), should it update the odd step too?
+										// Usually "paint bucket" logic implies replacing target, but here it's "draw on X".
+										// Let's assume we ALSO update the current cursor position regardless of the pattern, 
+										// or strictly follow the pattern?
+										// Strict pattern is more powerful. If I want to fix an odd step I release shift.
+									} else {
+										// Normal drawing
+										currentShape[index] = normalizedY;
+										
+										// Interpolate if we skipped points (only in normal mode)
+										if (lastIndex !== null && Math.abs(index - lastIndex) > 1) {
+											const start = Math.min(lastIndex, index);
+											const end = Math.max(lastIndex, index);
+											const startVal = lastIndex < index ? lastVal! : normalizedY;
+											const endVal = lastIndex < index ? normalizedY : lastVal!;
+											
+											for (let i = start + 1; i < end; i++) {
+												const t = (i - start) / (end - start);
+												currentShape[i] = startVal + (endVal - startVal) * t;
+											}
 										}
 									}
 									
@@ -3950,16 +4034,12 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 									lastIndex = index;
 									lastVal = normalizedY;
 								}
-								
-								// Visual feedback (simple dot for now, the main visualizer updates via state)
-								ctx.fillStyle = '#00f5d4';
-								ctx.fillRect(x, y, 2, 2);
 							};
 							
-							draw(e.clientX, e.clientY);
+							draw(e);
 							
 							const moveHandler = (moveEvent: MouseEvent) => {
-								draw(moveEvent.clientX, moveEvent.clientY);
+								draw(moveEvent);
 							};
 							
 							const upHandler = () => {
@@ -3973,21 +4053,45 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 							window.addEventListener('mouseup', upHandler);
 						}}
 						ref={(canvas) => {
-							if (canvas && lfoState.customShape) {
+							if (canvas) {
 								const ctx = canvas.getContext('2d');
 								if (ctx) {
 									ctx.clearRect(0, 0, canvas.width, canvas.height);
-									ctx.strokeStyle = '#00f5d4';
-									ctx.lineWidth = 2;
-									ctx.beginPath();
-									const len = lfoState.customShape.length;
-									for (let i = 0; i < len; i++) {
-										const x = (i / len) * canvas.width;
-										const y = ((1 - lfoState.customShape[i]) / 2) * canvas.height;
-										if (i === 0) ctx.moveTo(x, y);
-										else ctx.lineTo(x, y);
+									
+									// Draw Grid
+									const gridSize = lfoState.gridSize || 0;
+									if (gridSize > 0) {
+										ctx.strokeStyle = '#333';
+										ctx.lineWidth = 1;
+										ctx.beginPath();
+										const stepX = canvas.width / gridSize;
+										const stepY = canvas.height / gridSize;
+										
+										for (let i = 1; i < gridSize; i++) {
+											// Vertical lines
+											ctx.moveTo(i * stepX, 0);
+											ctx.lineTo(i * stepX, canvas.height);
+											// Horizontal lines
+											ctx.moveTo(0, i * stepY);
+											ctx.lineTo(canvas.width, i * stepY);
+										}
+										ctx.stroke();
 									}
-									ctx.stroke();
+
+									// Draw Shape
+									if (lfoState.customShape) {
+										ctx.strokeStyle = '#00f5d4';
+										ctx.lineWidth = 2;
+										ctx.beginPath();
+										const len = lfoState.customShape.length;
+										for (let i = 0; i < len; i++) {
+											const x = (i / len) * canvas.width;
+											const y = ((1 - lfoState.customShape[i]) / 2) * canvas.height;
+											if (i === 0) ctx.moveTo(x, y);
+											else ctx.lineTo(x, y);
+										}
+										ctx.stroke();
+									}
 								}
 							}
 						}}
