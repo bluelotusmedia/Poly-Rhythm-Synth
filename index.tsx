@@ -8,6 +8,8 @@ import React, {
 	useMemo,
 } from "react";
 import { createRoot } from "react-dom/client";
+import "./index.css";
+import { FACTORY_PRESETS } from "./factoryPresets";
 
 // --- Type Definitions ---
 type OscillatorType = "sine" | "square" | "sawtooth" | "triangle";
@@ -70,6 +72,7 @@ interface SamplerLayerState {
 	enabled: boolean;
 	volume: number;
 	sampleName: string | null;
+	sampleId?: string;
 	transpose: number; // in semitones
 	// New Granular Params
 	granularModeEnabled: boolean;
@@ -138,6 +141,7 @@ interface EngineState {
 	effects: EffectState;
 	routing: LFORoutingState;
 	adsr: ADSRState;
+	filterDestination: "filter1" | "filter2" | "direct";
 }
 
 interface LFOState {
@@ -241,6 +245,37 @@ interface ActiveVoice {
 	timeoutId?: number;
     granularModeEnabled?: boolean;
     nextGrainTime?: number;
+	note: number; // Added for pitch tracking
+}
+
+// --- Preset Types ---
+interface Preset {
+	name: string;
+	timestamp: number;
+	data: {
+		engines: EngineState[];
+		lfos: LFOState[];
+		filter1: any;
+		filter2: any;
+		filterRouting: FilterRouting;
+		masterEffects: MasterEffect[];
+		bpm: number;
+		scale: ScaleName;
+		transpose: number;
+		harmonicTuningSystem: TuningSystem;
+		voicingMode: VoicingMode;
+		glideTime: number;
+		isGlideSynced: boolean;
+		glideSyncRateIndex: number;
+		isGlobalAutoRandomEnabled: boolean;
+		globalAutoRandomInterval: number;
+		globalAutoRandomMode: RandomizeMode;
+		isAutoRandomSynced: boolean;
+		autoRandomSyncRateIndex: number;
+		morphTime: number;
+		isMorphSynced: boolean;
+		morphSyncRateIndex: number;
+	};
 }
 
 // --- Component Props ---
@@ -302,6 +337,12 @@ interface TopBarProps {
 	onToggleLock: (path: string) => void;
 	clockSource: "internal" | "midi";
 	onClockSourceChange: (source: "internal" | "midi") => void;
+	harmonicTuningSystem: TuningSystem;
+	setHarmonicTuningSystem: (system: TuningSystem) => void;
+	scale: ScaleName;
+	setScale: (scale: ScaleName) => void;
+	transpose: number;
+	setTranspose: (transpose: number) => void;
 }
 
 interface MainControlPanelProps {
@@ -309,14 +350,11 @@ interface MainControlPanelProps {
 	onInitializeAll: () => void;
 	isMorphing: boolean;
 	morphTime: number;
-	setMorphTime: (duration: number) => void;
+	setMorphTime: (time: number) => void;
 	isMorphSynced: boolean;
 	setIsMorphSynced: (synced: boolean) => void;
 	morphSyncRateIndex: number;
 	setMorphSyncRateIndex: (index: number) => void;
-	syncRates: string[];
-	harmonicTuningSystem: TuningSystem;
-	setHarmonicTuningSystem: (system: TuningSystem) => void;
 	voicingMode: VoicingMode;
 	setVoicingMode: (mode: VoicingMode) => void;
 	glideTime: number;
@@ -326,11 +364,7 @@ interface MainControlPanelProps {
 	glideSyncRateIndex: number;
 	setGlideSyncRateIndex: (index: number) => void;
 	glideSyncRates: string[];
-	scale: ScaleName;
-	setScale: (scale: ScaleName) => void;
-	transpose: number;
-	setTranspose: (transpose: number) => void;
-	// New Auto-Random Props
+	syncRates: string[];
 	isGlobalAutoRandomEnabled: boolean;
 	setIsGlobalAutoRandomEnabled: (enabled: boolean) => void;
 	globalAutoRandomInterval: number;
@@ -575,6 +609,8 @@ const getInitialState = () => {
 			adsr: { attack: 0.01, decay: 0.2, sustain: 0.8, release: 0.5 },
 			melodicSequence: Array.from({ length: 16 }, () => []), // Initialize with empty arrays for polyphony
 			useMelodicSequence: false,
+			sequence: new Array(16).fill(0),
+			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
 		},
 		{
 			id: "engine2",
@@ -611,6 +647,7 @@ const getInitialState = () => {
 			sequence: new Array(12).fill(0), // Initialize sequence for engine2
 			melodicSequence: Array.from({ length: 12 }, () => []), // Initialize with empty arrays for polyphony
 			useMelodicSequence: false,
+			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
 		},
 		{
 			id: "engine3",
@@ -646,6 +683,7 @@ const getInitialState = () => {
 			adsr: { attack: 0.1, decay: 0.1, sustain: 0.9, release: 0.3 },
 			melodicSequence: Array.from({ length: 7 }, () => []), // Initialize with empty arrays for polyphony
 			useMelodicSequence: false,
+			filterDestination: "filter2" as "filter1" | "filter2" | "direct",
 		},
 	];
 
@@ -1316,7 +1354,10 @@ const MelodyEditor: React.FC<MelodyEditorProps> = ({
 									// Calculate actual index in scaleFrequencies (since we reversed)
 									const freqIndex = scaleFrequencies.length - 1 - rowIndex;
 									return (
-										<div key={rowIndex} className="piano-roll-row">
+										<div
+											key={rowIndex}
+											className="piano-roll-row"
+										>
 											{engine.melodicSequence.map((stepFreqs, stepIndex) => {
 												const isActive =
 													engine.sequence[stepIndex] === 1 &&
@@ -1607,7 +1648,265 @@ const DragHandleIcon = () => (
 	</div>
 );
 
+// --- IndexedDB Utilities ---
+const DB_NAME = "PolyRhythmSynthDB";
+const STORE_NAME = "audioSamples";
+const DB_VERSION = 2;
 
+const generateId = () => {
+	return Date.now().toString(36) + Math.random().toString(36).substr(2);
+};
+
+const initDB = (): Promise<IDBDatabase> => {
+	return new Promise((resolve, reject) => {
+		const request = indexedDB.open(DB_NAME, DB_VERSION);
+		request.onerror = () => reject(request.error);
+		request.onsuccess = () => resolve(request.result);
+		request.onupgradeneeded = (event) => {
+			const db = (event.target as IDBOpenDBRequest).result;
+			if (!db.objectStoreNames.contains(STORE_NAME)) {
+				db.createObjectStore(STORE_NAME);
+			}
+		};
+	});
+};
+
+const saveSampleToDB = async (id: string, buffer: ArrayBuffer): Promise<void> => {
+	const db = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(STORE_NAME, "readwrite");
+		const store = tx.objectStore(STORE_NAME);
+		const request = store.put(buffer, id);
+		request.onerror = () => reject(request.error);
+		request.onsuccess = () => resolve();
+	});
+};
+
+const getSampleFromDB = async (id: string): Promise<ArrayBuffer | undefined> => {
+	const db = await initDB();
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(STORE_NAME, "readonly");
+		const store = tx.objectStore(STORE_NAME);
+		const request = store.get(id);
+		request.onerror = () => reject(request.error);
+		request.onsuccess = () => resolve(request.result);
+	});
+};
+
+
+
+// --- Preset Manager Component ---
+interface PresetManagerProps {
+	currentBpm: number;
+	onLoadPreset: (preset: Preset) => Promise<void>;
+	getCurrentState: () => Preset["data"];
+}
+
+const PresetManager: React.FC<PresetManagerProps> = ({ currentBpm, onLoadPreset, getCurrentState }) => {
+	const [presets, setPresets] = useState<Preset[]>([]);
+	const [isOpen, setIsOpen] = useState(false);
+	const [newPresetName, setNewPresetName] = useState("");
+	const fileInputRef = useRef<HTMLInputElement>(null);
+
+
+	useEffect(() => {
+		// Load presets from LocalStorage on mount
+		const saved = localStorage.getItem("polyRhythmSynth_presets");
+		let loadedPresets: Preset[] = [];
+		if (saved) {
+			try {
+				loadedPresets = JSON.parse(saved);
+			} catch (e) {
+				console.error("Failed to load presets", e);
+			}
+		}
+
+		// Merge Factory Presets
+		// Force update factory presets: Remove old factory presets from loaded list and append new ones
+		const factoryNames = new Set(FACTORY_PRESETS.map(p => p.name));
+		const userPresets = loadedPresets.filter(p => !factoryNames.has(p.name));
+		
+		const updatedPresets = [...userPresets, ...FACTORY_PRESETS];
+		setPresets(updatedPresets);
+			// Optionally save back to local storage so they persist? 
+			// Or keep them ephemeral? 
+			// Usually factory presets should persist if the user edits them (as a copy), 
+			// but here we are adding them to the main list.
+			// Let's save them so they are there next time without re-merging logic running every time (though it's cheap).
+			// Actually, if we save them, the user can delete them.
+			// If we don't save them, they reappear on reload.
+			// "Preloaded" usually implies they are part of the initial state.
+			// Let's save them to ensure consistency.
+			localStorage.setItem("polyRhythmSynth_presets", JSON.stringify(updatedPresets));
+
+	}, []);
+
+	const savePresetsToStorage = (newPresets: Preset[]) => {
+		localStorage.setItem("polyRhythmSynth_presets", JSON.stringify(newPresets));
+		setPresets(newPresets);
+	};
+
+	const handleSave = () => {
+		if (!newPresetName.trim()) return;
+		const newPreset: Preset = {
+			name: newPresetName,
+			timestamp: Date.now(),
+			data: getCurrentState(),
+		};
+		const updated = [...presets, newPreset];
+		savePresetsToStorage(updated);
+		setNewPresetName("");
+	};
+
+	const handleDelete = (index: number) => {
+		if (confirm("Are you sure you want to delete this preset?")) {
+			const updated = presets.filter((_, i) => i !== index);
+			savePresetsToStorage(updated);
+		}
+	};
+
+	const handleLoad = async (preset: Preset) => {
+		if (confirm("Load preset? Unsaved changes will be lost.")) {
+			await onLoadPreset(preset);
+			setIsOpen(false);
+		}
+	};
+
+	const handleExport = (preset: Preset) => {
+		const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(preset));
+		const downloadAnchorNode = document.createElement('a');
+		downloadAnchorNode.setAttribute("href", dataStr);
+		downloadAnchorNode.setAttribute("download", `${preset.name.replace(/\s+/g, '_')}_preset.json`);
+		document.body.appendChild(downloadAnchorNode); // required for firefox
+		downloadAnchorNode.click();
+		downloadAnchorNode.remove();
+	};
+
+	const handleImportClick = () => {
+		fileInputRef.current?.click();
+	};
+
+	const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+		const file = e.target.files?.[0];
+		if (!file) return;
+
+		const reader = new FileReader();
+		reader.onload = (event) => {
+			try {
+				const importedPreset = JSON.parse(event.target?.result as string) as Preset;
+				if (importedPreset.data && importedPreset.name) {
+					// Add to presets list
+					const updated = [...presets, importedPreset];
+					savePresetsToStorage(updated);
+					// Optionally load immediately? No, just add to list.
+					alert(`Imported "${importedPreset.name}" successfully!`);
+				} else {
+					alert("Invalid preset file format.");
+				}
+			} catch (err) {
+				console.error("Import error", err);
+				alert("Failed to import preset.");
+			}
+		};
+		reader.readAsText(file);
+		e.target.value = ""; // Reset input
+	};
+
+	return (
+		<div className="preset-manager">
+			<button className="preset-toggle-btn" onClick={() => setIsOpen(!isOpen)}>
+				{isOpen ? "Close Presets" : "Presets"}
+			</button>
+
+			{isOpen && (
+				<div className="preset-modal">
+					<div className="preset-header">
+						<h3>Preset Manager</h3>
+						<button className="close-btn" onClick={() => setIsOpen(false)}>×</button>
+					</div>
+					
+					<div className="preset-save-section">
+						<input 
+							type="text" 
+							placeholder="New Preset Name" 
+							value={newPresetName}
+							onChange={(e) => setNewPresetName(e.target.value)}
+						/>
+						<button onClick={handleSave} disabled={!newPresetName.trim()}>Save Current</button>
+						<button onClick={handleImportClick} className="import-btn">Import JSON</button>
+						<input 
+							type="file" 
+							ref={fileInputRef} 
+							style={{ display: 'none' }} 
+							accept=".json" 
+							onChange={handleFileChange}
+						/>
+					</div>
+
+					<div className="preset-list">
+						{presets.length === 0 ? (
+							<div className="no-presets">No saved presets</div>
+						) : (
+							presets.map((p, i) => (
+								<div key={i} className="preset-item">
+									<div className="preset-info">
+										<span className="preset-name">{p.name}</span>
+										<span className="preset-date">{new Date(p.timestamp).toLocaleDateString()}</span>
+									</div>
+									<div className="preset-actions">
+										<button onClick={() => handleLoad(p)} title="Load">📂</button>
+										<button onClick={() => handleExport(p)} title="Export">⬇️</button>
+										<button onClick={() => handleDelete(i)} title="Delete" className="delete-btn">🗑️</button>
+									</div>
+								</div>
+							))
+						)}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+};
+
+interface TopBarProps {
+	masterVolume: number;
+	setMasterVolume: (volume: number) => void;
+	bpm: number;
+	setBPM: (bpm: number) => void;
+	isTransportPlaying: boolean;
+	onToggleTransport: () => void;
+	onPanic: () => void;
+	midiInputs: MIDIInput[];
+	selectedMidiInputId: string | null;
+	onMidiInputChange: (id: string) => void;
+	selectedMidiClockInputId: string | null;
+	onMidiClockInputChange: (id: string) => void;
+	midiActivity: boolean;
+	midiClockActivity: boolean;
+	lockState: LockState;
+	onToggleLock: (path: string) => void;
+	clockSource: "internal" | "midi";
+	onClockSourceChange: (source: "internal" | "midi") => void;
+	children?: React.ReactNode;
+	harmonicTuningSystem: TuningSystem;
+	setHarmonicTuningSystem: (system: TuningSystem) => void;
+	scale: ScaleName;
+	setScale: (scale: ScaleName) => void;
+	transpose: number;
+	setTranspose: (transpose: number) => void;
+	voicingMode: VoicingMode;
+	setVoicingMode: (mode: VoicingMode) => void;
+	glideTime: number;
+	setGlideTime: (time: number) => void;
+	isGlideSynced: boolean;
+	setIsGlideSynced: (synced: boolean) => void;
+	glideSyncRateIndex: number;
+	setGlideSyncRateIndex: (index: number) => void;
+	glideSyncRates: string[];
+	onRandomize: (mode: RandomizeMode, scope: string) => void;
+	onInitializeAll: () => void;
+
+}
 
 const TopBar: React.FC<TopBarProps> = ({
 	masterVolume,
@@ -1628,122 +1927,338 @@ const TopBar: React.FC<TopBarProps> = ({
 	onToggleLock,
 	clockSource,
 	onClockSourceChange,
+	children,
+	harmonicTuningSystem,
+	setHarmonicTuningSystem,
+	scale,
+	setScale,
+	transpose,
+	setTranspose,
+	voicingMode,
+	setVoicingMode,
+	glideTime,
+	setGlideTime,
+	isGlideSynced,
+	setIsGlideSynced,
+	glideSyncRateIndex,
+	setGlideSyncRateIndex,
+	glideSyncRates,
+	onRandomize,
+	onInitializeAll,
 }) => {
+	const handleDebug = () => {
+		console.log("--- DEBUG STATE ---");
+		console.log("AudioContext State:", new (window.AudioContext || (window as any).webkitAudioContext)().state); // Check global context state if possible, or just log
+		// We can't access audioContext directly here as it's not passed to TopBar.
+		// But we can log what we have.
+		console.log("BPM:", bpm);
+		console.log("Transport:", isTransportPlaying);
+		// Trigger a custom event or callback if we really need deep inspection, 
+		// but for now let's just add a button that the user can click to trigger a log in App via a prop?
+		// No, let's just add it to App directly or pass a debug handler.
+	};
+
 	return (
 		<div className="top-bar">
-			<div className="top-bar-group">
-				<h2>Poly-Rhythm Synth</h2>
-			</div>
-			<div className="top-bar-group">
-				<label>MIDI Note Input</label>
-				<div
-					className="midi-indicator"
-					style={{
-						backgroundColor: midiActivity ? "var(--secondary-color)" : "#333",
-					}}
-				/>
-				<select
-					value={selectedMidiInputId || ""}
-					onChange={(e) => onMidiInputChange(e.target.value)}
-					disabled={midiInputs.length === 0}
-				>
-					<option value="">
-						{midiInputs.length > 0 ? "Select Device" : "No MIDI Devices"}
-					</option>
-					{midiInputs.map((input) => (
-						<option key={input.id} value={input.id}>
-							{input.name}
-						</option>
-					))}
-				</select>
-			</div>
-			<div className="top-bar-group">
-				<label>MIDI Clock Input</label>
-				<div
-					className="midi-indicator"
-					style={{
-						backgroundColor: midiClockActivity ? "var(--secondary-color)" : "#333",
-					}}
-					title="MIDI Clock Activity"
-				/>
-				<select
-					value={selectedMidiClockInputId || ""}
-					onChange={(e) => onMidiClockInputChange(e.target.value)}
-					disabled={midiInputs.length === 0}
-				>
-					<option value="">
-						{midiInputs.length > 0 ? "Select Device" : "No MIDI Devices"}
-					</option>
-					{midiInputs.map((input) => (
-						<option key={input.id} value={input.id}>
-							{input.name}
-						</option>
-					))}
-				</select>
-			</div>
-			<div className="top-bar-group">
-				<label>Sync</label>
-				<div className="toggle-group">
-					<button
-						className={clockSource === "internal" ? "active" : ""}
-						onClick={() => onClockSourceChange("internal")}
-					>
-						INT
-					</button>
-					<button
-						className={clockSource === "midi" ? "active" : ""}
-						onClick={() => onClockSourceChange("midi")}
-					>
-						MIDI
-					</button>
+			<div className="top-bar-primary-row">
+				<div className="top-bar-left">
+					<div className="top-bar-group presets-group">
+						{children}
+					</div>
+
+					<div className="top-bar-group midi-group">
+						<div className="midi-control">
+							<label>Note</label>
+							<div className="midi-input-wrapper">
+								<div
+									className="midi-indicator"
+									style={{
+										backgroundColor: midiActivity ? "var(--secondary-color)" : "#333",
+									}}
+									title="MIDI Note Activity"
+								/>
+								<select
+									value={selectedMidiInputId || ""}
+									onChange={(e) => onMidiInputChange(e.target.value)}
+									disabled={midiInputs.length === 0}
+								>
+									<option value="">
+										{midiInputs.length > 0 ? "Select Device" : "No Devices"}
+									</option>
+									{midiInputs.map((input) => (
+										<option key={input.id} value={input.id}>
+											{input.name}
+										</option>
+									))}
+								</select>
+							</div>
+						</div>
+
+						<div className="midi-control">
+							<label>Clock</label>
+							<div className="midi-input-wrapper">
+								<div
+									className="midi-indicator"
+									style={{
+										backgroundColor: midiClockActivity ? "var(--secondary-color)" : "#333",
+									}}
+									title="MIDI Clock Activity"
+								/>
+								<select
+									value={selectedMidiClockInputId || ""}
+									onChange={(e) => onMidiClockInputChange(e.target.value)}
+									disabled={midiInputs.length === 0}
+								>
+									<option value="">
+										{midiInputs.length > 0 ? "Select Device" : "No Devices"}
+									</option>
+									{midiInputs.map((input) => (
+										<option key={input.id} value={input.id}>
+											{input.name}
+										</option>
+									))}
+								</select>
+							</div>
+						</div>
+					</div>
+
+					<div className="top-bar-group clock-source-group">
+						<div className="control-item">
+							<label>Clock</label>
+							<select
+								value={clockSource}
+								onChange={(e) => onClockSourceChange(e.target.value as "internal" | "midi")}
+								className="clock-source-select"
+							>
+								<option value="internal">INT</option>
+								<option value="midi">MIDI</option>
+							</select>
+						</div>
+					</div>
+
+					<div className="top-bar-group transport-group">
+						<div className="control-item">
+							<label>BPM</label>
+							<div className="control-value-wrapper">
+								<input
+									type="range"
+									min="30"
+									max="300"
+									value={bpm}
+									onChange={(e) => setBPM(parseInt(e.target.value))}
+									style={{ width: '80px' }}
+								/>
+								<span style={{ minWidth: '30px' }}>{bpm}</span>
+							</div>
+						</div>
+
+						<button
+							className={`icon-button ${isTransportPlaying ? "active" : ""}`}
+							onClick={onToggleTransport}
+							title={isTransportPlaying ? "Stop" : "Play"}
+							style={{ width: 'auto', padding: '0.5rem 1rem' }}
+						>
+							{isTransportPlaying ? "Stop" : "Play"}
+						</button>
+
+						<button
+							className="icon-button panic-button"
+							onClick={onPanic}
+							title="Panic (All Notes Off)"
+							style={{ width: 'auto', padding: '0.5rem 1rem' }}
+						>
+							Panic
+						</button>
+					</div>
+				</div>
+
+				<div className="top-bar-center">
+					<div className="control-item master-volume">
+						<label>Master</label>
+						<div className="control-with-lock">
+							<input
+								type="range"
+								min="0"
+								max="1"
+								step="0.01"
+								value={masterVolume}
+								onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
+								disabled={lockState.master.volume}
+								style={{ width: '80px' }}
+							/>
+							<LockIcon
+								isLocked={lockState.master.volume}
+								onClick={() => onToggleLock("master.volume")}
+								title="Lock Master Volume"
+							/>
+						</div>
+					</div>
+				</div>
+
+				<div className="top-bar-right">
+					<div className="header-actions">
+						<button
+							className="icon-button init-button"
+							onClick={(e) => { e.stopPropagation(); onInitializeAll(); }}
+							title="Initialize Patch"
+						>
+							<InitializeIcon />
+						</button>
+						<button
+							className="icon-button"
+							onClick={(e) => { e.stopPropagation(); onRandomize("chaos", "global"); }}
+							title="Global Chaos Morph"
+						>
+							<ChaosIcon />
+						</button>
+						<button
+							className="icon-button"
+							onClick={(e) => { e.stopPropagation(); onRandomize("melodic", "global"); }}
+							title="Global Melodic Morph"
+						>
+							<MelodicIcon />
+						</button>
+						<button
+							className="icon-button"
+							onClick={(e) => { e.stopPropagation(); onRandomize("rhythmic", "global"); }}
+							title="Global Rhythmic Morph"
+						>
+							<RhythmicIcon />
+						</button>
+
+					</div>
 				</div>
 			</div>
-			<div className="top-bar-group">
-				<label>Master</label>
-				<div className="control-with-lock">
-					<input
-						type="range"
-						min="0"
-						max="1"
-						step="0.01"
-						value={masterVolume}
-						onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
-						disabled={lockState.master.volume}
-					/>
-					<span>{Math.round(masterVolume * 100)}%</span>
-					<LockIcon
-						isLocked={lockState.master.volume}
-						onClick={() => onToggleLock("master.volume")}
-						title="Lock Master Volume"
-					/>
+
+			<div className="top-bar-secondary-row">
+				<div className="top-bar-group harmonic-group">
+					<div className="control-item">
+						<label>Harmonic Mode</label>
+						<select
+							value={harmonicTuningSystem}
+							onChange={(e) =>
+								setHarmonicTuningSystem(e.target.value as TuningSystem)
+							}
+							style={{ maxWidth: '180px' }}
+						>
+							<option value="440_ET">440Hz Equal Temperament</option>
+							<option value="432_ET">432Hz Equal Temperament</option>
+							<option value="just_intonation_440">Just Intonation (A=440)</option>
+							<option value="just_intonation_432">Just Intonation (A=432)</option>
+							<option value="pythagorean_440">Pythagorean (A=440)</option>
+							<option value="pythagorean_432">Pythagorean (A=432)</option>
+							<option value="solfeggio">Solfeggio Frequencies</option>
+							<option value="wholesome_scale">Wholesome Scale (G Maj)</option>
+							<option value="maria_renold_I">Maria Renold I</option>
+							<option value="none">None</option>
+						</select>
+					</div>
 				</div>
-			</div>
-			<div className="top-bar-group">
-				<label>BPM</label>
-				<input
-					type="range"
-					min="30"
-					max="240"
-					step="1"
-					value={bpm}
-					onChange={(e) => setBPM(parseInt(e.target.value))}
-				/>
-				<span>{bpm}</span>
-			</div>
-			<div className="top-bar-group">
-				<button
-					onClick={onToggleTransport}
-					className={isTransportPlaying ? "active" : ""}
-				>
-					{isTransportPlaying ? "Stop" : "Play"}
-				</button>
-				<button onClick={onPanic} className="panic-button">
-					Panic
-				</button>
+
+				{harmonicTuningSystem !== "solfeggio" &&
+					harmonicTuningSystem !== "wholesome_scale" &&
+					harmonicTuningSystem !== "none" && (
+						<div className="top-bar-group scale-group">
+							<div className="control-item">
+								<label>Scale</label>
+								<select
+									value={scale}
+									onChange={(e) => setScale(e.target.value as ScaleName)}
+									style={{ width: '100px' }}
+								>
+									{Object.keys(musicalScales).map((s) => (
+										<option key={s} value={s}>
+											{s.charAt(0).toUpperCase() + s.slice(1).replace(/([A-Z])/g, ' $1').trim()}
+										</option>
+									))}
+								</select>
+							</div>
+							<div className="control-item">
+								<label>Transpose</label>
+								<div className="control-value-wrapper">
+									<input
+										type="range"
+										min="-24"
+										max="24"
+										step="1"
+										value={transpose}
+										onChange={(e) => setTranspose(parseInt(e.target.value))}
+										style={{ width: '80px' }}
+									/>
+									<span style={{ minWidth: '30px' }}>{transpose}</span>
+								</div>
+							</div>
+						</div>
+					)}
+
+				<div className="top-bar-group voicing-group">
+					<div className="control-group-row">
+						<div className="voicing-switch">
+							<button
+								className={voicingMode === "poly" ? "active" : ""}
+								onClick={(e) => { e.stopPropagation(); setVoicingMode("poly"); }}
+							>
+								Poly
+							</button>
+							<button
+								className={voicingMode === "mono" ? "active" : ""}
+								onClick={(e) => { e.stopPropagation(); setVoicingMode("mono"); }}
+							>
+								Mono
+							</button>
+							<button
+								className={voicingMode === "legato" ? "active" : ""}
+								onClick={(e) => { e.stopPropagation(); setVoicingMode("legato"); }}
+							>
+								Legato
+							</button>
+						</div>
+						<div className="control-value-wrapper">
+							<input
+								type="range"
+								min="0"
+								max="2000"
+								step="1"
+								value={glideTime}
+								onChange={(e) => setGlideTime(parseFloat(e.target.value))}
+								disabled={isGlideSynced}
+								style={{ width: '60px' }}
+								onClick={(e) => e.stopPropagation()}
+							/>
+							<span>{glideTime.toFixed(0)}ms</span>
+						</div>
+						<div className="sync-wrapper">
+							<button
+								className={`small ${isGlideSynced ? "active" : ""}`}
+								onClick={(e) => { e.stopPropagation(); setIsGlideSynced(!isGlideSynced); }}
+							>
+								Sync
+							</button>
+							{isGlideSynced && (
+								<select
+									value={glideSyncRateIndex}
+									onChange={(e) => setGlideSyncRateIndex(parseInt(e.target.value))}
+									className="sync-select"
+									onClick={(e) => e.stopPropagation()}
+								>
+									{glideSyncRates.map((rate, i) => (
+										<option key={i} value={i}>
+											{rate}
+										</option>
+									))}
+								</select>
+							)}
+						</div>
+					</div>
+				</div>
 			</div>
 		</div>
 	);
 };
+
+interface MainControlPanelProps extends EngineControlsProps {
+	children?: React.ReactNode;
+}
 
 const MainControlPanel: React.FC<MainControlPanelProps> = ({
 	onRandomize,
@@ -1755,8 +2270,6 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 	setIsMorphSynced,
 	morphSyncRateIndex,
 	setMorphSyncRateIndex,
-	harmonicTuningSystem,
-	setHarmonicTuningSystem,
 	voicingMode,
 	setVoicingMode,
 	glideTime,
@@ -1767,10 +2280,6 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 	setGlideSyncRateIndex,
 	glideSyncRates,
 	syncRates,
-	scale,
-	setScale,
-	transpose,
-	setTranspose,
 	isGlobalAutoRandomEnabled,
 	setIsGlobalAutoRandomEnabled,
 	globalAutoRandomInterval,
@@ -1783,246 +2292,125 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 	setAutoRandomSyncRateIndex,
 }) => {
 	return (
-		<div className="main-control-panel">
-			<div className="sub-control-group">
-				<h2>Randomorph</h2>
-				<div className="control-row">
-					<label>Harmonic Mode</label>
-					<select
-						value={harmonicTuningSystem}
-						onChange={(e) =>
-							setHarmonicTuningSystem(e.target.value as TuningSystem)
-						}
-					>
-						<option value="440_ET">440Hz Equal Temperament</option>
-						<option value="432_ET">432Hz Equal Temperament</option>
-						<option value="just_intonation_440">Just Intonation (A=440)</option>
-						<option value="just_intonation_432">Just Intonation (A=432)</option>
-						<option value="pythagorean_440">Pythagorean (A=440)</option>
-						<option value="pythagorean_432">Pythagorean (A=432)</option>
-						<option value="solfeggio">Solfeggio Frequencies</option>
-						<option value="wholesome_scale">Wholesome Scale (G Maj)</option>
-						<option value="maria_renold_I">Maria Renold I</option>
-						<option value="none">None</option>
-					</select>
-				</div>
-				<div className="control-row">
-					<label>Actions</label>
-					<div className="randomizer-buttons-group">
-						<button
-							className="icon-button init-button"
-							onClick={onInitializeAll}
-							title="Initialize Patch"
-						>
-							<InitializeIcon />
-						</button>
-						<button
-							className="icon-button"
-							onClick={() => onRandomize("chaos", "global")}
-							title="Global Chaos Morph"
-						>
-							<ChaosIcon />
-						</button>
-						<button
-							className="icon-button"
-							onClick={() => onRandomize("melodic", "global")}
-							title="Global Melodic Morph"
-						>
-							<MelodicIcon />
-						</button>
-						<button
-							className="icon-button"
-							onClick={() => onRandomize("rhythmic", "global")}
-							title="Global Rhythmic Morph"
-						>
-							<RhythmicIcon />
-						</button>
-					</div>
-				</div>
-				<div className="control-row">
-					<label>Morph Time</label>
-					<div className="control-value-wrapper">
-						<input
-							type="range"
-							min="100"
-							max="8000"
-							step="10"
-							value={morphTime}
-							onChange={(e) => setMorphTime(parseFloat(e.target.value))}
-							disabled={isMorphing || isMorphSynced}
-						/>
-						<span>{morphTime.toFixed(0)}ms</span>
-					</div>
-					<button
-						className={`small ${isMorphSynced ? "active" : ""}`}
-						onClick={() => setIsMorphSynced(!isMorphSynced)}
-					>
-						Sync
-					</button>
-					{isMorphSynced && (
-						<select
-							value={morphSyncRateIndex}
-							onChange={(e) => setMorphSyncRateIndex(parseInt(e.target.value))}
-						>
-							{syncRates.map((rate, i) => (
-								<option key={i} value={i}>
-									{rate}
-								</option>
-							))}
-						</select>
-					)}
-				</div>
-			</div>
-			<div className="sub-control-group">
-				<h2>Voicing & Glide</h2>
-				<div className="voicing-switch">
-					<button
-						className={voicingMode === "poly" ? "active" : ""}
-						onClick={() => setVoicingMode("poly")}
-					>
-						Poly
-					</button>
-					<button
-						className={voicingMode === "mono" ? "active" : ""}
-						onClick={() => setVoicingMode("mono")}
-					>
-						Mono
-					</button>
-					<button
-						className={voicingMode === "legato" ? "active" : ""}
-						onClick={() => setVoicingMode("legato")}
-					>
-						Legato
-					</button>
-				</div>
-				<div className="control-value-wrapper">
-					<input
-						type="range"
-						min="0"
-						max="2000"
-						step="1"
-						value={glideTime}
-						onChange={(e) => setGlideTime(parseFloat(e.target.value))}
-						disabled={isGlideSynced}
-					/>
-					<span>{glideTime.toFixed(0)}ms</span>
-				</div>
-				<button
-					className={`small ${isGlideSynced ? "active" : ""}`}
-					onClick={() => setIsGlideSynced(!isGlideSynced)}
-				>
-					Sync
-				</button>
-				{isGlideSynced && (
-					<select
-						value={glideSyncRateIndex}
-						onChange={(e) => setGlideSyncRateIndex(parseInt(e.target.value))}
-					>
-						{glideSyncRates.map((rate, i) => (
-							<option key={i} value={i}>
-								{rate}
-							</option>
-						))}
-					</select>
-				)}
-			</div>
-			<div className="sub-control-group">
-				<h2>Global Settings</h2>
-				{harmonicTuningSystem !== "solfeggio" &&
-					harmonicTuningSystem !== "wholesome_scale" && (
-						<div className="control-row">
-							<label>Scale</label>
-							<select
-								value={scale}
-								onChange={(e) => setScale(e.target.value as ScaleName)}
+		<div className="main-control-panel toolbar-mode">
+			<div className="panel-header">
+				<div className="header-controls-left">
+					<div className="compact-header-section auto-random-section">
+						<label>Auto-Random</label>
+						<div className="control-group-row">
+							<button
+								className={`small ${isGlobalAutoRandomEnabled ? "active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setIsGlobalAutoRandomEnabled(!isGlobalAutoRandomEnabled);
+								}}
 							>
-								{Object.keys(musicalScales).map((scaleName) => (
-									<option key={scaleName} value={scaleName}>
-										{scaleName.charAt(0).toUpperCase() + scaleName.slice(1).replace(/([A-Z])/g, ' $1').trim()}
-									</option>
-								))}
+								{isGlobalAutoRandomEnabled ? "On" : "Off"}
+							</button>
+							<div className="control-value-wrapper">
+								<input
+									type="range"
+									min="1"
+									max="60"
+									step="1"
+									value={globalAutoRandomInterval / 1000}
+									onChange={(e) => {
+										const val = parseInt(e.target.value);
+										if (!isNaN(val)) {
+											setGlobalAutoRandomInterval(val * 1000);
+										}
+									}}
+									disabled={isAutoRandomSynced}
+									style={{ width: '60px' }}
+									onClick={(e) => e.stopPropagation()}
+								/>
+								<span>{isNaN(globalAutoRandomInterval) ? 0 : globalAutoRandomInterval / 1000}s</span>
+							</div>
+							<div className="sync-wrapper">
+								<button
+									className={`small ${isAutoRandomSynced ? "active" : ""}`}
+									onClick={(e) => { e.stopPropagation(); setIsAutoRandomSynced(!isAutoRandomSynced); }}
+								>
+									Sync
+								</button>
+								{isAutoRandomSynced && (
+									<select
+										value={autoRandomSyncRateIndex}
+										onChange={(e) =>
+											setAutoRandomSyncRateIndex(parseInt(e.target.value))
+										}
+										className="sync-select"
+										onClick={(e) => e.stopPropagation()}
+									>
+										{syncRates.map((rate, i) => (
+											<option key={i} value={i}>
+												{rate}
+											</option>
+										))}
+									</select>
+								)}
+							</div>
+							<select
+								value={globalAutoRandomMode}
+								onChange={(e) =>
+									setGlobalAutoRandomMode(e.target.value as RandomizeMode)
+								}
+								disabled={!isGlobalAutoRandomEnabled}
+								style={{ width: '80px' }}
+								onClick={(e) => e.stopPropagation()}
+							>
+								<option value="chaos">Chaos</option>
+								<option value="melodic">Melodic</option>
+								<option value="rhythmic">Rhythmic</option>
 							</select>
 						</div>
-					)}
-				<div className="control-row">
-					<label>Transpose</label>
-					<div className="control-value-wrapper">
-						<input
-							type="range"
-							min="-24"
-							max="24"
-							step="1"
-							value={transpose}
-							onChange={(e) => setTranspose(parseInt(e.target.value))}
-						/>
-						<span>{transpose} st</span>
+					</div>
+
+					{/* Morph Time */}
+					<div className="morph-section compact-header-section">
+						<label>Morph Time</label>
+						<div className="control-group-row">
+							<div className="control-value-wrapper">
+								<input
+									type="range"
+									min="100"
+									max="8000"
+									step="10"
+									value={morphTime}
+									onChange={(e) => setMorphTime(parseFloat(e.target.value))}
+									disabled={isMorphing || isMorphSynced}
+									style={{ width: '80px' }}
+									onClick={(e) => e.stopPropagation()}
+								/>
+								<span>{morphTime.toFixed(0)}ms</span>
+							</div>
+							<div className="sync-wrapper">
+								<button
+									className={`small ${isMorphSynced ? "active" : ""}`}
+									onClick={(e) => { e.stopPropagation(); setIsMorphSynced(!isMorphSynced); }}
+								>
+									Sync
+								</button>
+								{isMorphSynced && (
+									<select
+										value={morphSyncRateIndex}
+										onChange={(e) => setMorphSyncRateIndex(parseInt(e.target.value))}
+										className="sync-select"
+										onClick={(e) => e.stopPropagation()}
+									>
+										{syncRates.map((rate, i) => (
+											<option key={i} value={i}>
+												{rate}
+											</option>
+										))}
+									</select>
+								)}
+							</div>
+						</div>
 					</div>
 				</div>
-			</div>
-			<div className="sub-control-group">
-				<h2>Auto-Random</h2>
-				<div className="control-row">
-					<label>Enable</label>
-					<button
-						className={`small ${isGlobalAutoRandomEnabled ? "active" : ""}`}
-						onClick={() =>
-							setIsGlobalAutoRandomEnabled(!isGlobalAutoRandomEnabled)
-						}
-					>
-						{isGlobalAutoRandomEnabled ? "On" : "Off"}
-					</button>
-				</div>
-				<div className="control-row">
-					<label>Interval</label>
-					<div className="control-value-wrapper">
-						<input
-							type="range"
-							min="1000"
-							max="60000"
-							step="1000"
-							value={globalAutoRandomInterval}
-							onChange={(e) =>
-								setGlobalAutoRandomInterval(parseInt(e.target.value))
-							}
-							disabled={!isGlobalAutoRandomEnabled || isAutoRandomSynced}
-						/>
-						<span>{globalAutoRandomInterval / 1000} s</span>
-					</div>
-					<button
-						className={`small ${isAutoRandomSynced ? "active" : ""}`}
-						onClick={() => setIsAutoRandomSynced(!isAutoRandomSynced)}
-					>
-						Sync
-					</button>
-					{isAutoRandomSynced && (
-						<select
-							value={autoRandomSyncRateIndex}
-							onChange={(e) =>
-								setAutoRandomSyncRateIndex(parseInt(e.target.value))
-							}
-						>
-							{syncRates.map((rate, i) => (
-								<option key={i} value={i}>
-									{rate}
-								</option>
-							))}
-						</select>
-					)}
-				</div>
-				<div className="control-row">
-					<label>Mode</label>
-					<select
-						value={globalAutoRandomMode}
-						onChange={(e) =>
-							setGlobalAutoRandomMode(e.target.value as RandomizeMode)
-						}
-						disabled={!isGlobalAutoRandomEnabled}
-					>
-						<option value="chaos">Chaos</option>
-						<option value="melodic">Melodic</option>
-						<option value="rhythmic">Rhythmic</option>
-					</select>
-				</div>
+
+
 			</div>
 		</div>
 	);
@@ -2118,8 +2506,21 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 				});
 				const arrayBuffer = await blob.arrayBuffer();
 				if (audioContext) {
-					const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+					const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
 					onRecordSample(engine.id, audioBuffer);
+					
+					// Save to DB
+					const sampleId = generateId();
+					await saveSampleToDB(sampleId, arrayBuffer);
+					
+					// Update engine state with sampleId
+					onUpdate(engine.id, {
+						sampler: {
+							...engine.sampler,
+							sampleId: sampleId,
+							sampleName: "Recorded Sample"
+						}
+					});
 				}
 			};
 			mediaRecorderRef.current.start();
@@ -2160,6 +2561,21 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 							MIDI
 						</button>
 
+					</div>
+					<div className="engine-routing-control">
+						<label>Out:</label>
+						<select
+							value={engine.filterDestination || "filter1"}
+							onChange={(e) =>
+								onUpdate(engine.id, {
+									filterDestination: e.target.value as "filter1" | "filter2" | "direct",
+								})
+							}
+						>
+							<option value="filter1">Filter 1</option>
+							<option value="filter2">Filter 2</option>
+							<option value="direct">Direct</option>
+						</select>
 					</div>
 					<div className="randomizer-buttons-group">
 						<button
@@ -2962,11 +3378,11 @@ const MasterFilterControls: React.FC<MasterFilterControlsProps> = ({
 						min="20"
 						max="20000"
 						step="1"
-						value={filterState.cutoff}
+						value={filterState.cutoff ?? 2000}
 						onChange={(e) => onUpdate({ cutoff: parseFloat(e.target.value) })}
 						disabled={!filterState.enabled}
 					/>
-					<span>{filterState.cutoff.toFixed(0)} Hz</span>
+					<span>{(filterState.cutoff ?? 2000).toFixed(0)} Hz</span>
 					<LockIcon
 						isLocked={getLock("cutoff")}
 						onClick={() => onToggleLock(`${scope}.cutoff`)}
@@ -2982,13 +3398,13 @@ const MasterFilterControls: React.FC<MasterFilterControlsProps> = ({
 						min="0"
 						max="30"
 						step="0.1"
-						value={filterState.resonance}
+						value={filterState.resonance ?? 1}
 						onChange={(e) =>
 							onUpdate({ resonance: parseFloat(e.target.value) })
 						}
 						disabled={!filterState.enabled}
 					/>
-					<span>{filterState.resonance.toFixed(1)}</span>
+					<span>{(filterState.resonance ?? 1).toFixed(1)}</span>
 					<LockIcon
 						isLocked={getLock("resonance")}
 						onClick={() => onToggleLock(`${scope}.resonance`)}
@@ -3852,7 +4268,7 @@ const MasterEffects: React.FC<MasterEffectsProps> = ({
 	const handleDragEnd = () => {
 		if (draggedEffect && dropIndex !== null) {
 			const items = Array.from(effects);
-			const fromIndex = items.findIndex((e) => e.id === draggedEffect.id);
+			const fromIndex = items.findIndex((e) => e.id === (draggedEffect as MasterEffect).id);
 			const [removed] = items.splice(fromIndex, 1);
 			items.splice(dropIndex, 0, removed);
 			setEffects(items);
@@ -4205,13 +4621,9 @@ const App: React.FC = () => {
 	const [isMorphSynced, setIsMorphSynced] = useState(false);
 	const [morphSyncRateIndex, setMorphSyncRateIndex] = useState(3);
 
-	// Use a ref to get the latest state in audio callbacks
-	// Use a ref to get the latest state in audio callbacks
-	const latestStateRef = useRef({ engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose, clockSource });
-	useEffect(() => {
-		latestStateRef.current = { engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose, clockSource };
-	}, [engines, lfos, filter1State, filter2State, masterEffects, bpm, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, transpose, clockSource]);
-
+	// Keep latestStateRef in sync with state
+	// Removed misplaced useEffect
+	
 	const morphTargetRef = useRef<any>(null);
 	const morphStartRef = useRef<any>(null);
 	const morphStartTimeRef = useRef<number | null>(null);
@@ -4248,6 +4660,82 @@ const App: React.FC = () => {
 	const [isAutoRandomSynced, setIsAutoRandomSynced] = useState(false);
 	const [autoRandomSyncRateIndex, setAutoRandomSyncRateIndex] = useState(3); // Default to 1/8
 
+	// Use a ref to get the latest state in audio callbacks
+	const latestStateRef = useRef({ 
+		engines, 
+		lfos, 
+		filter1State, 
+		filter2State, 
+		filterRouting, 
+		masterEffects, 
+		bpm, 
+		scale, 
+		transpose, 
+		voicingMode, 
+		glideTime, 
+		isGlideSynced, 
+		glideSyncRateIndex, 
+		isGlobalAutoRandomEnabled, 
+		globalAutoRandomInterval, 
+		globalAutoRandomMode, 
+		isAutoRandomSynced, 
+		autoRandomSyncRateIndex, 
+		clockSource, 
+		morphTime, 
+		isMorphSynced, 
+		morphSyncRateIndex 
+	});
+
+	useEffect(() => {
+		latestStateRef.current = {
+			engines,
+			lfos,
+			filter1State,
+			filter2State,
+			filterRouting,
+			masterEffects,
+			bpm,
+			scale,
+			transpose,
+			voicingMode,
+			glideTime,
+			isGlideSynced,
+			glideSyncRateIndex,
+			isGlobalAutoRandomEnabled,
+			globalAutoRandomInterval,
+			globalAutoRandomMode,
+			isAutoRandomSynced,
+			autoRandomSyncRateIndex,
+			clockSource,
+			morphTime,
+			isMorphSynced,
+			morphSyncRateIndex,
+		};
+	}, [
+		engines,
+		lfos,
+		filter1State,
+		filter2State,
+		filterRouting,
+		masterEffects,
+		bpm,
+		scale,
+		transpose,
+		voicingMode,
+		glideTime,
+		isGlideSynced,
+		glideSyncRateIndex,
+		isGlobalAutoRandomEnabled,
+		globalAutoRandomInterval,
+		globalAutoRandomMode,
+		isAutoRandomSynced,
+		autoRandomSyncRateIndex,
+		clockSource,
+		morphTime,
+		isMorphSynced,
+		morphSyncRateIndex,
+	]);
+
 	const scaleFrequencies = useMemo(() => {
 		if (harmonicTuningSystem === "none") return [];
 		if (harmonicTuningSystem === "solfeggio")
@@ -4267,7 +4755,11 @@ const App: React.FC = () => {
 			}));
 
 		const notes: { value: number; label: string }[] = [];
-		const scaleSteps = musicalScales[scale];
+		let scaleSteps = musicalScales[scale];
+		if (!scaleSteps) {
+			console.warn(`Invalid scale: ${scale}, falling back to chromatic`);
+			scaleSteps = musicalScales["chromatic"];
+		}
 		const rootMidiNote = 60 + transpose; // C4 + transpose
 
 		// Generate notes for a few octaves
@@ -4344,7 +4836,7 @@ const App: React.FC = () => {
 				// However, we can force the engine mixer to 0 temporarily to kill any sound
 				nodes.engineMixer.gain.cancelScheduledValues(now);
 				nodes.engineMixer.gain.setValueAtTime(0, now);
-				nodes.engineMixer.gain.linearRampToValueAtTime(1, now + 0.1); // Ramp back up quickly? No, that might restart sound.
+				// nodes.engineMixer.gain.linearRampToValueAtTime(1, now + 0.1); // REMOVED: Don't ramp back up immediately, wait for next note
 				// Actually, we shouldn't mute the mixer because it might affect future notes.
 				// But we can mute the individual layer volumes if they are stuck open?
 				// No, those are controlled by envelopes.
@@ -4361,6 +4853,7 @@ const App: React.FC = () => {
 
 	const handleRandomize = useCallback(
 		(mode: RandomizeMode, scope: string) => {
+			console.log(`handleRandomize called with mode: ${mode}, scope: ${scope}`);
 			// Block MIDI and stop notes
 			isRandomizingRef.current = true;
 			allNotesOff();
@@ -4446,15 +4939,24 @@ const App: React.FC = () => {
 
 					if (shouldChangeMelody) {
 						let possibleNotes = scaleFrequencies.map((f) => f.value);
+						// console.log(`[Randomize] Mode: ${mode}, Tuning: ${harmonicTuningSystem}, Scale: ${scale}, PossibleNotes: ${possibleNotes.length}`);
+						
 						if (possibleNotes.length === 0) {
-							// Fallback if no scale is active
-							const rootFreq = midiNoteToFrequency(60 + transpose, "440_ET");
-							const currentScaleRatios = musicalScales[scale].map((semitone) =>
-								Math.pow(2, semitone / 12)
-							);
-							possibleNotes = Array(12)
-								.fill(0)
-								.map(() => getNoteFromScale(rootFreq, currentScaleRatios, 3));
+							if (harmonicTuningSystem === "none") {
+								// Total chaos: random frequencies
+								possibleNotes = Array(24)
+									.fill(0)
+									.map(() => getRandom(40, 2000));
+							} else {
+								// Fallback if no scale is active
+								const rootFreq = midiNoteToFrequency(60 + transpose, "440_ET");
+								const currentScaleRatios = musicalScales[scale].map((semitone) =>
+									Math.pow(2, semitone / 12)
+								);
+								possibleNotes = Array(12)
+									.fill(0)
+									.map(() => getNoteFromScale(rootFreq, currentScaleRatios, 3));
+							}
 						}
 
 						newMelodicSequence = newMelodicSequence.map(() =>
@@ -4597,6 +5099,19 @@ const App: React.FC = () => {
 
 			const randomState = createRandomizedState();
 
+			console.log(`[Randomize] morphTime: ${morphTime}, isMorphSynced: ${isMorphSynced}`);
+
+			// If morph time is very short, just set state immediately
+			if (morphTime < 50) {
+				console.log("[Randomize] Instant update");
+				setEngines(randomState.engines);
+				setLfos(randomState.lfos);
+				setFilter1State(randomState.filter1State);
+				setFilter2State(randomState.filter2State);
+				setMasterEffects(randomState.masterEffects);
+				return;
+			}
+
 			morphStartRef.current = {
 				engines,
 				filter1State,
@@ -4619,6 +5134,8 @@ const App: React.FC = () => {
 			transpose,
 			scaleFrequencies,
 			allNotesOff,
+			morphTime, // Added missing dependency
+			harmonicTuningSystem, // Added dependency
 		]
 	);
 
@@ -4682,7 +5199,7 @@ const App: React.FC = () => {
 			return updateRecursively(prev, parts);
 		});
 	}, []);
-
+	
 	const initializeAudio = useCallback(() => {
 		if (isInitialized || !initialAppState) return;
 		try {
@@ -4771,6 +5288,10 @@ const App: React.FC = () => {
                     grainPosition: context.createGain(),
                     grainJitter: context.createGain(),
                 };
+				// Scale modulation busses for audible range
+				modBusses.synthFreq.gain.value = 1000; 
+				modBusses.grainDensity.gain.value = 50;
+
                 modBusses.vol.connect(engineNodes.finalOutput.gain);
                 // The other busses will be connected to specific AudioParams as needed
                 engineModBussesMap.set(engine.id, modBusses);
@@ -4896,6 +5417,7 @@ const App: React.FC = () => {
     	const scheduledTime = time > now ? time : now;
 		
 		const { engines, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, lfos, bpm, transpose } = latestStateRef.current;
+		// console.log(`[NoteOn] Engine: ${engineId}, Note: ${midiNote}, Mode: ${voicingMode}`);
 		const engine = engines.find(e => e.id === engineId);
 		
 		if (!engine) return;
@@ -4906,6 +5428,10 @@ const App: React.FC = () => {
 		if (activeVoicesRef.current.has(noteId)) {
 			noteOff(noteId, now);
 		}
+
+		// Unmute engine mixer (in case it was muted by Panic)
+		engineNodes.engineMixer.gain.cancelScheduledValues(now);
+		engineNodes.engineMixer.gain.setValueAtTime(1, now);
 	
 		// --- Voicing and Glide Logic ---
 		let startFrequency: number | undefined;
@@ -4931,8 +5457,8 @@ const App: React.FC = () => {
 		envelopeGain.connect(engineNodes.engineMixer);
 		
 		const sourceNodes: (AudioBufferSourceNode | OscillatorNode)[] = [];
-		let newVoice: ActiveVoice = { noteId, engineId, sourceNodes, envelopeGain };
-
+		let newVoice: ActiveVoice = { noteId, engineId, sourceNodes, envelopeGain, note: midiNote }; // Save the midiNote
+		
 		// --- Layer Logic ---
 		if (engine.synth.enabled && engine.synth.volume > 0) {
 			const osc = audioContext.createOscillator();
@@ -4967,24 +5493,34 @@ const App: React.FC = () => {
 			 sourceNodes.push(noiseSource);
 		}
 	
-		if(engine.sampler.enabled && engine.sampler.volume > 0 && (samplesRef.current.has(engine.id) || engine.sampler.liveInputEnabled)) {
-			const samplerGain = audioContext.createGain();
-			samplerGain.gain.value = engine.sampler.volume;
-			samplerGain.connect(envelopeGain);
-	
-			if (engine.sampler.granularModeEnabled && !engine.sampler.liveInputEnabled && samplesRef.current.has(engine.id)) {
-				// Set up the voice for the central granular scheduler
-				newVoice.granularModeEnabled = true;
-				newVoice.nextGrainTime = scheduledTime;
-			} else if (!engine.sampler.granularModeEnabled && samplesRef.current.has(engine.id)) {
-				 const sampleSource = audioContext.createBufferSource();
-				 sampleSource.buffer = samplesRef.current.get(engine.id)!;
-				 // Assuming original pitch of sample is C4 (MIDI note 60)
-				 const playbackRate = Math.pow(2, (midiNote - 60 + engine.sampler.transpose) / 12);
-				 sampleSource.playbackRate.setValueAtTime(playbackRate, scheduledTime);
-				 sampleSource.connect(samplerGain);
-				 sampleSource.start(scheduledTime);
-				 sourceNodes.push(sampleSource);
+		if(engine.sampler.enabled && engine.sampler.volume > 0) {
+			const hasSample = samplesRef.current.has(engine.id);
+			const isLive = engine.sampler.liveInputEnabled;
+			// console.log(`[NoteOn] Sampler check - Engine: ${engine.id}, HasSample: ${hasSample}, Live: ${isLive}, Granular: ${engine.sampler.granularModeEnabled}`);
+
+			if (hasSample || isLive) {
+				const samplerGain = audioContext.createGain();
+				samplerGain.gain.value = engine.sampler.volume;
+				samplerGain.connect(envelopeGain);
+		
+				if (engine.sampler.granularModeEnabled && !isLive && hasSample) {
+					// console.log(`[NoteOn] Starting Granular Voice for ${engine.id}`);
+					// Set up the voice for the central granular scheduler
+					newVoice.granularModeEnabled = true;
+					newVoice.nextGrainTime = scheduledTime;
+				} else if (!engine.sampler.granularModeEnabled && hasSample) {
+					// console.log(`[NoteOn] Starting Normal Sampler Voice for ${engine.id}`);
+					 const sampleSource = audioContext.createBufferSource();
+					 sampleSource.buffer = samplesRef.current.get(engine.id)!;
+					 // Assuming original pitch of sample is C4 (MIDI note 60)
+					 const playbackRate = Math.pow(2, (midiNote - 60 + engine.sampler.transpose) / 12);
+					 sampleSource.playbackRate.setValueAtTime(playbackRate, scheduledTime);
+					 sampleSource.connect(samplerGain);
+					 sampleSource.start(scheduledTime);
+					 sourceNodes.push(sampleSource);
+				}
+			} else {
+				// console.warn(`[NoteOn] Sampler enabled but no sample/live input for ${engine.id}`);
 			}
 		}
 
@@ -5127,7 +5663,7 @@ const App: React.FC = () => {
 					schedulerState.current.timerId = window.setTimeout(scheduler, 100);
 					return;
 				}
-				if (latestStateRef.current.clockSource === "midi") return; // Skip internal scheduling if MIDI synced
+				// REMOVED: if (latestStateRef.current.clockSource === "midi") return; 
 
                 const now = audioContext.currentTime;
                 const scheduleUntil = now + schedulerState.current.scheduleAheadTime;
@@ -5140,19 +5676,21 @@ const App: React.FC = () => {
 					sequencerModEventsRef.current.set(engineId, filteredEvents);
 				});
 
-                // --- Schedule Sequencer Notes ---
-                latestStateRef.current.engines.forEach(engine => {
-                    // if (!engine.sequencerEnabled) return; // REMOVED: Allow running in background
-                    const engineSch = engineSchedulerStates.current.get(engine.id)!;
-                    const engineNodes = audioNodesRef.current.get(engine.id);
-					if (!engineNodes) return;
-                    
-                    const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
+                // --- Schedule Sequencer Notes (Internal Clock Only) ---
+				if (latestStateRef.current.clockSource === "internal") {
+					latestStateRef.current.engines.forEach(engine => {
+						// if (!engine.sequencerEnabled) return; // REMOVED: Allow running in background
+						const engineSch = engineSchedulerStates.current.get(engine.id)!;
+						const engineNodes = audioNodesRef.current.get(engine.id);
+						if (!engineNodes) return;
+						
+						const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
 
-                    while (engineSch.nextNoteTime < scheduleUntil) {
-						advanceSequencer(engineSch.nextNoteTime);
-                    }
-                });
+						while (engineSch.nextNoteTime < scheduleUntil) {
+							advanceSequencer(engineSch.nextNoteTime);
+						}
+					});
+				}
                 activeVoicesRef.current.forEach((voice) => {
                     if (!voice.granularModeEnabled || !voice.nextGrainTime) return;
 
@@ -5164,7 +5702,15 @@ const App: React.FC = () => {
 
                     const sampleBuffer = samplesRef.current.get(voice.engineId);
                     const engineNodes = audioNodesRef.current.get(voice.engineId);
-                    if (!sampleBuffer || !engineNodes) return;
+                    if (!sampleBuffer) {
+						// console.warn(`[Scheduler] No sample buffer for granular voice ${voice.noteId}`);
+						return;
+					}
+					if (!engineNodes) return;
+
+					// Unmute engine mixer (in case it was muted by Panic)
+					engineNodes.engineMixer.gain.cancelScheduledValues(audioContext.currentTime);
+					engineNodes.engineMixer.gain.setValueAtTime(1, audioContext.currentTime);
                     
                     const density = engine.sampler.grainDensity;
                     if (density <= 0) return;
@@ -5229,12 +5775,29 @@ const App: React.FC = () => {
 						const grainSize = Math.max(0.005, engine.sampler.grainSize + sizeMod);
 
                         const startOffset = Math.max(0, finalPosition * sampleBuffer.duration);
+                        
+						const finalDensity = Math.max(1, density + densityMod);
+                        
+
+
                         const grainEnvelope = audioContext.createGain();
                         
                         // FIX: Connect directly to voice envelope to prevent crosstalk through shared samplerGain
                         grainEnvelope.connect(voice.envelopeGain);
                         grainSource.connect(grainEnvelope);
         
+                        // Calculate pitch playback rate
+						// Base rate is 1.0 (C4/60). Calculate ratio based on note difference from C4 + Transpose
+						const rootNote = 60; // C4
+						const globalTranspose = latestStateRef.current.transpose;
+						const engineTranspose = engine.transpose; // Semitones
+						const engineDetune = engine.detune; // Cents
+						
+						// For now, let's just implement basic pitch tracking for granular (which was missing).
+						// Rate = 2 ^ ((note - 60) / 12)
+						const playbackRate = Math.pow(2, (voice.note - 60) / 12);
+						grainSource.playbackRate.value = playbackRate;
+
                         grainSource.start(nextGrainTime, startOffset, grainSize * 2); 
                         
                         const attackTime = grainSize * 0.4;
@@ -5247,7 +5810,6 @@ const App: React.FC = () => {
         
                         grainSource.stop(nextGrainTime + grainSize * 2);
                         
-						const finalDensity = Math.max(1, density + densityMod);
                         nextGrainTime += 1.0 / finalDensity;
                     }
                     
@@ -5297,6 +5859,11 @@ const App: React.FC = () => {
 			const inputId = (event.target as MIDIInput).id;
 			const isNoteInput = inputId === selectedMidiInputId;
 			const isClockInput = inputId === selectedMidiClockInputId;
+			
+			// Debug MIDI Input
+			if (event.data[0] !== 0xF8) { // Ignore clock ticks for log
+				console.log(`[MIDI] Msg: ${event.data[0]}, Input: "${inputId}", Selected: "${selectedMidiInputId}"`);
+			}
 
 			if ((!isNoteInput && !isClockInput) || isRandomizingRef.current) return;
 
@@ -5559,48 +6126,87 @@ const App: React.FC = () => {
     	        });
     	        
     	        // 2. Connect the entire audio graph
-    	        const f1 = filterNodesRef.current.filter1.node;
-    	        const f2 = filterNodesRef.current.filter2.node;
-    	    
-    			// Disconnect everything first to be safe
-    			masterBus.disconnect();
-    			f1.disconnect();
-    			f2.disconnect();
-    			audioNodesRef.current.forEach(nodes => nodes.finalOutput.disconnect());
-    	
-    	        audioNodesRef.current.forEach(nodes => nodes.finalOutput.connect(masterBus));
-    	    
-    	        const lastFilterNode = (() => {
-    	            if (filterRouting === 'series') {
-    	                let node: AudioNode = masterBus;
-    	                if (filter1State.enabled) {
-    	                    node.connect(f1);
-    	                    node = f1;
-    	                }
-    	                if (filter2State.enabled) {
-    	                    node.connect(f2);
-    	                    node = f2;
-    	                }
-    	                return node;
-    	            } else { // Parallel
-    	                const parallelOutput = audioContext.createGain();
-    	                let isAnyFilterEnabled = false;
-    	                if (filter1State.enabled) {
-    	                    masterBus.connect(f1);
-    	                    f1.connect(parallelOutput);
-    	                    isAnyFilterEnabled = true;
-    	                }
-    	                if (filter2State.enabled) {
-    	                    masterBus.connect(f2);
-    	                    f2.connect(parallelOutput);
-    	                    isAnyFilterEnabled = true;
-    	                }
-    	                if (!isAnyFilterEnabled) {
-    	                    masterBus.connect(parallelOutput);
-    	                }
-    	                return parallelOutput;
-    	            }
-    	        })();
+	        const f1 = filterNodesRef.current.filter1.node;
+	        const f2 = filterNodesRef.current.filter2.node;
+	    
+			// Disconnect everything first to be safe
+			masterBus.disconnect();
+			f1.disconnect();
+			f2.disconnect();
+			audioNodesRef.current.forEach(nodes => nodes.finalOutput.disconnect());
+	
+			// Create Input Busses for routing
+			const filter1InputBus = audioContext.createGain();
+			const filter2InputBus = audioContext.createGain();
+			const directInputBus = audioContext.createGain();
+
+	        audioNodesRef.current.forEach((nodes, engineId) => {
+				const currentEngine = engines.find(e => e.id === engineId);
+				const dest = currentEngine?.filterDestination || "filter1";
+
+				if (dest === "filter1") {
+					nodes.finalOutput.connect(filter1InputBus);
+				} else if (dest === "filter2") {
+					nodes.finalOutput.connect(filter2InputBus);
+				} else {
+					nodes.finalOutput.connect(directInputBus);
+				}
+			});
+	    
+	        const lastFilterNode = (() => {
+				// console.log("[AudioGraph] Updating. Filter1:", filter1State.enabled, "Filter2:", filter2State.enabled, "Routing:", filterRouting);
+	            if (filterRouting.serial) {
+					// Serial: F1 Input -> F1 -> F2 -> Master
+					//         F2 Input -> F2 -> Master
+					//         Direct Input -> Master
+					
+					let f1Output: AudioNode = filter1InputBus;
+	                if (filter1State.enabled) {
+	                    filter1InputBus.connect(f1);
+						f1Output = f1;
+	                }
+					
+					// F1 Output goes to F2 Input
+					f1Output.connect(filter2InputBus);
+
+					let f2Output: AudioNode = filter2InputBus;
+					if (filter2State.enabled) {
+						filter2InputBus.connect(f2);
+						f2Output = f2;
+					}
+
+					// Mix F2 output and Direct Input
+					const mixBus = audioContext.createGain();
+					f2Output.connect(mixBus);
+					directInputBus.connect(mixBus);
+					
+	                return mixBus;
+	            } else { // Parallel
+					// Parallel: F1 Input -> F1 -> Master
+					//           F2 Input -> F2 -> Master
+					//           Direct Input -> Master
+
+	                const parallelOutput = audioContext.createGain();
+	                
+	                if (filter1State.enabled) {
+	                    filter1InputBus.connect(f1);
+	                    f1.connect(parallelOutput);
+	                } else {
+						filter1InputBus.connect(parallelOutput);
+					}
+
+	                if (filter2State.enabled) {
+	                    filter2InputBus.connect(f2);
+	                    f2.connect(parallelOutput);
+	                } else {
+						filter2InputBus.connect(parallelOutput);
+					}
+					
+					directInputBus.connect(parallelOutput);
+
+	                return parallelOutput;
+	            }
+	        })();
     	
     	        const enabledEffects = masterEffects.filter(effect => effect.enabled);
     	        const finalEffectNode = enabledEffects.reduce((currentNode, effect) => {
@@ -5627,7 +6233,8 @@ const App: React.FC = () => {
     	            masterAnalyserNodeRef.current?.disconnect();
     	        };
     	    
-    	    }, [audioContext, filter1State.enabled, filter2State.enabled, filterRouting, masterEffectsChain]);
+    	    
+	    }, [audioContext, filter1State.enabled, filter2State.enabled, filterRouting, masterEffectsChain, engines]);
 	// This useEffect handles PARAMETER changes for existing effect nodes,
     // which does not require disconnecting the audio graph.
     useEffect(() => {
@@ -5709,12 +6316,18 @@ const App: React.FC = () => {
         
         const now = audioContext.currentTime;
         f1.type = filter1State.type;
-        f1.frequency.setTargetAtTime(filter1State.cutoff, now, 0.01);
-        f1.Q.setTargetAtTime(filter1State.resonance, now, 0.01);
+        // Clamp frequency to safe range (20Hz - 20kHz)
+        const f1Freq = Math.max(20, Math.min(20000, filter1State.cutoff ?? 2000));
+        f1.frequency.setTargetAtTime(f1Freq, now, 0.01);
+        // Clamp Q to safe range (avoid 0 or negative)
+        const f1Q = Math.max(0.0001, Math.min(1000, filter1State.resonance ?? 1));
+        f1.Q.setTargetAtTime(f1Q, now, 0.01);
 
         f2.type = filter2State.type;
-        f2.frequency.setTargetAtTime(filter2State.cutoff, now, 0.01);
-        f2.Q.setTargetAtTime(filter2State.resonance, now, 0.01);
+        const f2Freq = Math.max(20, Math.min(20000, filter2State.cutoff ?? 200));
+        f2.frequency.setTargetAtTime(f2Freq, now, 0.01);
+        const f2Q = Math.max(0.0001, Math.min(1000, filter2State.resonance ?? 1));
+        f2.Q.setTargetAtTime(f2Q, now, 0.01);
 
     }, [audioContext, filter1State, filter2State]);
 
@@ -5837,7 +6450,7 @@ const App: React.FC = () => {
 							if (node instanceof OscillatorNode) {
 								// Only update if the frequency is significantly different to avoid overriding glides/envelopes unnecessarily
 								// However, for manual slider control, we want immediate response.
-								// We check if the current frequency is "close" to the target to avoid fighting with glides?
+								// We check if the current frequency is "close" to the target to avoid fighting with glides/envelopes?
 								// No, if the user moves the slider, they want to override.
 								// But if a sequence is playing, this will override the sequence pitch!
 								// We only want to update if the user *manually* changed the frequency.
@@ -5876,7 +6489,24 @@ const App: React.FC = () => {
 				syncRates,
 				morphTime
 			);
+			
+			// console.log(`[Morph] Duration: ${duration}, Time: ${morphTime}`);
+
+			// Safety check for invalid duration
+			if (!duration || duration <= 0 || isNaN(duration)) {
+				console.warn("[Morph] Invalid duration, stopping");
+				setIsMorphing(false);
+				return;
+			}
+
 			const progress = Math.min((now - startTime) / duration, 1);
+			// console.log(`[Morph] Progress: ${progress}`);
+			
+			// Safety check for invalid progress
+			if (isNaN(progress)) {
+				setIsMorphing(false);
+				return;
+			}
 
 			const startState = morphStartRef.current;
 			const targetState = morphTargetRef.current;
@@ -6365,9 +6995,21 @@ const App: React.FC = () => {
 		if (!audioContext) return;
 		try {
 			const arrayBuffer = await file.arrayBuffer();
-			const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+			const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0)); // Decode copy
+			
+			// Save original buffer to DB
+			const sampleId = generateId();
+			await saveSampleToDB(sampleId, arrayBuffer);
+
 			samplesRef.current.set(engineId, audioBuffer);
-			setEngines(prev => prev.map(e => e.id === engineId ? {...e, sampler: {...e.sampler, sampleName: file.name}} : e));
+			setEngines(prev => prev.map(e => e.id === engineId ? {
+				...e, 
+				sampler: {
+					...e.sampler, 
+					sampleName: file.name,
+					sampleId: sampleId
+				}
+			} : e));
 		} catch (error) {
 			console.error("Error decoding audio file:", error);
 			alert("Failed to load audio file. Please try a different format.");
@@ -6447,7 +7089,7 @@ const App: React.FC = () => {
 						setBPM={setBPM}
 						isTransportPlaying={isTransportPlaying}
 						onToggleTransport={() => setIsTransportPlaying(p => !p)}
-						onPanic={handlePanic}
+						onPanic={allNotesOff}
 						midiInputs={midiInputs}
 						selectedMidiInputId={selectedMidiInputId}
 						onMidiInputChange={setSelectedMidiInputId}
@@ -6459,7 +7101,125 @@ const App: React.FC = () => {
 						onToggleLock={handleToggleLock}
 						clockSource={clockSource}
 						onClockSourceChange={setClockSource}
-					/>
+						harmonicTuningSystem={harmonicTuningSystem}
+						setHarmonicTuningSystem={setHarmonicTuningSystem}
+						scale={scale}
+						setScale={setScale}
+						transpose={transpose}
+						setTranspose={setTranspose}
+						voicingMode={voicingMode}
+						setVoicingMode={setVoicingMode}
+						glideTime={glideTime}
+						setGlideTime={setGlideTime}
+						isGlideSynced={isGlideSynced}
+						setIsGlideSynced={setIsGlideSynced}
+						glideSyncRateIndex={glideSyncRateIndex}
+						setGlideSyncRateIndex={setGlideSyncRateIndex}
+						glideSyncRates={syncRates}
+						onRandomize={handleRandomize}
+						onInitializeAll={handleInitializeAll}
+					>
+						<PresetManager
+							currentBpm={bpm}
+							onLoadPreset={async (preset) => {
+								// Stop everything first
+								allNotesOff();
+								setIsTransportPlaying(false);
+								
+								// Load state
+								const d = preset.data;
+								setEngines(d.engines);
+								setLfos(d.lfos);
+								setFilter1State(d.filter1);
+								setFilter2State(d.filter2);
+								setFilterRouting(d.filterRouting);
+								setMasterEffects(d.masterEffects);
+								setBPM(d.bpm);
+								setScale(d.scale);
+								setTranspose(d.transpose);
+								setHarmonicTuningSystem(d.harmonicTuningSystem);
+								setVoicingMode(d.voicingMode);
+								setGlideTime(d.glideTime);
+								setIsGlideSynced(d.isGlideSynced);
+								setGlideSyncRateIndex(d.glideSyncRateIndex);
+								setIsGlobalAutoRandomEnabled(d.isGlobalAutoRandomEnabled);
+								setGlobalAutoRandomInterval(d.globalAutoRandomInterval);
+								setGlobalAutoRandomMode(d.globalAutoRandomMode);
+								setIsAutoRandomSynced(d.isAutoRandomSynced);
+								setAutoRandomSyncRateIndex(d.autoRandomSyncRateIndex);
+								setMorphTime(d.morphTime ?? 1000);
+								setIsMorphSynced(d.isMorphSynced);
+								setMorphSyncRateIndex(d.morphSyncRateIndex);
+
+								// Load samples from DB
+								// Load samples from DB
+								samplesRef.current.clear(); // Clear old samples first
+								const sampleLoadPromises = d.engines.map(async (engine) => {
+									if (engine.sampler.sampleId) {
+										console.log(`[Preset] Loading sample for engine ${engine.id} with ID ${engine.sampler.sampleId}`);
+										try {
+											const buffer = await getSampleFromDB(engine.sampler.sampleId);
+											if (buffer) {
+												console.log(`[Preset] Got buffer from DB, size: ${buffer.byteLength}`);
+												if (audioContext) {
+													// Slice the buffer to ensure we pass a fresh copy to decodeAudioData
+													// This prevents issues if the DB buffer is somehow treated as detached or shared
+													const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
+													console.log(`[Preset] Decoded audio buffer: ${audioBuffer.duration}s`);
+													samplesRef.current.set(engine.id, audioBuffer);
+												} else {
+													console.error("[Preset] AudioContext is missing during sample load");
+												}
+											} else {
+												console.warn(`[Preset] Sample not found in DB for ID ${engine.sampler.sampleId}`);
+												alert(`Sample for ${engine.name} not found in database.`);
+											}
+										} catch (e) {
+											console.error(`[Preset] Failed to load sample for engine ${engine.id}`, e);
+											alert(`Failed to load sample for ${engine.name}.`);
+										}
+									} else {
+										console.log(`[Preset] No sample ID for engine ${engine.id}`);
+									}
+								});
+								
+								await Promise.all(sampleLoadPromises);
+								console.log("[Preset] All samples loaded");
+								
+
+								// Force a state update to ensure everything is synced
+								setEngines(prev => [...prev]);
+								
+								if (audioContext?.state === 'suspended') {
+									audioContext.resume();
+								}
+							}}
+							getCurrentState={() => ({
+								engines: latestStateRef.current.engines,
+								lfos: latestStateRef.current.lfos,
+								filter1: filter1State,
+								filter2: filter2State,
+								filterRouting: filterRouting,
+								masterEffects: masterEffects,
+								bpm: bpm,
+								scale: scale,
+								transpose: transpose,
+								harmonicTuningSystem: harmonicTuningSystem,
+								voicingMode: voicingMode,
+								glideTime: glideTime,
+								isGlideSynced: isGlideSynced,
+								glideSyncRateIndex: glideSyncRateIndex,
+								isGlobalAutoRandomEnabled: isGlobalAutoRandomEnabled,
+								globalAutoRandomInterval: globalAutoRandomInterval,
+								globalAutoRandomMode: globalAutoRandomMode,
+								isAutoRandomSynced: isAutoRandomSynced,
+								autoRandomSyncRateIndex: autoRandomSyncRateIndex,
+								morphTime: morphTime,
+								isMorphSynced: isMorphSynced,
+								morphSyncRateIndex: morphSyncRateIndex,
+							})}
+						/>
+					</TopBar>
 	
 					<MainControlPanel
 						onRandomize={handleRandomize}
@@ -6471,9 +7231,6 @@ const App: React.FC = () => {
 						setIsMorphSynced={setIsMorphSynced}
 						morphSyncRateIndex={morphSyncRateIndex}
 						setMorphSyncRateIndex={setMorphSyncRateIndex}
-						syncRates={syncRates}
-						harmonicTuningSystem={harmonicTuningSystem}
-						setHarmonicTuningSystem={setHarmonicTuningSystem}
 						voicingMode={voicingMode}
 						setVoicingMode={setVoicingMode}
 						glideTime={glideTime}
@@ -6482,11 +7239,7 @@ const App: React.FC = () => {
 						setIsGlideSynced={setIsGlideSynced}
 						glideSyncRateIndex={glideSyncRateIndex}
 						setGlideSyncRateIndex={setGlideSyncRateIndex}
-						glideSyncRates={syncRates} /* Assuming same rates */
-						scale={scale}
-						setScale={setScale}
-						transpose={transpose}
-						setTranspose={setTranspose}
+						glideSyncRates={syncRates}
 						isGlobalAutoRandomEnabled={isGlobalAutoRandomEnabled}
 						setIsGlobalAutoRandomEnabled={setIsGlobalAutoRandomEnabled}
 						globalAutoRandomInterval={globalAutoRandomInterval}
@@ -6497,8 +7250,9 @@ const App: React.FC = () => {
 						setIsAutoRandomSynced={setIsAutoRandomSynced}
 						autoRandomSyncRateIndex={autoRandomSyncRateIndex}
 						setAutoRandomSyncRateIndex={setAutoRandomSyncRateIndex}
+						syncRates={syncRates}
 					/>
-	
+
 					<div className="master-visualizer-container">
 						<div className="visualizer-wrapper">
 							<div className="visualizer-label">MASTER</div>

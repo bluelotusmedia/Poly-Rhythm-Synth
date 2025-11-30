@@ -71,3 +71,20 @@ Poly-Rhythm Synth is built with modern web technologies, ensuring a high-perform
     *   **LFOs:** Access the controls for the three Low-Frequency Oscillators.
     *   **Routing Matrix:** A grid for connecting modulation sources (LFOs, Sequencers) to their destinations.
 *   **Lock Icons:** Click the small lock icon next to any parameter to "lock" it, preventing it from being changed by the randomization engine.
+
+## Troubleshooting
+
+*   **No Sound?**
+    *   Check the **Master Volume** in the top bar.
+    *   Ensure the **Transport** is playing (for sequencer).
+    *   If using **MIDI**, check the input selection and ensure "MIDI Control" is enabled on the engine.
+    *   Try the **Panic** button if audio gets stuck.
+    *   Reload the page to force-update factory presets if they seem broken.
+
+*   **Randomization Not Working?**
+    *   Ensure **Morph Time** is not set to an extremely long duration.
+    *   Check if **Parameter Locks** are enabled (the lock icons).
+
+## Developer Info
+
+For detailed technical documentation, architecture overview, and maintenance guides, please refer to **[gemini.md](./gemini.md)**. This file contains in-depth context for AI assistants and developers working on the codebase.
