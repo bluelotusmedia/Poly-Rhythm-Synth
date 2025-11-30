@@ -416,7 +416,8 @@ export const FACTORY_PRESETS = [
             s.engines[0].name = "Riser";
             s.engines[0].adsr = { attack: 0.1, decay: 0.5, sustain: 1, release: 2 }; 
             s.engines[0].synth.oscillatorType = "sawtooth";
-            s.engines[0].synth.frequency = 110; // Explicit base frequency
+            s.engines[0].synth.frequency = 550; // Center frequency
+            s.engines[0].synth.enabled = true;
             s.engines[0].synth.volume = 0.6;
             // Add some noise for texture
             s.engines[0].noise.enabled = true;
@@ -428,12 +429,152 @@ export const FACTORY_PRESETS = [
             
             // Pitch rising LFO
             s.lfos[0].rate = 0.05; // Very Slow rise
-            s.lfos[0].shape = "ramp";
-            s.lfos[0].depth = 0.8; // Significant pitch rise (now scaled by 1000 in engine)
+            s.lfos[0].shape = "sawtooth"; // Ramp up
+            s.lfos[0].depth = 0.45; // Modulation +/- 450Hz (approx 100-1000Hz range)
             s.lfos[0].routing = { ...DEFAULT_ROUTING, engine1SynthFreq: true };
             
             s.engines[0].effects = { distortion: 0.2, delayTime: 0.2, delayFeedback: 0.6 };
             
+            s.filter1.cutoff = 2000;
+            s.filter1.resonance = 2;
+            
+            return s;
+        })()
+    },
+    {
+        name: "Factory: Techno Rumble",
+        timestamp: Date.now(),
+        data: (() => {
+            const s = createDefaultState();
+            s.bpm = 135;
+            // Rumble Kick
+            s.engines[0].name = "Rumble";
+            s.engines[0].synth.oscillatorType = "sine";
+            s.engines[0].synth.frequency = 45;
+            s.engines[0].adsr = { attack: 0.001, decay: 0.3, sustain: 0, release: 0.2 };
+            s.engines[0].sequence = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+            s.engines[0].effects = { distortion: 0.4, delayTime: 0.1, delayFeedback: 0.4 }; // Reverb-like delay
+            s.engines[0].filterDestination = "direct";
+
+            // Industrial Perc
+            s.engines[1].name = "Ind. Perc";
+            s.engines[1].synth.enabled = false;
+            s.engines[1].noise.enabled = true;
+            s.engines[1].noise.noiseType = "white";
+            s.engines[1].noise.volume = 0.4;
+            s.engines[1].adsr = { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 };
+            s.engines[1].sequence = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+            s.engines[1].filterDestination = "filter1"; // Lowpass for dark texture
+            
+            // Offbeat Hat
+            s.engines[2].name = "Hat";
+            s.engines[2].synth.enabled = false;
+            s.engines[2].noise.enabled = true;
+            s.engines[2].noise.noiseType = "white";
+            s.engines[2].noise.volume = 0.3;
+            s.engines[2].adsr = { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 };
+            s.engines[2].sequence = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+            s.engines[2].filterDestination = "filter2"; // Highpass for crispness
+
+            s.filter1.cutoff = 800;
+            s.filter2.cutoff = 6000;
+            s.filter2.type = "highpass";
+
+            return s;
+        })()
+    },
+    {
+        name: "Factory: Synthwave Drive",
+        timestamp: Date.now(),
+        data: (() => {
+            const s = createDefaultState();
+            s.bpm = 110;
+            // Rolling Bass
+            s.engines[0].name = "Bass";
+            s.engines[0].synth.oscillatorType = "sawtooth";
+            s.engines[0].synth.frequency = 55;
+            s.engines[0].adsr = { attack: 0.01, decay: 0.2, sustain: 0.4, release: 0.2 };
+            s.engines[0].sequence = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+            s.engines[0].filterDestination = "filter1"; // Filter pluck
+
+            // Pad
+            s.engines[1].name = "Pad";
+            s.engines[1].synth.oscillatorType = "sawtooth";
+            s.engines[1].synth.frequency = 220; // A3
+            s.engines[1].adsr = { attack: 0.5, decay: 0.5, sustain: 0.8, release: 1 };
+            s.engines[1].sequence = [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+            s.engines[1].filterDestination = "direct";
+            s.engines[1].effects = { distortion: 0, delayTime: 0.4, delayFeedback: 0.5 };
+
+            // Snare
+            s.engines[2].name = "Snare";
+            s.engines[2].synth.enabled = false;
+            s.engines[2].noise.enabled = true;
+            s.engines[2].noise.noiseType = "pink";
+            s.engines[2].noise.volume = 0.5;
+            s.engines[2].adsr = { attack: 0.001, decay: 0.2, sustain: 0, release: 0.1 };
+            s.engines[2].sequence = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+            s.engines[2].effects = { distortion: 0.1, delayTime: 0, delayFeedback: 0 };
+            s.engines[2].filterDestination = "direct";
+
+            s.filter1.cutoff = 1500;
+            s.filter1.resonance = 1;
+            
+            // LFO for Bass Filter
+            s.lfos[0].rate = 2; // 1/8th note pulse
+            s.lfos[0].depth = 0.3;
+            s.lfos[0].shape = "sine";
+            s.lfos[0].routing = { ...DEFAULT_ROUTING, filter1Cutoff: true };
+
+            return s;
+        })()
+    },
+    {
+        name: "Factory: Trap Beat",
+        timestamp: Date.now(),
+        data: (() => {
+            const s = createDefaultState();
+            s.bpm = 140;
+            // 808 Bass
+            s.engines[0].name = "808";
+            s.engines[0].synth.oscillatorType = "sine";
+            s.engines[0].synth.frequency = 40;
+            s.engines[0].adsr = { attack: 0.01, decay: 0.8, sustain: 0, release: 0.5 };
+            s.engines[0].sequence = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+            s.engines[0].effects = { distortion: 0.6, delayTime: 0, delayFeedback: 0 }; // Distorted 808
+            s.engines[0].filterDestination = "direct";
+
+            // Hi-Hat Rolls
+            s.engines[1].name = "Hats";
+            s.engines[1].synth.enabled = false;
+            s.engines[1].noise.enabled = true;
+            s.engines[1].noise.noiseType = "white";
+            s.engines[1].noise.volume = 0.3;
+            s.engines[1].adsr = { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 };
+            s.engines[1].sequence = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]; // Steady stream
+            s.engines[1].filterDestination = "filter2"; // Highpass
+
+            // Snare/Clap
+            s.engines[2].name = "Clap";
+            s.engines[2].synth.enabled = false;
+            s.engines[2].noise.enabled = true;
+            s.engines[2].noise.noiseType = "pink";
+            s.engines[2].noise.volume = 0.5;
+            s.engines[2].adsr = { attack: 0.001, decay: 0.1, sustain: 0, release: 0.1 };
+            s.engines[2].sequence = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+            s.engines[2].filterDestination = "direct";
+
+            s.filter2.cutoff = 8000;
+            s.filter2.type = "highpass";
+            
+            // LFO for Hi-Hat Triplets
+            s.lfos[1].rate = 6; 
+            s.lfos[1].sync = true;
+            s.lfos[1].syncRate = "1/12"; // 8th note triplets
+            s.lfos[1].shape = "square"; // On/Off chopping
+            s.lfos[1].depth = 1.0; // Full depth
+            s.lfos[1].routing = { ...DEFAULT_ROUTING, engine2Vol: true };
+
             return s;
         })()
     },

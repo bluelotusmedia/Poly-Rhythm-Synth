@@ -2544,7 +2544,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 		<div className="control-group">
 			<div className="control-group-header">
 				<div className="engine-header-top-bar">
-					<div className="engine-title-group">
+					<div className="engine-title-group" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
 						<input
 							type="text"
 							className="engine-name-input"
@@ -2557,35 +2557,38 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 								color: "inherit",
 								fontSize: "1.2rem",
 								fontWeight: "bold",
-								width: "80px",
-								marginRight: "0.5rem",
+								width: "100px",
 								padding: "0.2rem",
 							}}
 						/>
-						<button
-							className={`small seq-toggle ${
-								engine.sequencerEnabled ? "active" : ""
-							}`}
-							onClick={() =>
-								onUpdate(engine.id, {
-									sequencerEnabled: !engine.sequencerEnabled,
-								})
-							}
-						>
-							SEQ
-						</button>
-						<button
-							className={`small midi-toggle ${
-								engine.midiControlled ? "active" : ""
-							}`}
-							onClick={() =>
-								onUpdate(engine.id, { midiControlled: !engine.midiControlled })
-							}
-						>
-							MIDI
-						</button>
-
-					</div>
+						<div className="toggle-group compact">
+							<button
+								className={`seq-toggle ${
+									engine.sequencerEnabled ? "active" : ""
+								}`}
+								onClick={() =>
+									onUpdate(engine.id, {
+										sequencerEnabled: !engine.sequencerEnabled,
+									})
+								}
+								title="Toggle Sequencer"
+							>
+								SEQ
+							</button>
+							<button
+								className={`midi-toggle ${
+									engine.midiControlled ? "active" : ""
+								}`}
+								onClick={() =>
+									onUpdate(engine.id, {
+										midiControlled: !engine.midiControlled,
+									})
+								}
+								title="Toggle MIDI Control"
+							>
+								MIDI
+							</button>
+						</div>
 					</div>
 					<div className="randomizer-buttons-group">
 						<button
@@ -2630,6 +2633,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 						/>
 					</div>
 				)}
+			</div>
 
 
 			<div className="control-row">
@@ -2660,7 +2664,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 			
 			<div className="control-row">
 				<label>Rnd Range</label>
-				<div className="control-value-wrapper control-with-lock">
+				<div className="control-value-wrapper">
 					<input
 						type="range"
 						min="1"
@@ -2676,7 +2680,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 			</div>
 			<div className="control-row">
 				<label>Rnd Base</label>
-				<div className="control-value-wrapper control-with-lock">
+				<div className="control-value-wrapper">
 					<input
 						type="range"
 						min="1"
@@ -4814,7 +4818,9 @@ const App: React.FC = () => {
 			}));
 
 		const notes: { value: number; label: string }[] = [];
-		let scaleSteps = musicalScales[scale];
+		// Handle case-insensitivity for scale lookup
+		// @ts-ignore - allow string indexing for fallback
+		let scaleSteps = musicalScales[scale] || musicalScales[scale.toLowerCase()];
 		if (!scaleSteps) {
 			console.warn(`Invalid scale: ${scale}, falling back to chromatic`);
 			scaleSteps = musicalScales["chromatic"];
@@ -6612,6 +6618,16 @@ const App: React.FC = () => {
 			const audioNow = audioContext.currentTime;
 			const rampTime = 0.01;
 
+			const safeSetTargetAtTime = (param: AudioParam, value: number, startTime: number, timeConstant: number) => {
+				if (isFinite(value)) {
+					try {
+						param.setTargetAtTime(value, startTime, timeConstant);
+					} catch (e) {
+						console.warn("Error setting target at time:", e);
+					}
+				}
+			};
+
 			// Direct AudioParam manipulation (for performance)
 			if (startState && targetState) {
 				audioNodesRef.current.forEach((nodes, id) => {
@@ -6619,24 +6635,24 @@ const App: React.FC = () => {
 					const target = targetState.engines.find((e: EngineState) => e.id === id);
 					if (!start || !target) return;
 
-					nodes.synth.volumeGain.gain.setTargetAtTime(lerp(start.synth.volume, target.synth.volume, progress), audioNow, rampTime);
-					nodes.noise.volumeGain.gain.setTargetAtTime(lerp(start.noise.volume, target.noise.volume, progress), audioNow, rampTime);
-					nodes.sampler.volumeGain.gain.setTargetAtTime(lerp(start.sampler.volume, target.sampler.volume, progress), audioNow, rampTime);
+					safeSetTargetAtTime(nodes.synth.volumeGain.gain, lerp(start.synth.volume, target.synth.volume, progress), audioNow, rampTime);
+					safeSetTargetAtTime(nodes.noise.volumeGain.gain, lerp(start.noise.volume, target.noise.volume, progress), audioNow, rampTime);
+					safeSetTargetAtTime(nodes.sampler.volumeGain.gain, lerp(start.sampler.volume, target.sampler.volume, progress), audioNow, rampTime);
 				});
 				
 				if (filterNodesRef.current) {
-					filterNodesRef.current.filter1.node.frequency.setTargetAtTime(lerp(startState.filter1State.cutoff, targetState.filter1State.cutoff, progress), audioNow, rampTime);
-					filterNodesRef.current.filter1.node.Q.setTargetAtTime(lerp(startState.filter1State.resonance, targetState.filter1State.resonance, progress), audioNow, rampTime);
-					filterNodesRef.current.filter2.node.frequency.setTargetAtTime(lerp(startState.filter2State.cutoff, targetState.filter2State.cutoff, progress), audioNow, rampTime);
-					filterNodesRef.current.filter2.node.Q.setTargetAtTime(lerp(startState.filter2State.resonance, targetState.filter2State.resonance, progress), audioNow, rampTime);
+					safeSetTargetAtTime(filterNodesRef.current.filter1.node.frequency, lerp(startState.filter1State.cutoff, targetState.filter1State.cutoff, progress), audioNow, rampTime);
+					safeSetTargetAtTime(filterNodesRef.current.filter1.node.Q, lerp(startState.filter1State.resonance, targetState.filter1State.resonance, progress), audioNow, rampTime);
+					safeSetTargetAtTime(filterNodesRef.current.filter2.node.frequency, lerp(startState.filter2State.cutoff, targetState.filter2State.cutoff, progress), audioNow, rampTime);
+					safeSetTargetAtTime(filterNodesRef.current.filter2.node.Q, lerp(startState.filter2State.resonance, targetState.filter2State.resonance, progress), audioNow, rampTime);
 				}
 
 				lfoNodesRef.current.forEach((nodes, id) => {
 					const start = startState.lfos.find((l: LFOState) => l.id === id);
 					const target = targetState.lfos.find((l: LFOState) => l.id === id);
 					if (!start || !target) return;
-					nodes.lfoNode.frequency.setTargetAtTime(lerp(start.rate, target.rate, progress), audioNow, rampTime);
-					nodes.depthGain.gain.setTargetAtTime(lerp(start.depth, target.depth, progress), audioNow, rampTime);
+					safeSetTargetAtTime(nodes.lfoNode.frequency, lerp(start.rate, target.rate, progress), audioNow, rampTime);
+					safeSetTargetAtTime(nodes.depthGain.gain, lerp(start.depth, target.depth, progress), audioNow, rampTime);
 				});
 
 				effectNodesRef.current.forEach((fxNodes, id) => {
@@ -6649,43 +6665,43 @@ const App: React.FC = () => {
 					
 					switch (fxNodes.type) {
 						case "delay":
-							fxNodes.nodes.delay.delayTime.setTargetAtTime(lerp(startParams.delay!.time, targetParams.delay!.time, progress), audioNow, rampTime);
-							fxNodes.nodes.feedback.gain.setTargetAtTime(lerp(startParams.delay!.feedback, targetParams.delay!.feedback, progress), audioNow, rampTime);
-							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.delay!.mix, targetParams.delay!.mix, progress), audioNow, rampTime);
-							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.delay!.mix, targetParams.delay!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.delay.delayTime, lerp(startParams.delay!.time, targetParams.delay!.time, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.feedback.gain, lerp(startParams.delay!.feedback, targetParams.delay!.feedback, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.wet.gain, lerp(startParams.delay!.mix, targetParams.delay!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.dry.gain, 1 - lerp(startParams.delay!.mix, targetParams.delay!.mix, progress), audioNow, rampTime);
 							break;
 						case "reverb":
-							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.reverb!.mix, targetParams.reverb!.mix, progress), audioNow, rampTime);
-							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.reverb!.mix, targetParams.reverb!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.wet.gain, lerp(startParams.reverb!.mix, targetParams.reverb!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.dry.gain, 1 - lerp(startParams.reverb!.mix, targetParams.reverb!.mix, progress), audioNow, rampTime);
 							break;
 						case "chorus":
-							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.chorus!.rate, targetParams.chorus!.rate, progress), audioNow, rampTime);
-							fxNodes.nodes.lfoGain.gain.setTargetAtTime(0.005 * lerp(startParams.chorus!.depth, targetParams.chorus!.depth, progress), audioNow, rampTime);
-							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.chorus!.mix, targetParams.chorus!.mix, progress), audioNow, rampTime);
-							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.chorus!.mix, targetParams.chorus!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfo.frequency, lerp(startParams.chorus!.rate, targetParams.chorus!.rate, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfoGain.gain, 0.005 * lerp(startParams.chorus!.depth, targetParams.chorus!.depth, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.wet.gain, lerp(startParams.chorus!.mix, targetParams.chorus!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.dry.gain, 1 - lerp(startParams.chorus!.mix, targetParams.chorus!.mix, progress), audioNow, rampTime);
 							break;
 						case "flanger":
-							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.flanger!.rate, targetParams.flanger!.rate, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfo.frequency, lerp(startParams.flanger!.rate, targetParams.flanger!.rate, progress), audioNow, rampTime);
 							const flangerLfoGain = lerp(startParams.flanger!.delay, targetParams.flanger!.delay, progress) * lerp(startParams.flanger!.depth, targetParams.flanger!.depth, progress);
-							fxNodes.nodes.lfoGain.gain.setTargetAtTime(flangerLfoGain, audioNow, rampTime);
-							fxNodes.nodes.delay.delayTime.setTargetAtTime(lerp(startParams.flanger!.delay, targetParams.flanger!.delay, progress), audioNow, rampTime);
-							fxNodes.nodes.feedback.gain.setTargetAtTime(lerp(startParams.flanger!.feedback, targetParams.flanger!.feedback, progress), audioNow, rampTime);
-							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.flanger!.mix, targetParams.flanger!.mix, progress), audioNow, rampTime);
-							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.flanger!.mix, targetParams.flanger!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfoGain.gain, flangerLfoGain, audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.delay.delayTime, lerp(startParams.flanger!.delay, targetParams.flanger!.delay, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.feedback.gain, lerp(startParams.flanger!.feedback, targetParams.flanger!.feedback, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.wet.gain, lerp(startParams.flanger!.mix, targetParams.flanger!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.dry.gain, 1 - lerp(startParams.flanger!.mix, targetParams.flanger!.mix, progress), audioNow, rampTime);
 							break;
 						case "phaser":
-							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.phaser!.rate, targetParams.phaser!.rate, progress), audioNow, rampTime);
-							fxNodes.nodes.filters.forEach((f: BiquadFilterNode) => f.Q.setTargetAtTime(lerp(startParams.phaser!.q, targetParams.phaser!.q, progress), audioNow, rampTime));
-							fxNodes.nodes.wet.gain.setTargetAtTime(lerp(startParams.phaser!.mix, targetParams.phaser!.mix, progress), audioNow, rampTime);
-							fxNodes.nodes.dry.gain.setTargetAtTime(1 - lerp(startParams.phaser!.mix, targetParams.phaser!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfo.frequency, lerp(startParams.phaser!.rate, targetParams.phaser!.rate, progress), audioNow, rampTime);
+							fxNodes.nodes.filters.forEach((f: BiquadFilterNode) => safeSetTargetAtTime(f.Q, lerp(startParams.phaser!.q, targetParams.phaser!.q, progress), audioNow, rampTime));
+							safeSetTargetAtTime(fxNodes.nodes.wet.gain, lerp(startParams.phaser!.mix, targetParams.phaser!.mix, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.dry.gain, 1 - lerp(startParams.phaser!.mix, targetParams.phaser!.mix, progress), audioNow, rampTime);
 							break;
 						case "tremolo":
-							fxNodes.nodes.lfo.frequency.setTargetAtTime(lerp(startParams.tremolo!.rate, targetParams.tremolo!.rate, progress), audioNow, rampTime);
-							fxNodes.nodes.lfoGain.gain.setTargetAtTime(lerp(startParams.tremolo!.depth, targetParams.tremolo!.depth, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfo.frequency, lerp(startParams.tremolo!.rate, targetParams.tremolo!.rate, progress), audioNow, rampTime);
+							safeSetTargetAtTime(fxNodes.nodes.lfoGain.gain, lerp(startParams.tremolo!.depth, targetParams.tremolo!.depth, progress), audioNow, rampTime);
 							break;
 						case "eq":
 							fxNodes.nodes.bands.forEach((band: BiquadFilterNode, i: number) => {
-								band.gain.setTargetAtTime(lerp(startParams.eq!.bands[i], targetParams.eq!.bands[i], progress), audioNow, rampTime);
+								safeSetTargetAtTime(band.gain, lerp(startParams.eq!.bands[i], targetParams.eq!.bands[i], progress), audioNow, rampTime);
 							});
 							break;
 					}
