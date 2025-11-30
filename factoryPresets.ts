@@ -70,6 +70,8 @@ const createDefaultState = () => ({
             useMelodicSequence: false,
             sequence: new Array(16).fill(0),
             filterDestination: "filter1" as "filter1" | "filter2" | "direct",
+            randomOctaveRange: 2,
+            randomBaseOctave: 3,
         },
         {
             id: "engine2",
@@ -107,6 +109,8 @@ const createDefaultState = () => ({
             useMelodicSequence: false,
             sequence: new Array(16).fill(0),
             filterDestination: "filter1" as "filter1" | "filter2" | "direct",
+            randomOctaveRange: 2,
+            randomBaseOctave: 3,
         },
         {
             id: "engine3",
@@ -144,6 +148,8 @@ const createDefaultState = () => ({
             useMelodicSequence: false,
             sequence: new Array(16).fill(0),
             filterDestination: "filter1" as "filter1" | "filter2" | "direct",
+            randomOctaveRange: 2,
+            randomBaseOctave: 3,
         }
     ],
     lfos: [
@@ -193,7 +199,8 @@ export const FACTORY_PRESETS = [
             s.engines[0].adsr = { attack: 0.001, decay: 0.1, sustain: 0, release: 0.1 };
             s.engines[0].sequencerSteps = 16;
             s.engines[0].sequence = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]; // Classic DnB Kick
-            
+            s.engines[0].filterDestination = "direct"; // Clean kick
+
             // Snare (Engine 2)
             s.engines[1].name = "Snare";
             s.engines[1].synth.enabled = false;
@@ -202,7 +209,8 @@ export const FACTORY_PRESETS = [
             s.engines[1].adsr = { attack: 0.001, decay: 0.15, sustain: 0, release: 0.1 };
             s.engines[1].sequencerSteps = 16;
             s.engines[1].sequence = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]; // DnB Snare
-            
+            s.engines[1].filterDestination = "direct"; // Clean snare
+
             // HiHats (Engine 3)
             s.engines[2].name = "Hats";
             s.engines[2].synth.enabled = false;
@@ -211,6 +219,7 @@ export const FACTORY_PRESETS = [
             s.engines[2].adsr = { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 };
             s.engines[2].sequencerSteps = 16;
             s.engines[2].sequence = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+            s.engines[2].filterDestination = "filter2"; // Highpass hats
             
             return s;
         })()
@@ -227,7 +236,8 @@ export const FACTORY_PRESETS = [
             s.engines[0].synth.frequency = 60;
             s.engines[0].adsr = { attack: 0.001, decay: 0.1, sustain: 0, release: 0.05 };
             s.engines[0].sequence = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]; // 4/4
-            
+            s.engines[0].filterDestination = "direct"; // Clean kick
+
             // Bass (Offbeat)
             s.engines[1].name = "PsyBass";
             s.engines[1].synth.oscillatorType = "sawtooth";
@@ -235,6 +245,7 @@ export const FACTORY_PRESETS = [
             s.engines[1].adsr = { attack: 0.01, decay: 0.1, sustain: 0.4, release: 0.1 };
             s.engines[1].sequence = [0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1]; // KBBB KBBB
             s.engines[1].routing = { ...DEFAULT_ROUTING, filter1Cutoff: true }; // Filter pluck
+            s.engines[1].filterDestination = "filter1"; // Filtered bass
             s.filter1.cutoff = 800;
             s.filter1.resonance = 5;
             
@@ -244,6 +255,7 @@ export const FACTORY_PRESETS = [
             s.engines[2].synth.frequency = 800;
             s.engines[2].adsr = { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 };
             s.engines[2].sequence = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+            s.engines[2].filterDestination = "filter2"; // Highpass zap
             
             return s;
         })()
@@ -305,6 +317,7 @@ export const FACTORY_PRESETS = [
             s.engines[0].synth.frequency = 110;
             s.engines[0].adsr = { attack: 0.01, decay: 0.3, sustain: 0.2, release: 0.1 };
             s.engines[0].sequence = [1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0]; // Acid line
+            s.engines[0].filterDestination = "filter1"; // Acid filter
             
             s.filter1.type = "lowpass";
             s.filter1.cutoff = 2000; // Good base for acid
@@ -337,6 +350,7 @@ export const FACTORY_PRESETS = [
             s.engines[0].synth.frequency = 440;
             s.engines[0].adsr = { attack: 0.001, decay: 0.4, sustain: 0, release: 0.4 };
             s.engines[0].effects = { distortion: 0, delayTime: 0.33, delayFeedback: 0.5 }; // Delay
+            s.engines[0].filterDestination = "filter1"; // Filtered pluck
             
             s.filter1.cutoff = 600;
             s.filter1.resonance = 2;
@@ -377,6 +391,7 @@ export const FACTORY_PRESETS = [
             s.engines[0].sequence = [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]; // Slow keys
             s.engines[0].useMelodicSequence = true;
             s.engines[0].melodicSequence = Array.from({ length: 16 }, () => [261.63]); // C4 drone for now
+            s.engines[0].filterDestination = "filter1"; // Filtered keys
             
             // Pitch wobble
             s.lfos[0].rate = 2;
@@ -409,6 +424,7 @@ export const FACTORY_PRESETS = [
             s.engines[0].noise.noiseType = "pink";
             s.engines[0].sequence = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // One long note
             s.engines[0].sequencerSteps = 16;
+            s.engines[0].filterDestination = "filter1"; // Filtered riser
             
             // Pitch rising LFO
             s.lfos[0].rate = 0.05; // Very Slow rise
@@ -443,6 +459,7 @@ export const FACTORY_PRESETS = [
             // Random-ish pattern
             s.engines[0].sequence = [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1];
             s.engines[0].effects = { distortion: 0.5, delayTime: 0.1, delayFeedback: 0.4 };
+            s.engines[0].filterDestination = "filter2"; // Highpass glitch
             
             return s;
         })()

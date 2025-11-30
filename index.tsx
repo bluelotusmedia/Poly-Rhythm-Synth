@@ -142,6 +142,8 @@ interface EngineState {
 	routing: LFORoutingState;
 	adsr: ADSRState;
 	filterDestination: "filter1" | "filter2" | "direct";
+	randomOctaveRange: number; // 1-4
+	randomBaseOctave: number; // 1-6
 }
 
 interface LFOState {
@@ -611,6 +613,8 @@ const getInitialState = () => {
 			useMelodicSequence: false,
 			sequence: new Array(16).fill(0),
 			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
+			randomOctaveRange: 2,
+			randomBaseOctave: 3,
 		},
 		{
 			id: "engine2",
@@ -648,6 +652,8 @@ const getInitialState = () => {
 			melodicSequence: Array.from({ length: 12 }, () => []), // Initialize with empty arrays for polyphony
 			useMelodicSequence: false,
 			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
+			randomOctaveRange: 2,
+			randomBaseOctave: 3,
 		},
 		{
 			id: "engine3",
@@ -684,7 +690,9 @@ const getInitialState = () => {
 			melodicSequence: Array.from({ length: 7 }, () => []), // Initialize with empty arrays for polyphony
 			useMelodicSequence: false,
 			filterDestination: "filter2" as "filter1" | "filter2" | "direct",
-		},
+			randomOctaveRange: 2,
+			randomBaseOctave: 3,
+		}
 	];
 
 	const enginesWithSequences = engines.map((engine) => {
@@ -2537,7 +2545,23 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 			<div className="control-group-header">
 				<div className="engine-header-top-bar">
 					<div className="engine-title-group">
-						<h2>{engine.name}</h2>
+						<input
+							type="text"
+							className="engine-name-input"
+							value={engine.name}
+							onChange={(e) => onUpdate(engine.id, { name: e.target.value })}
+							style={{
+								background: "transparent",
+								border: "1px solid rgba(255,255,255,0.1)",
+								borderRadius: "4px",
+								color: "inherit",
+								fontSize: "1.2rem",
+								fontWeight: "bold",
+								width: "80px",
+								marginRight: "0.5rem",
+								padding: "0.2rem",
+							}}
+						/>
 						<button
 							className={`small seq-toggle ${
 								engine.sequencerEnabled ? "active" : ""
@@ -2562,20 +2586,6 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 						</button>
 
 					</div>
-					<div className="engine-routing-control">
-						<label>Out:</label>
-						<select
-							value={engine.filterDestination || "filter1"}
-							onChange={(e) =>
-								onUpdate(engine.id, {
-									filterDestination: e.target.value as "filter1" | "filter2" | "direct",
-								})
-							}
-						>
-							<option value="filter1">Filter 1</option>
-							<option value="filter2">Filter 2</option>
-							<option value="direct">Direct</option>
-						</select>
 					</div>
 					<div className="randomizer-buttons-group">
 						<button
@@ -2620,7 +2630,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 						/>
 					</div>
 				)}
-			</div>
+
 
 			<div className="control-row">
 				<label>Seq Melody</label>
@@ -2645,6 +2655,39 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 							Edit
 						</button>
 					)}
+				</div>
+			</div>
+			
+			<div className="control-row">
+				<label>Rnd Range</label>
+				<div className="control-value-wrapper control-with-lock">
+					<input
+						type="range"
+						min="1"
+						max="4"
+						step="1"
+						value={engine.randomOctaveRange}
+						onChange={(e) =>
+							onUpdate(engine.id, { randomOctaveRange: parseInt(e.target.value) })
+						}
+					/>
+					<span>{engine.randomOctaveRange} Oct</span>
+				</div>
+			</div>
+			<div className="control-row">
+				<label>Rnd Base</label>
+				<div className="control-value-wrapper control-with-lock">
+					<input
+						type="range"
+						min="1"
+						max="6"
+						step="1"
+						value={engine.randomBaseOctave}
+						onChange={(e) =>
+							onUpdate(engine.id, { randomBaseOctave: parseInt(e.target.value) })
+						}
+					/>
+					<span>C{engine.randomBaseOctave}</span>
 				</div>
 			</div>
 
@@ -3286,6 +3329,22 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 						/>
 					</div>
 				</div>
+			</div>
+
+			<div className="engine-routing-control-bottom">
+				<label>Output Routing:</label>
+				<select
+					value={engine.filterDestination || "filter1"}
+					onChange={(e) =>
+						onUpdate(engine.id, {
+							filterDestination: e.target.value as "filter1" | "filter2" | "direct",
+						})
+					}
+				>
+					<option value="filter1">Filter 1</option>
+					<option value="filter2">Filter 2</option>
+					<option value="direct">Direct</option>
+				</select>
 			</div>
 		</div>
 	);
@@ -4939,6 +4998,31 @@ const App: React.FC = () => {
 
 					if (shouldChangeMelody) {
 						let possibleNotes = scaleFrequencies.map((f) => f.value);
+						
+						// Filter by Octave Range
+						if (harmonicTuningSystem !== "none" && possibleNotes.length > 0) {
+							const baseOctave = engine.randomBaseOctave || 3;
+							const range = engine.randomOctaveRange || 2;
+							
+							// Calculate min and max frequencies based on C(base) to B(base + range - 1)
+							// C0 is approx 16.35Hz. C3 is approx 130.8Hz. C4 is 261.63Hz.
+							// Formula: f = 440 * 2^((n-69)/12). C4 is 60.
+							// C(octave) note number = (octave + 1) * 12
+							
+							const minNote = (baseOctave + 1) * 12;
+							const maxNote = (baseOctave + 1 + range) * 12 - 1;
+							
+							const minFreq = 440 * Math.pow(2, (minNote - 69) / 12);
+							const maxFreq = 440 * Math.pow(2, (maxNote - 69) / 12);
+							
+							possibleNotes = possibleNotes.filter(f => f >= minFreq && f <= maxFreq);
+							
+							// Fallback if filter removes all notes (shouldn't happen with correct logic but safety first)
+							if (possibleNotes.length === 0) {
+								possibleNotes = scaleFrequencies.map((f) => f.value);
+							}
+						}
+
 						// console.log(`[Randomize] Mode: ${mode}, Tuning: ${harmonicTuningSystem}, Scale: ${scale}, PossibleNotes: ${possibleNotes.length}`);
 						
 						if (possibleNotes.length === 0) {
@@ -4986,7 +5070,22 @@ const App: React.FC = () => {
 						if (!synthLocks.enabled) newSynthState.enabled = getRandomBool(0.8);
 						if (!noiseLocks.enabled) newNoiseState.enabled = getRandomBool(0.3);
 						if (!samplerLocks.enabled) newSamplerState.enabled = getRandomBool(0.3);
+						if (!samplerLocks.enabled) newSamplerState.enabled = getRandomBool(0.3);
 						if (!samplerLocks.granularModeEnabled) newSamplerState.granularModeEnabled = getRandomBool();
+						
+						// Randomize Routing
+						if (!locks.filterDestination) {
+							const destinations = ["filter1", "filter2", "direct"] as const;
+							// Bias towards filter1 for general use
+							const roll = Math.random();
+							if (roll < 0.5) {
+								(engine as any).filterDestination = "filter1";
+							} else if (roll < 0.75) {
+								(engine as any).filterDestination = "filter2";
+							} else {
+								(engine as any).filterDestination = "direct";
+							}
+						}
 					}
 
 					// --- ADSR ---
