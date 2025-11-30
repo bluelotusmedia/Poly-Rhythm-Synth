@@ -650,7 +650,7 @@ const filterTypes: readonly FilterType[] = [
 	"bandpass",
 	"notch",
 ];
-const lfoSyncRates = ["1/32", "1/24", "1/16", "1/12", "1/8", "1/8d", "1/6", "1/4", "1/4d", "1/3", "1/2", "1"];
+const lfoSyncRates = ["1/32", "1/24", "1/16", "1/12", "1/8", "1/8d", "1/6", "1/4", "1/4d", "1/3", "1/2", "1", "2/1", "4/1", "8/1"];
 const sequencerRates = ["1/32", "1/16", "1/8", "1/4"];
 const delaySyncRates = ["1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2"];
 const noiseTypes: readonly NoiseType[] = ["white", "pink", "brown"];
@@ -1153,8 +1153,9 @@ const calculateLFOValue = (lfo: LFOState, time: number, bpm: number): number => 
 
         if (cleanRate.includes("/")) {
             const parts = cleanRate.split("/");
+            const numerator = parseFloat(parts[0]);
             const denominator = parseFloat(parts[1]);
-            if (denominator) noteValueInBeats = 4 / denominator;
+            if (denominator && !isNaN(numerator)) noteValueInBeats = (4 * numerator) / denominator;
         } else {
             const val = parseFloat(cleanRate);
             if (val) noteValueInBeats = 4 / val;
@@ -2096,9 +2097,7 @@ const TopBar: React.FC<TopBarProps> = ({
 		<div className="top-bar">
 			<div className="top-bar-primary-row">
 				<div className="top-bar-left">
-					<div className="top-bar-group presets-group">
-						{children}
-					</div>
+
 
 					<div className="top-bar-group midi-group">
 						<div className="midi-control">
@@ -2265,6 +2264,9 @@ const TopBar: React.FC<TopBarProps> = ({
 			</div>
 
 			<div className="top-bar-secondary-row">
+				<div className="top-bar-group presets-group">
+					{children}
+				</div>
 				<div className="top-bar-group harmonic-group">
 					<div className="control-item">
 						<label>Harmonic Mode</label>
@@ -3630,8 +3632,9 @@ const LfoVisualizer: React.FC<{
 			const cleanRate = syncRate; // LFO rates are not dotted
 			if (cleanRate.includes("/")) {
 				const parts = cleanRate.split("/");
+				const numerator = parseFloat(parts[0]);
 				const denominator = parseFloat(parts[1]);
-				if (denominator) noteValueInBeats = 4 / denominator;
+				if (denominator && !isNaN(numerator)) noteValueInBeats = (4 * numerator) / denominator;
 			} else {
 				const val = parseFloat(cleanRate);
 				if (val) noteValueInBeats = 4 / val;
@@ -3897,14 +3900,40 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 						<label>Draw Shape</label>
 						<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
 							<label style={{ fontSize: '0.8rem', color: '#888' }}>Grid:</label>
-							<input 
-								type="number" 
-								min="0" 
-								max="32" 
-								value={lfoState.gridSize || 0} 
-								onChange={(e) => onUpdate({ gridSize: parseInt(e.target.value) })}
-								style={{ width: '40px', padding: '2px' }}
-							/>
+							<div
+								className="value-display"
+								style={{ 
+									width: '40px', 
+									textAlign: 'center', 
+									cursor: 'ns-resize',
+									background: '#333',
+									padding: '2px 4px',
+									borderRadius: '4px',
+									userSelect: 'none'
+								}}
+								onMouseDown={(e) => {
+									const startY = e.clientY;
+									const startVal = lfoState.gridSize || 0;
+									
+									const handleMove = (moveEvent: MouseEvent) => {
+										const delta = Math.floor((startY - moveEvent.clientY) / 5);
+										const newVal = Math.max(0, Math.min(64, startVal + delta));
+										if (newVal !== lfoState.gridSize) {
+											onUpdate({ gridSize: newVal });
+										}
+									};
+									
+									const handleUp = () => {
+										window.removeEventListener('mousemove', handleMove);
+										window.removeEventListener('mouseup', handleUp);
+									};
+									
+									window.addEventListener('mousemove', handleMove);
+									window.addEventListener('mouseup', handleUp);
+								}}
+							>
+								{lfoState.gridSize || "Off"}
+							</div>
 						</div>
 					</div>
 					<canvas
@@ -3966,9 +3995,9 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 										}
 									};
 
-									// Determine which grid steps to update
-									if (gridSize > 0 && (e.shiftKey || e.altKey)) {
+									if (gridSize > 0) {
 										const stepWidth = len / gridSize;
+										const currentStep = Math.floor(index / stepWidth);
 										
 										// Fibonacci sequence generator
 										const getFibonacciSteps = (max: number) => {
@@ -3983,35 +4012,25 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 											return steps;
 										};
 
-										const fibSteps = (e.shiftKey && e.altKey) ? getFibonacciSteps(gridSize) : null;
-
-										for (let step = 0; step < gridSize; step++) {
-											let shouldUpdate = false;
-											
-											if (e.shiftKey && e.altKey) {
-												// Fibonacci Mode
-												if (fibSteps?.has(step)) shouldUpdate = true;
-											} else if (e.shiftKey) {
-												// Even steps
-												if (step % 2 === 0) shouldUpdate = true;
-											} else if (e.altKey) {
-												// Odd steps
-												if (step % 2 !== 0) shouldUpdate = true;
-											}
-
-											if (shouldUpdate) {
-												const start = Math.floor(step * stepWidth);
-												const end = Math.floor((step + 1) * stepWidth);
-												updateRange(start, Math.min(len, end), normalizedY);
-											}
+										let shouldUpdate = true;
+										
+										if (e.shiftKey && e.altKey) {
+											// Fibonacci Mode
+											const fibSteps = getFibonacciSteps(gridSize);
+											if (!fibSteps.has(currentStep)) shouldUpdate = false;
+										} else if (e.shiftKey) {
+											// Even steps
+											if (currentStep % 2 !== 0) shouldUpdate = false;
+										} else if (e.altKey) {
+											// Odd steps
+											if (currentStep % 2 === 0) shouldUpdate = false;
 										}
-										// Also update the current one to ensure feedback? 
-										// The loop covers all even/odd/fib, so if the current one falls in that category it updates.
-										// If user clicks on an ODD step while holding SHIFT (even), should it update the odd step too?
-										// Usually "paint bucket" logic implies replacing target, but here it's "draw on X".
-										// Let's assume we ALSO update the current cursor position regardless of the pattern, 
-										// or strictly follow the pattern?
-										// Strict pattern is more powerful. If I want to fix an odd step I release shift.
+
+										if (shouldUpdate) {
+											const start = Math.floor(currentStep * stepWidth);
+											const end = Math.floor((currentStep + 1) * stepWidth);
+											updateRange(start, Math.min(len, end), normalizedY);
+										}
 									} else {
 										// Normal drawing
 										currentShape[index] = normalizedY;
@@ -6665,7 +6684,7 @@ const App: React.FC = () => {
 	    
 	        const lastFilterNode = (() => {
 				// console.log("[AudioGraph] Updating. Filter1:", filter1State.enabled, "Filter2:", filter2State.enabled, "Routing:", filterRouting);
-	            if (filterRouting.serial) {
+	            if (filterRouting === 'series') {
 					// Serial: F1 Input -> F1 -> F2 -> Master
 					//         F2 Input -> F2 -> Master
 					//         Direct Input -> Master
@@ -6919,8 +6938,9 @@ const App: React.FC = () => {
                  let noteValueInBeats = 1;
                  if (cleanRate.includes("/")) {
                      const parts = cleanRate.split("/");
+                     const numerator = parseFloat(parts[0]);
                      const denominator = parseFloat(parts[1]);
-                     if (denominator) noteValueInBeats = 4 / denominator;
+                     if (denominator && !isNaN(numerator)) noteValueInBeats = (4 * numerator) / denominator;
                  } else {
                      const val = parseFloat(cleanRate);
                      if (val) noteValueInBeats = 4 / val;
@@ -6947,8 +6967,9 @@ const App: React.FC = () => {
 
 				if (cleanRate.includes("/")) {
 					const parts = cleanRate.split("/");
+					const numerator = parseFloat(parts[0]);
 					const denominator = parseFloat(parts[1]);
-					if (denominator) noteValueInBeats = 4 / denominator;
+					if (denominator && !isNaN(numerator)) noteValueInBeats = (4 * numerator) / denominator;
 				} else {
 					const val = parseFloat(cleanRate);
 					if (val) noteValueInBeats = 4 / val;

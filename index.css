@@ -418,11 +418,20 @@
     color: #888;
 }
 
-.midi-input.sync-wrapper {
+.midi-input-wrapper {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     position: relative; /* Ensure positioning context */
+}
+
+.midi-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #333;
+    transition: background-color 0.05s;
+    box-shadow: 0 0 2px rgba(0,0,0,0.5) inset;
 }
 
 .toggle-group.compact button {
