@@ -14,7 +14,7 @@ import { FACTORY_PRESETS } from "./factoryPresets";
 // --- Type Definitions ---
 type OscillatorType = "sine" | "square" | "sawtooth" | "triangle";
 type NoiseType = "white" | "pink" | "brown";
-type LFO_Shape = "sine" | "square" | "sawtooth" | "triangle" | "ramp";
+type LFO_Shape = "sine" | "square" | "triangle" | "rampDown" | "rampUp" | "random" | "noise" | "perlin" | "custom";
 type FilterType = "lowpass" | "highpass" | "bandpass" | "notch";
 type RandomizeMode = "chaos" | "melodic" | "rhythmic";
 type EngineLayerType = "synth" | "noise" | "sampler";
@@ -155,6 +155,8 @@ interface LFOState {
 	sync: boolean;
 	syncRate: string; // e.g. '1/4', '1/8'
 	routing: LFORoutingState;
+	customShape?: number[]; // Array of values 0-1 for custom LFO
+	smoothing: number; // 0 to 1
 }
 
 // --- Parameter Lock State ---
@@ -457,6 +459,124 @@ interface BottomTabsProps {
 	onToggleLock: (path: string) => void;
 }
 
+// --- Utils ---
+const createPeriodicWaveFromTable = (context: AudioContext, table: number[]): PeriodicWave => {
+	const n = table.length;
+	const real = new Float32Array(n);
+	const imag = new Float32Array(n);
+
+	// DFT
+	for (let k = 0; k < n; k++) {
+		let sumReal = 0;
+		let sumImag = 0;
+		for (let t = 0; t < n; t++) {
+			const angle = (2 * Math.PI * k * t) / n;
+			sumReal += table[t] * Math.cos(angle);
+			sumImag += table[t] * Math.sin(angle);
+		}
+		real[k] = sumReal / n;
+		imag[k] = sumImag / n; 
+	}
+	
+	return context.createPeriodicWave(real, imag, { disableNormalization: false });
+};
+
+// --- Deterministic Noise Utils ---
+const PERM = new Uint8Array([151,160,137,91,90,15,
+131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
+190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,
+88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,
+77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,
+102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,
+135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,
+5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,
+223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,
+129,22,39,253, 19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,
+251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,
+49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,
+138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180]);
+
+function grad(hash: number, x: number) {
+    const h = hash & 15;
+    let grad = 1 + (h & 7); // Gradient value 1-8
+    if ((h & 8) !== 0) grad = -grad; // Randomly invert
+    return (grad * x); // Multiply by distance
+}
+
+// 1D Perlin Noise with wrapping
+// x: position
+// period: period for wrapping (e.g. 1.0)
+function noise1D(x: number, period: number = 1) {
+    // Scale x to period
+    const X = Math.floor(x) % 256;
+    const xf = x - Math.floor(x);
+    
+    // Wrap indices
+    // We want the noise to loop every 'period' units of input?
+    // Actually, usually we pass x in [0, period].
+    // Let's assume input x is 0..1 for one cycle.
+    // We map 0..1 to 0..N (e.g. 4 or 8 bumps).
+    const freq = 4; // 4 bumps per cycle
+    const scaledX = x * freq;
+    
+    const x0 = Math.floor(scaledX);
+    const x1 = x0 + 1;
+    const dx = scaledX - x0;
+    
+    // Wrap indices for seamless loop
+    const i0 = x0 % freq;
+    const i1 = x1 % freq;
+    
+    // Hash
+    // We need a stable permutation. 
+    // Extend PERM to 512? Or just use % 256.
+    const n0 = grad(PERM[i0 % 256], dx);
+    const n1 = grad(PERM[i1 % 256], dx - 1);
+    
+    const u = dx * dx * (3 - 2 * dx);
+    return (n0 + u * (n1 - n0)); // Range roughly -1 to 1
+}
+
+// Pseudo-random (stepped)
+function random1D(x: number) {
+    const step = Math.floor(x * 8); // 8 steps per cycle
+    // Deterministic random based on step
+    const val = Math.sin(step * 12.9898) * 43758.5453;
+    return (val - Math.floor(val)) * 2 - 1; // -1 to 1
+}
+
+// Smooth Noise (Linear interp of random)
+function smoothNoise1D(x: number) {
+    const freq = 8;
+    const scaledX = x * freq;
+    const i0 = Math.floor(scaledX);
+    const i1 = i0 + 1;
+    const dx = scaledX - i0;
+    
+    // Wrap
+    const idx0 = i0 % freq;
+    const idx1 = i1 % freq;
+    
+    // Random vals
+    const r0 = (Math.sin(idx0 * 12.9898) * 43758.5453) % 1;
+    const r1 = (Math.sin(idx1 * 12.9898) * 43758.5453) % 1;
+    
+    // Lerp
+    return r0 + (r1 - r0) * dx; // 0 to 1?
+    // Map to -1 to 1
+    // (0..1) * 2 - 1
+}
+
+const safeSetTargetAtTime = (param: AudioParam, value: number, startTime: number, timeConstant: number) => {
+	if (isFinite(value)) {
+		try {
+			param.setTargetAtTime(value, startTime, timeConstant);
+		} catch (e) {
+			console.warn("Error setting target at time:", e);
+		}
+	}
+};
+
 // --- Constants ---
 const solfeggioFrequenciesData = [
 	{ value: 174, label: "174 Hz - Foundation" },
@@ -514,9 +634,14 @@ const oscillatorTypes: readonly OscillatorType[] = [
 const lfoShapes: readonly LFO_Shape[] = [
 	"sine",
 	"square",
-	"sawtooth",
-	"ramp",
 	"triangle",
+	"rampDown",
+	"rampUp",
+	"triangle",
+	"random",
+	"noise",
+	"perlin",
+	"custom",
 ];
 const filterTypes: readonly FilterType[] = [
 	"lowpass",
@@ -524,7 +649,7 @@ const filterTypes: readonly FilterType[] = [
 	"bandpass",
 	"notch",
 ];
-const lfoSyncRates = ["1/16", "1/8", "1/4", "1/2", "1"];
+const lfoSyncRates = ["1/32", "1/24", "1/16", "1/12", "1/8", "1/8d", "1/6", "1/4", "1/4d", "1/3", "1/2", "1"];
 const sequencerRates = ["1/32", "1/16", "1/8", "1/4"];
 const delaySyncRates = ["1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2"];
 const noiseTypes: readonly NoiseType[] = ["white", "pink", "brown"];
@@ -3486,7 +3611,9 @@ const LfoVisualizer: React.FC<{
 	bpm: number;
 	syncRate: string;
 	depth: number;
-}> = React.memo(({ shape, rate, isSynced, bpm, syncRate, depth }) => {
+	customShape?: number[];
+	smoothing?: number;
+}> = React.memo(({ shape, rate, isSynced, bpm, syncRate, depth, customShape, smoothing }) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 
 	useEffect(() => {
@@ -3512,6 +3639,35 @@ const LfoVisualizer: React.FC<{
 			if (durationInSeconds > 0) lfoFrequency = 1 / durationInSeconds;
 		}
 
+		const getRawValue = (phase: number) => {
+			switch (shape) {
+				case "sine":
+					return Math.sin(phase * 2 * Math.PI);
+				case "square":
+					return phase < 0.5 ? 1 : -1;
+				case "rampDown":
+					return 1 - 2 * phase;
+				case "rampUp":
+					return 2 * phase - 1;
+				case "triangle":
+					return 2 * Math.abs(2 * (phase - Math.floor(phase + 0.5))) - 1;
+				case "random":
+					return random1D(phase);
+				case "noise":
+					return smoothNoise1D(phase) * 2 - 1;
+				case "perlin":
+					return noise1D(phase);
+				case "custom":
+					if (customShape && customShape.length > 0) {
+						const idx = Math.floor(phase * customShape.length);
+						return customShape[idx % customShape.length];
+					}
+					return 0;
+				default:
+					return 0;
+			}
+		};
+
 		const draw = (time: number) => {
 			const { width, height } = canvas;
 			ctx.clearRect(0, 0, width, height);
@@ -3521,44 +3677,52 @@ const LfoVisualizer: React.FC<{
 			ctx.beginPath();
 
 			const lfoRate = lfoFrequency;
+			
+			// Smoothing Logic (1-pole Lowpass Simulation)
+			const maxHarmonic = 1 + (1 - (smoothing || 0)) * 100;
+			const cutoff = Math.max(0.1, lfoRate * maxHarmonic);
+			const tau = 1 / (2 * Math.PI * cutoff);
+			// dt corresponds to the time duration of one pixel width
+			const dt = 1 / (lfoRate * width); 
+			const alpha = dt / (tau + dt);
 
-			for (let x = 0; x < width; x++) {
+			// Pre-roll to settle filter
+			const padding = width; 
+			let val = 0;
+
+			// Initialize val
+			const startPhaseRaw = ((time / 1000) * lfoRate + (-padding / width)) % 1;
+			const startPhase = startPhaseRaw < 0 ? 1 + startPhaseRaw : startPhaseRaw;
+			val = getRawValue(startPhase);
+
+			for (let x = -padding; x < width; x++) {
 				const normalizedX = x / width;
-				const phase = ((time / 1000) * lfoRate + normalizedX) % 1;
+				const phaseRaw = ((time / 1000) * lfoRate + normalizedX) % 1;
+				const phase = phaseRaw < 0 ? 1 + phaseRaw : phaseRaw;
 
-				let y;
-				switch (shape) {
-					case "sine":
-						y = Math.sin(phase * 2 * Math.PI);
-						break;
-					case "square":
-						y = phase < 0.5 ? 1 : -1;
-						break;
-					case "sawtooth":
-						y = 2 * (phase - Math.floor(0.5 + phase));
-						break; // Inverted saw
-					case "ramp":
-						y = 2 * phase - 1;
-						break;
-					case "triangle":
-						y = 2 * Math.abs(2 * (phase - Math.floor(phase + 0.5))) - 1;
-						break;
-					default:
-						y = 0;
+				const target = getRawValue(phase);
+				
+				// Apply smoothing
+				val += alpha * (target - val);
+
+				if (x >= 0) {
+					const scaledY = val * depth;
+					const canvasY = (1 - (scaledY + 1) / 2) * height;
+					if (x === 0) ctx.moveTo(x, canvasY);
+					else ctx.lineTo(x, canvasY);
 				}
-				const scaledY = y * depth;
-				const canvasY = (1 - (scaledY + 1) / 2) * height;
-				if (x === 0) ctx.moveTo(x, canvasY);
-				else ctx.lineTo(x, canvasY);
 			}
 			ctx.stroke();
+
 			animationFrameId = requestAnimationFrame(draw);
 		};
-		animationFrameId = requestAnimationFrame(draw);
-		return () => cancelAnimationFrame(animationFrameId);
-	}, [shape, rate, isSynced, bpm, syncRate, depth]);
 
-	return <canvas ref={canvasRef} className="lfo-visualizer-container" />;
+		animationFrameId = requestAnimationFrame(draw);
+
+		return () => cancelAnimationFrame(animationFrameId);
+	}, [shape, rate, isSynced, bpm, syncRate, depth, customShape, smoothing]);
+
+	return <canvas ref={canvasRef} width={200} height={100} className="lfo-visualizer" />;
 });
 
 const LFOControls: React.FC<LFOControlsProps> = ({
@@ -3617,6 +3781,8 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 				bpm={bpm}
 				syncRate={lfoState.syncRate}
 				depth={lfoState.depth}
+				customShape={lfoState.customShape}
+				smoothing={lfoState.smoothing}
 			/>
 
 			<div className="control-row">
@@ -3705,6 +3871,129 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 					/>
 				</div>
 			</div>
+			<div className="control-row">
+				<label>Smooth</label>
+				<div className="control-with-lock full-width">
+					<input
+						type="range"
+						min="0"
+						max="1"
+						step="0.01"
+						value={lfoState.smoothing || 0}
+						onChange={(e) => onUpdate({ smoothing: parseFloat(e.target.value) })}
+					/>
+					<LockIcon
+						isLocked={getLock("smoothing")}
+						onClick={() => onToggleLock(`lfos.${lfoState.id}.smoothing`)}
+						title="Lock Smoothing"
+					/>
+				</div>
+			</div>
+			
+			{lfoState.shape === 'custom' && (
+				<div className="control-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+					<label style={{ marginBottom: '0.5rem' }}>Draw Shape</label>
+					<canvas
+						width={200}
+						height={100}
+						style={{ 
+							border: '1px solid #444', 
+							background: '#222', 
+							cursor: 'crosshair',
+							borderRadius: '4px'
+						}}
+						onMouseDown={(e) => {
+							const canvas = e.currentTarget;
+							const rect = canvas.getBoundingClientRect();
+							const ctx = canvas.getContext('2d');
+							if (!ctx) return;
+							
+							const len = 256;
+							// Create a local mutable copy of the shape for the duration of the drag
+							const currentShape = [...(lfoState.customShape || new Array(len).fill(0))];
+							// Ensure length is correct
+							if (currentShape.length !== len) {
+								while(currentShape.length < len) currentShape.push(0);
+								currentShape.length = len;
+							}
+
+							let lastIndex: number | null = null;
+							let lastVal: number | null = null;
+
+							const draw = (clientX: number, clientY: number) => {
+								const x = Math.max(0, Math.min(canvas.width, clientX - rect.left));
+								const y = Math.max(0, Math.min(canvas.height, clientY - rect.top));
+								
+								// Normalize Y to -1 to 1 range (inverted because canvas Y is down)
+								const normalizedY = 1 - (y / canvas.height) * 2;
+								
+								// Update custom shape array
+								const index = Math.floor((x / canvas.width) * len);
+								
+								if (index >= 0 && index < len) {
+									currentShape[index] = normalizedY;
+									
+									// Interpolate if we skipped points
+									if (lastIndex !== null && Math.abs(index - lastIndex) > 1) {
+										const start = Math.min(lastIndex, index);
+										const end = Math.max(lastIndex, index);
+										const startVal = lastIndex < index ? lastVal! : normalizedY;
+										const endVal = lastIndex < index ? normalizedY : lastVal!;
+										
+										for (let i = start + 1; i < end; i++) {
+											const t = (i - start) / (end - start);
+											currentShape[i] = startVal + (endVal - startVal) * t;
+										}
+									}
+									
+									onUpdate({ customShape: [...currentShape] });
+									lastIndex = index;
+									lastVal = normalizedY;
+								}
+								
+								// Visual feedback (simple dot for now, the main visualizer updates via state)
+								ctx.fillStyle = '#00f5d4';
+								ctx.fillRect(x, y, 2, 2);
+							};
+							
+							draw(e.clientX, e.clientY);
+							
+							const moveHandler = (moveEvent: MouseEvent) => {
+								draw(moveEvent.clientX, moveEvent.clientY);
+							};
+							
+							const upHandler = () => {
+								window.removeEventListener('mousemove', moveHandler);
+								window.removeEventListener('mouseup', upHandler);
+								lastIndex = null;
+								lastVal = null;
+							};
+							
+							window.addEventListener('mousemove', moveHandler);
+							window.addEventListener('mouseup', upHandler);
+						}}
+						ref={(canvas) => {
+							if (canvas && lfoState.customShape) {
+								const ctx = canvas.getContext('2d');
+								if (ctx) {
+									ctx.clearRect(0, 0, canvas.width, canvas.height);
+									ctx.strokeStyle = '#00f5d4';
+									ctx.lineWidth = 2;
+									ctx.beginPath();
+									const len = lfoState.customShape.length;
+									for (let i = 0; i < len; i++) {
+										const x = (i / len) * canvas.width;
+										const y = ((1 - lfoState.customShape[i]) / 2) * canvas.height;
+										if (i === 0) ctx.moveTo(x, y);
+										else ctx.lineTo(x, y);
+									}
+									ctx.stroke();
+								}
+							}
+						}}
+					/>
+				</div>
+			)}
 		</div>
 	);
 };
@@ -4628,7 +4917,7 @@ const App: React.FC = () => {
 	const masterAnalyserNodeRef = useRef<AnalyserNode | null>(null);
 	const masterBusRef = useRef<GainNode | null>(null);
 	const lfoNodesRef = useRef<
-		Map<string, { lfoNode: OscillatorNode; depthGain: GainNode }>
+		Map<string, { lfoNode: OscillatorNode; depthGain: GainNode; smoothingFilter: BiquadFilterNode; cachedShape: LFO_Shape | null }>
 	>(new Map());
 	const lfoRoutingBussesRef = useRef<LfoRoutingBusses | null>(null);
 	const samplesRef = useRef<Map<string, AudioBuffer>>(new Map());
@@ -5138,8 +5427,13 @@ const App: React.FC = () => {
 						newState.syncRate = getRandomElement(lfoSyncRates);
 					if (shouldChangeMelody && !locks.depth)
 						newState.depth = getRandom(0.1, 1.0);
-					if (shouldChangeMelody && !locks.shape)
+					if (shouldChangeMelody && !locks.shape) {
 						newState.shape = getRandomElement(lfoShapes);
+						if (newState.shape === 'custom') {
+							newState.customShape = Array.from({ length: 256 }, () => Math.random() * 2 - 1);
+						}
+					}
+					if (mode === "chaos" && !locks.smoothing) newState.smoothing = getRandom(0, 1);
 					if (mode === "chaos") newState.routing = randomizeRouting();
 
 					return { ...lfo, ...newState };
@@ -5406,10 +5700,17 @@ const App: React.FC = () => {
 			// FIX: Explicitly type `lfo` as `LFOState` to resolve type inference issue.
             initialAppState.lfos.forEach((lfo: LFOState) => {
                 const lfoNode = context.createOscillator();
-                const depthGain = context.createGain();
-                lfoNode.connect(depthGain);
+                const depthGain = context.createGain(); // Define depthGain here
+                // Create Smoothing Filter
+                const smoothingFilter = context.createBiquadFilter();
+                smoothingFilter.type = "lowpass";
+                smoothingFilter.frequency.value = 20000; // Default open
+                
+                lfoNode.connect(smoothingFilter);
+                smoothingFilter.connect(depthGain);
+                
                 lfoNode.start();
-                lfoNodesRef.current.set(lfo.id, { lfoNode, depthGain });
+                lfoNodesRef.current.set(lfo.id, { lfoNode, depthGain, smoothingFilter, cachedShape: null });
             });
 
 
@@ -6446,8 +6747,91 @@ const App: React.FC = () => {
             if (!lfoNodes) return;
 
             const { lfoNode, depthGain } = lfoNodes;
-            lfoNode.type = lfo.shape === 'ramp' ? 'sawtooth' : lfo.shape; // Ramp is a sawtooth
+            const cached = lfoNodes as any; // Cast to access cachedShape
+
+			// Handle Waveform Shape
+			// Check if we need to update the waveform
+			if (lfo.shape !== cached.cachedShape || lfo.shape === 'custom') {
+				// For custom, we always update if customShape changes? 
+				// Ideally check customShape equality too, but for now update custom always.
+				// For others, only update if shape changed.
+				
+				if (lfo.shape === 'custom') {
+					if (lfo.customShape && lfo.customShape.length > 0) {
+						const wave = createPeriodicWaveFromTable(audioContext, lfo.customShape);
+						lfoNode.setPeriodicWave(wave);
+					}
+				} else if (lfo.shape === 'random') {
+					const len = 256;
+					const table = new Float32Array(len);
+					for(let i=0; i<len; i++) table[i] = random1D(i/len);
+					const wave = createPeriodicWaveFromTable(audioContext, Array.from(table));
+					lfoNode.setPeriodicWave(wave);
+				} else if (lfo.shape === 'noise') {
+					const len = 256;
+					const table = new Float32Array(len);
+					for(let i=0; i<len; i++) table[i] = smoothNoise1D(i/len) * 2 - 1;
+					const wave = createPeriodicWaveFromTable(audioContext, Array.from(table));
+					lfoNode.setPeriodicWave(wave);
+				} else if (lfo.shape === 'perlin') {
+					const len = 256;
+					const table = new Float32Array(len);
+					for(let i=0; i<len; i++) table[i] = noise1D(i/len);
+					const wave = createPeriodicWaveFromTable(audioContext, Array.from(table));
+					lfoNode.setPeriodicWave(wave);
+				} else if (lfo.shape === 'rampUp') {
+					const len = 256;
+					const table = new Float32Array(len);
+					for(let i=0; i<len; i++) table[i] = -1 + 2 * (i / len); 
+					const wave = createPeriodicWaveFromTable(audioContext, Array.from(table));
+					lfoNode.setPeriodicWave(wave);
+				} else if (lfo.shape === 'rampDown') {
+					lfoNode.type = 'sawtooth';
+				} else {
+					if (['sine', 'square', 'triangle'].includes(lfo.shape)) {
+						lfoNode.type = lfo.shape as OscillatorType;
+					}
+				}
+				cached.cachedShape = lfo.shape;
+			}
+
             depthGain.gain.setTargetAtTime(lfo.depth, now, 0.01);
+            
+            // Update Smoothing Filter
+            // Cutoff relative to rate:
+            // Smoothing 0 -> High cutoff (pass all)
+            // Smoothing 1 -> Low cutoff (fundamental)
+            // Formula: cutoff = rate * (1 + (1-smoothing) * 50)
+            // If rate is 1Hz:
+            // S=0 -> 51Hz (passes up to 50th harmonic - pretty sharp)
+            // S=1 -> 1Hz (sine wave)
+            // S=0.5 -> 26Hz
+            
+            // Calculate effective rate (Hz)
+            let currentRate = lfo.rate;
+            if (lfo.sync) {
+                 // Calculate synced rate
+                 const cleanRate = lfo.syncRate;
+                 let noteValueInBeats = 1;
+                 if (cleanRate.includes("/")) {
+                     const parts = cleanRate.split("/");
+                     const denominator = parseFloat(parts[1]);
+                     if (denominator) noteValueInBeats = 4 / denominator;
+                 } else {
+                     const val = parseFloat(cleanRate);
+                     if (val) noteValueInBeats = 4 / val;
+                 }
+                 const durationInSeconds = noteValueInBeats * (60 / Math.max(1, bpm));
+                 if (durationInSeconds > 0) currentRate = 1 / durationInSeconds;
+            }
+            
+            const maxHarmonic = 1 + (1 - (lfo.smoothing || 0)) * 100;
+            const cutoff = Math.max(0.1, currentRate * maxHarmonic);
+            
+            const { smoothingFilter } = lfoNodes as any;
+            if (smoothingFilter) {
+                 safeSetTargetAtTime(smoothingFilter.frequency, cutoff, now, 0.1);
+            }
 
 			let lfoFrequency = lfo.rate;
 			if (lfo.sync) {
@@ -6618,15 +7002,7 @@ const App: React.FC = () => {
 			const audioNow = audioContext.currentTime;
 			const rampTime = 0.01;
 
-			const safeSetTargetAtTime = (param: AudioParam, value: number, startTime: number, timeConstant: number) => {
-				if (isFinite(value)) {
-					try {
-						param.setTargetAtTime(value, startTime, timeConstant);
-					} catch (e) {
-						console.warn("Error setting target at time:", e);
-					}
-				}
-			};
+
 
 			// Direct AudioParam manipulation (for performance)
 			if (startState && targetState) {

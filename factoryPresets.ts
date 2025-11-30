@@ -153,9 +153,9 @@ const createDefaultState = () => ({
         }
     ],
     lfos: [
-        { id: "lfo1", name: "LFO 1", rate: 1, depth: 0.5, shape: "sine", sync: true, syncRate: "1/4", routing: { ...DEFAULT_ROUTING } },
-        { id: "lfo2", name: "LFO 2", rate: 0.5, depth: 0.5, shape: "triangle", sync: true, syncRate: "1/2", routing: { ...DEFAULT_ROUTING } },
-        { id: "lfo3", name: "LFO 3", rate: 0.25, depth: 0.5, shape: "sawtooth", sync: true, syncRate: "1/1", routing: { ...DEFAULT_ROUTING } },
+        { id: "lfo1", name: "LFO 1", rate: 1, depth: 0.5, shape: "sine", sync: true, syncRate: "1/4", routing: { ...DEFAULT_ROUTING }, smoothing: 0 },
+        { id: "lfo2", name: "LFO 2", rate: 0.5, depth: 0.5, shape: "triangle", sync: true, syncRate: "1/2", routing: { ...DEFAULT_ROUTING }, smoothing: 0 },
+        { id: "lfo3", name: "LFO 3", rate: 0.25, depth: 0.5, shape: "rampDown", sync: true, syncRate: "1/1", routing: { ...DEFAULT_ROUTING }, smoothing: 0 },
     ],
     filter1: { enabled: true, type: "lowpass", cutoff: 2000, resonance: 1 },
     filter2: { enabled: true, type: "highpass", cutoff: 200, resonance: 1 },
@@ -429,7 +429,7 @@ export const FACTORY_PRESETS = [
             
             // Pitch rising LFO
             s.lfos[0].rate = 0.05; // Very Slow rise
-            s.lfos[0].shape = "sawtooth"; // Ramp up
+            s.lfos[0].shape = "rampDown"; // Ramp up
             s.lfos[0].depth = 0.45; // Modulation +/- 450Hz (approx 100-1000Hz range)
             s.lfos[0].routing = { ...DEFAULT_ROUTING, engine1SynthFreq: true };
             
