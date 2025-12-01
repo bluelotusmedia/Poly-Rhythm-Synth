@@ -2094,6 +2094,8 @@ const TopBar: React.FC<TopBarProps> = ({
 									className="midi-indicator"
 									style={{
 										backgroundColor: midiActivity ? "var(--secondary-color)" : "#333",
+										flexShrink: 0,
+										zIndex: 10,
 									}}
 									title="MIDI Note Activity"
 								/>
@@ -2101,6 +2103,7 @@ const TopBar: React.FC<TopBarProps> = ({
 									value={selectedMidiInputId || ""}
 									onChange={(e) => onMidiInputChange(e.target.value)}
 									disabled={midiInputs.length === 0}
+									style={{ maxWidth: '120px' }}
 								>
 									<option value="">
 										{midiInputs.length > 0 ? "Select Device" : "No Devices"}
@@ -2121,6 +2124,8 @@ const TopBar: React.FC<TopBarProps> = ({
 									className="midi-indicator"
 									style={{
 										backgroundColor: midiClockActivity ? "var(--secondary-color)" : "#333",
+										flexShrink: 0,
+										zIndex: 10,
 									}}
 									title="MIDI Clock Activity"
 								/>
@@ -2128,6 +2133,7 @@ const TopBar: React.FC<TopBarProps> = ({
 									value={selectedMidiClockInputId || ""}
 									onChange={(e) => onMidiClockInputChange(e.target.value)}
 									disabled={midiInputs.length === 0}
+									style={{ maxWidth: '120px' }}
 								>
 									<option value="">
 										{midiInputs.length > 0 ? "Select Device" : "No Devices"}
@@ -2184,23 +2190,23 @@ const TopBar: React.FC<TopBarProps> = ({
 							)}
 							{clockSource === "link" && (
 								<div className="control-value-wrapper" style={{ marginLeft: '0.5rem' }}>
-									<label style={{ fontSize: '0.7rem', marginRight: '4px' }}>Offset</label>
+									<label style={{ fontSize: '0.65rem', marginRight: '2px', color: '#888' }}>Offset</label>
 									<input
 										type="range"
 										min="-200"
 										max="200"
 										value={linkLatency}
 										onChange={(e) => setLinkLatency(parseInt(e.target.value))}
-										style={{ width: '60px' }}
+										style={{ width: '40px' }}
 									/>
-									<span style={{ fontSize: '0.7rem', minWidth: '30px' }}>{linkLatency}ms</span>
+									<span style={{ fontSize: '0.65rem', minWidth: '25px', textAlign: 'right' }}>{linkLatency}ms</span>
 								</div>
 							)}
 							{clockSource === "link" && (
 								<button 
 									className="small"
 									onClick={() => onClockSourceChange("internal")}
-									style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '2px 4px' }}
+									style={{ marginLeft: '0.25rem', fontSize: '0.65rem', padding: '1px 3px', height: 'auto', minWidth: 'auto' }}
 								>
 									Exit
 								</button>

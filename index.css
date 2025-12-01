@@ -330,7 +330,7 @@
     justify-content: space-between;
     align-items: center;
     width: 100%;
-    gap: 1rem;
+    gap: 0.75rem;
 }
 
 .top-bar-secondary-row {
@@ -346,7 +346,7 @@
 .top-bar-left, .top-bar-center, .top-bar-right {
     display: flex;
     align-items: center;
-    gap: 1.5rem;
+    gap: 1rem;
 }
 
 .top-bar-center {

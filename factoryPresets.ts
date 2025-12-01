@@ -54,6 +54,13 @@ const DEFAULT_ROUTING = {
 	engine3GrainDensity: false,
 	engine3GrainPosition: false,
 	engine3GrainJitter: false,
+	// Rate Modulation
+	engine1Rate: false,
+	engine2Rate: false,
+	engine3Rate: false,
+	lfo1Rate: false,
+	lfo2Rate: false,
+	lfo3Rate: false,
 };
 
 // Helper to create a default state to avoid repetition
@@ -222,49 +229,60 @@ export const FACTORY_PRESETS = [
             s.engines[0].synth.oscillatorType = "sine";
             s.engines[0].synth.frequency = 50;
             s.engines[0].adsr = { attack: 0.001, decay: 0.1, sustain: 0, release: 0.1 };
-            s.engines[0].sequencerRate = "1/8";
+            s.engines[0].sequencerRate = "1/16";
             s.engines[0].sequencerSteps = 16;
-            s.engines[0].sequencerPulses = 7;
-            s.engines[0].sequencerRotate = 7;
-            s.engines[0].sequence = rotatePattern(generateEuclideanPattern(16, 7), 7);
+            s.engines[0].sequencerPulses = 0;
+            s.engines[0].sequencerRotate = 0;
+            // Classic Breakbeat Kick Pattern
+            s.engines[0].sequence = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0];
             s.engines[0].filterDestination = "direct";
-            s.engines[0].effects = { distortion: 0.2, delayTime: 0, delayFeedback: 0 }; // Slight saturation
+            s.engines[0].effects = { distortion: 0.1, delayTime: 0, delayFeedback: 0 };
 
             // Snare (Engine 2)
             s.engines[1].name = "Snare";
             s.engines[1].synth.enabled = true;
             s.engines[1].synth.oscillatorType = "triangle";
-            s.engines[1].synth.frequency = 200;
+            s.engines[1].synth.frequency = 180;
             s.engines[1].noise.enabled = true;
-            s.engines[1].noise.noiseType = "pink";
-            s.engines[1].adsr = { attack: 0.001, decay: 0.15, sustain: 0, release: 0.1 };
+            s.engines[1].noise.noiseType = "white";
+            s.engines[1].noise.volume = 0.3;
+            s.engines[1].adsr = { attack: 0.001, decay: 0.12, sustain: 0, release: 0.05 };
+            s.engines[1].sequencerRate = "1/16";
             s.engines[1].sequencerSteps = 16;
-            s.engines[1].sequencerPulses = 2;
-            s.engines[1].sequencerRotate = 5;
-            s.engines[1].sequence = rotatePattern(generateEuclideanPattern(16, 2), 5);
+            s.engines[1].sequencerPulses = 0;
+            s.engines[1].sequencerRotate = 0;
+            // Classic Backbeat Snare (5 and 13)
+            s.engines[1].sequence = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
             s.engines[1].filterDestination = "direct";
 
-            // Hats (Engine 3)
-            s.engines[2].name = "Hats";
+            // Bass (Engine 3) - Reese Style
+            s.engines[2].name = "Reese";
             s.engines[2].synth.enabled = true;
-            s.engines[2].synth.oscillatorType = "triangle";
-            s.engines[2].synth.frequency = 880;
-            s.engines[2].noise.enabled = true;
-            s.engines[2].noise.noiseType = "white";
-            s.engines[2].adsr = { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 };
+            s.engines[2].synth.oscillatorType = "sawtooth";
+            s.engines[2].synth.frequency = 55;
+            s.engines[2].adsr = { attack: 0.05, decay: 0.2, sustain: 0.8, release: 0.3 };
+            s.engines[2].sequencerRate = "1/16";
             s.engines[2].sequencerSteps = 16;
-            s.engines[2].sequencerPulses = 16;
-            s.engines[2].sequencerRotate = 1;
-            s.engines[2].sequence = rotatePattern(generateEuclideanPattern(16, 16), 1);
-            s.engines[2].filterDestination = "filter2";
+            s.engines[2].sequencerPulses = 0;
+            s.engines[2].sequence = [1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0];
+            s.engines[2].filterDestination = "filter1";
             
-            s.filter2.type = "highpass";
-            s.filter2.cutoff = 6000;
+            s.filter1.type = "lowpass";
+            s.filter1.cutoff = 800;
+            s.filter1.resonance = 2;
+
+            // LFO 1 for Bass Wobble
+            s.lfos[0].rate = 1.5;
+            s.lfos[0].sync = true;
+            s.lfos[0].syncRate = "3/8";
+            s.lfos[0].shape = "sine";
+            s.lfos[0].depth = 0.4;
+            s.lfos[0].routing = { ...DEFAULT_ROUTING, filter1Cutoff: true };
 
             // Master Effects
             s.masterEffects = [
-                { id: "comp", type: "distortion", enabled: true, params: { distortion: { mode: "soft clip", amount: 0.1 } } },
-                { id: "verb", type: "reverb", enabled: true, params: { reverb: { decay: 1.5, mix: 0.1 } } }
+                { id: "comp", type: "distortion", enabled: true, params: { distortion: { mode: "soft clip", amount: 0.15 } } },
+                { id: "verb", type: "reverb", enabled: true, params: { reverb: { decay: 1.2, mix: 0.15 } } }
             ];
 
             return s;
@@ -326,7 +344,7 @@ export const FACTORY_PRESETS = [
         data: (() => {
             const s = createDefaultState();
             s.bpm = 140;
-            // Wobble Bass
+            // Wobble Bass (Engine 1)
             s.engines[0].name = "Wobble";
             s.engines[0].synth.oscillatorType = "sawtooth";
             s.engines[0].synth.frequency = 55;
@@ -336,22 +354,33 @@ export const FACTORY_PRESETS = [
             
             s.filter1.cutoff = 1500;
             s.filter1.resonance = 12;
+            s.filter1.type = "lowpass";
 
-            // LFO 1: The Wobble
+            // LFO 1: The Wobble (Filter Cutoff)
+            s.lfos[0].name = "Wobble LFO";
             s.lfos[0].shape = "sine";
             s.lfos[0].sync = true;
-            s.lfos[0].syncRate = "1/4"; // Default speed
+            s.lfos[0].syncRate = "1/4"; // Base speed
             s.lfos[0].depth = 0.8;
             s.lfos[0].routing = { ...DEFAULT_ROUTING, filter1Cutoff: true };
 
-            // Sub
+            // LFO 2: The Modulator (Modulates LFO 1 Rate)
+            s.lfos[1].name = "Rate Mod";
+            s.lfos[1].shape = "triangle";
+            s.lfos[1].sync = true;
+            s.lfos[1].syncRate = "1/1"; // Slow cycle
+            s.lfos[1].depth = 0.8; // High depth to sweep the rate
+            // Route LFO 2 to LFO 1 Rate
+            s.lfos[1].routing = { ...DEFAULT_ROUTING, lfo1Rate: true };
+
+            // Sub (Engine 2)
             s.engines[1].name = "Sub";
             s.engines[1].synth.oscillatorType = "sine";
             s.engines[1].synth.frequency = 55;
             s.engines[1].sequence = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
             s.engines[1].filterDestination = "direct";
 
-            // Drums
+            // Drums (Engine 3)
             s.engines[2].name = "Drums";
             s.engines[2].synth.enabled = false;
             s.engines[2].noise.enabled = true;
@@ -361,12 +390,14 @@ export const FACTORY_PRESETS = [
             s.engines[2].filterDestination = "direct";
 
             s.masterEffects = [
-                { id: "dist", type: "distortion", enabled: true, params: { distortion: { mode: "hard clip", amount: 0.3 } } }
+                { id: "dist", type: "distortion", enabled: true, params: { distortion: { mode: "hard clip", amount: 0.3 } } },
+                { id: "verb", type: "reverb", enabled: true, params: { reverb: { decay: 1.0, mix: 0.1 } } }
             ];
 
             return s;
         })()
     },
+
     {
         name: "Factory: Acid House Bass",
         timestamp: Date.now(),
