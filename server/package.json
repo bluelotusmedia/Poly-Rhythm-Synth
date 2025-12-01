@@ -1,0 +1,14 @@
+{
+  "name": "poly-rhythm-synth-server",
+  "version": "1.0.0",
+  "description": "Node.js backend for Poly Rhythm Synth Ableton Link integration",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "abletonlink": "*",
+    "nanotimer": "^0.3.15",
+    "socket.io": "^4.7.2"
+  }
+}

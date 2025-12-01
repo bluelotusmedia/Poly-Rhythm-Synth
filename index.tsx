@@ -10,6 +10,7 @@ import React, {
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import { FACTORY_PRESETS } from "./factoryPresets";
+import { io, Socket } from "socket.io-client";
 
 // --- Type Definitions ---
 type OscillatorType = "sine" | "square" | "sawtooth" | "triangle";
@@ -144,6 +145,8 @@ interface EngineState {
 	filterDestination: "filter1" | "filter2" | "direct";
 	randomOctaveRange: number; // 1-4
 	randomBaseOctave: number; // 1-6
+	rateModSource: string;
+	rateModDepth: number;
 }
 
 interface LFOState {
@@ -296,6 +299,7 @@ interface CircularVisualizerSequencerProps {
 	rotate: number;
 	currentStep: number;
 	isTransportPlaying: boolean;
+	sequence?: number[];
 }
 
 interface EngineControlsProps {
@@ -323,64 +327,7 @@ interface EngineControlsProps {
 	onSnapToScale: (engineId: string) => void;
 }
 
-interface TopBarProps {
-	masterVolume: number;
-	setMasterVolume: (volume: number) => void;
-	bpm: number;
-	setBPM: (bpm: number) => void;
-	isTransportPlaying: boolean;
-	onToggleTransport: () => void;
-	onPanic: () => void;
-	midiInputs: MIDIInput[];
-	selectedMidiInputId: string | null;
-	onMidiInputChange: (id: string) => void;
-	selectedMidiClockInputId: string | null;
-	onMidiClockInputChange: (id: string) => void;
-	midiActivity: boolean;
-	midiClockActivity: boolean;
-	lockState: LockState;
-	onToggleLock: (path: string) => void;
-	clockSource: "internal" | "midi";
-	onClockSourceChange: (source: "internal" | "midi") => void;
-	harmonicTuningSystem: TuningSystem;
-	setHarmonicTuningSystem: (system: TuningSystem) => void;
-	scale: ScaleName;
-	setScale: (scale: ScaleName) => void;
-	transpose: number;
-	setTranspose: (transpose: number) => void;
-}
 
-interface MainControlPanelProps {
-	onRandomize: (mode: RandomizeMode, scope: string) => void;
-	onInitializeAll: () => void;
-	isMorphing: boolean;
-	morphTime: number;
-	setMorphTime: (time: number) => void;
-	isMorphSynced: boolean;
-	setIsMorphSynced: (synced: boolean) => void;
-	morphSyncRateIndex: number;
-	setMorphSyncRateIndex: (index: number) => void;
-	voicingMode: VoicingMode;
-	setVoicingMode: (mode: VoicingMode) => void;
-	glideTime: number;
-	setGlideTime: (time: number) => void;
-	isGlideSynced: boolean;
-	setIsGlideSynced: (synced: boolean) => void;
-	glideSyncRateIndex: number;
-	setGlideSyncRateIndex: (index: number) => void;
-	glideSyncRates: string[];
-	syncRates: string[];
-	isGlobalAutoRandomEnabled: boolean;
-	setIsGlobalAutoRandomEnabled: (enabled: boolean) => void;
-	globalAutoRandomInterval: number;
-	setGlobalAutoRandomInterval: (interval: number) => void;
-	globalAutoRandomMode: RandomizeMode;
-	setGlobalAutoRandomMode: (mode: RandomizeMode) => void;
-	isAutoRandomSynced: boolean;
-	setIsAutoRandomSynced: (synced: boolean) => void;
-	autoRandomSyncRateIndex: number;
-	setAutoRandomSyncRateIndex: (index: number) => void;
-}
 
 interface FilterState {
 	enabled: boolean;
@@ -741,6 +688,8 @@ const getInitialState = () => {
 			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
 			randomOctaveRange: 2,
 			randomBaseOctave: 3,
+			rateModSource: "none",
+			rateModDepth: 0,
 		},
 		{
 			id: "engine2",
@@ -780,6 +729,8 @@ const getInitialState = () => {
 			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
 			randomOctaveRange: 2,
 			randomBaseOctave: 3,
+			rateModSource: "none",
+			rateModDepth: 0,
 		},
 		{
 			id: "engine3",
@@ -818,6 +769,8 @@ const getInitialState = () => {
 			filterDestination: "filter2" as "filter1" | "filter2" | "direct",
 			randomOctaveRange: 2,
 			randomBaseOctave: 3,
+			rateModSource: "none",
+			rateModDepth: 0,
 		}
 	];
 
@@ -1182,11 +1135,11 @@ const calculateLFOValue = (lfo: LFOState, time: number, bpm: number): number => 
         case "square":
             y = phase < 0.5 ? 1 : -1;
             break;
-        case "sawtooth":
-            y = 1 - 2 * phase; // Correct sawtooth
+        case "rampDown":
+            y = 1 - 2 * phase; // Sawtooth down
             break;
-        case "ramp":
-            y = 2 * phase - 1;
+        case "rampUp":
+            y = 2 * phase - 1; // Sawtooth up (ramp)
             break;
         case "triangle":
             y = 2 * (1 - Math.abs(2 * phase - 1)) - 1;
@@ -1613,11 +1566,20 @@ const CircularVisualizerSequencer: React.FC<
 	rotate,
 	currentStep,
 	isTransportPlaying,
+	sequence,
 }) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const pattern = useMemo(
-		() => rotatePattern(generateEuclideanPattern(steps, pulses), rotate),
-		[steps, pulses, rotate]
+		() => {
+			// If sequence is provided, it is already rotated by the engine state logic.
+			if (sequence && sequence.length > 0) {
+				return sequence;
+			}
+			// If no sequence provided (fallback), generate and rotate locally.
+			const basePattern = generateEuclideanPattern(steps, pulses);
+			return rotatePattern(basePattern, rotate);
+		},
+		[steps, pulses, rotate, sequence]
 	);
 
 	useEffect(() => {
@@ -2020,8 +1982,9 @@ interface TopBarProps {
 	midiClockActivity: boolean;
 	lockState: LockState;
 	onToggleLock: (path: string) => void;
-	clockSource: "internal" | "midi";
-	onClockSourceChange: (source: "internal" | "midi") => void;
+	clockSource: "internal" | "midi" | "link";
+	onClockSourceChange: (source: "internal" | "midi" | "link") => void;
+	linkPhase?: number;
 	children?: React.ReactNode;
 	harmonicTuningSystem: TuningSystem;
 	setHarmonicTuningSystem: (system: TuningSystem) => void;
@@ -2040,7 +2003,8 @@ interface TopBarProps {
 	glideSyncRates: string[];
 	onRandomize: (mode: RandomizeMode, scope: string) => void;
 	onInitializeAll: () => void;
-
+	linkLatency: number;
+	setLinkLatency: (latency: number) => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({
@@ -2062,6 +2026,7 @@ const TopBar: React.FC<TopBarProps> = ({
 	onToggleLock,
 	clockSource,
 	onClockSourceChange,
+	linkPhase,
 	children,
 	harmonicTuningSystem,
 	setHarmonicTuningSystem,
@@ -2080,6 +2045,8 @@ const TopBar: React.FC<TopBarProps> = ({
 	glideSyncRates,
 	onRandomize,
 	onInitializeAll,
+	linkLatency,
+	setLinkLatency,
 }) => {
 	const handleDebug = () => {
 		console.log("--- DEBUG STATE ---");
@@ -2158,14 +2125,66 @@ const TopBar: React.FC<TopBarProps> = ({
 					<div className="top-bar-group clock-source-group">
 						<div className="control-item">
 							<label>Clock</label>
-							<select
-								value={clockSource}
-								onChange={(e) => onClockSourceChange(e.target.value as "internal" | "midi")}
-								className="clock-source-select"
-							>
-								<option value="internal">INT</option>
-								<option value="midi">MIDI</option>
-							</select>
+							{clockSource === "link" ? (
+								<div className="control-value-wrapper" style={{ width: '80px', justifyContent: 'center' }}>
+									<div 
+										style={{ 
+											width: '100%', 
+											height: '10px', 
+											background: '#333', 
+											position: 'relative',
+											borderRadius: '2px',
+											overflow: 'hidden'
+										}}
+										title="Cycle Position"
+									>
+										<div 
+											style={{
+												position: 'absolute',
+												left: `${(linkPhase || 0) * 100}%`,
+												top: 0,
+												bottom: 0,
+												width: '4px',
+												background: 'var(--primary-color)',
+												transform: 'translateX(-50%)'
+											}}
+										/>
+									</div>
+								</div>
+							) : (
+								<select
+									value={clockSource}
+									onChange={(e) => onClockSourceChange(e.target.value as "internal" | "midi" | "link")}
+									className="clock-source-select"
+								>
+									<option value="internal">INT</option>
+									<option value="midi">MIDI</option>
+									<option value="link">LINK</option>
+								</select>
+							)}
+							{clockSource === "link" && (
+								<div className="control-value-wrapper" style={{ marginLeft: '0.5rem' }}>
+									<label style={{ fontSize: '0.7rem', marginRight: '4px' }}>Offset</label>
+									<input
+										type="range"
+										min="-200"
+										max="200"
+										value={linkLatency}
+										onChange={(e) => setLinkLatency(parseInt(e.target.value))}
+										style={{ width: '60px' }}
+									/>
+									<span style={{ fontSize: '0.7rem', minWidth: '30px' }}>{linkLatency}ms</span>
+								</div>
+							)}
+							{clockSource === "link" && (
+								<button 
+									className="small"
+									onClick={() => onClockSourceChange("internal")}
+									style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '2px 4px' }}
+								>
+									Exit
+								</button>
+							)}
 						</div>
 					</div>
 
@@ -2181,7 +2200,7 @@ const TopBar: React.FC<TopBarProps> = ({
 									onChange={(e) => setBPM(parseInt(e.target.value))}
 									style={{ width: '80px' }}
 								/>
-								<span style={{ minWidth: '30px' }}>{bpm}</span>
+								<span style={{ minWidth: '30px' }}>{bpm.toFixed(1)}</span>
 							</div>
 						</div>
 
@@ -2491,7 +2510,6 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 								onChange={(e) =>
 									setGlobalAutoRandomMode(e.target.value as RandomizeMode)
 								}
-								disabled={!isGlobalAutoRandomEnabled}
 								style={{ width: '80px' }}
 								onClick={(e) => e.stopPropagation()}
 							>
@@ -2758,6 +2776,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 							rotate={engine.sequencerRotate}
 							currentStep={currentStep}
 							isTransportPlaying={isTransportPlaying}
+							sequence={engine.sequence}
 						/>
 					</div>
 				)}
@@ -2787,6 +2806,34 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 							Edit
 						</button>
 					)}
+				</div>
+			</div>
+			
+			<div className="control-row">
+				<label>Rate Mod</label>
+				<div className="control-value-wrapper" style={{ gap: '0.5rem' }}>
+					<select
+						value={engine.rateModSource || "none"}
+						onChange={(e) => onUpdate(engine.id, { rateModSource: e.target.value })}
+						style={{ width: '80px' }}
+					>
+						<option value="none">None</option>
+						<option value="lfo1">LFO 1</option>
+						<option value="lfo2">LFO 2</option>
+						<option value="lfo3">LFO 3</option>
+						<option value="engine1">Eng 1</option>
+						<option value="engine2">Eng 2</option>
+						<option value="engine3">Eng 3</option>
+					</select>
+					<input
+						type="range"
+						min="0"
+						max="1"
+						step="0.01"
+						value={engine.rateModDepth || 0}
+						onChange={(e) => onUpdate(engine.id, { rateModDepth: parseFloat(e.target.value) })}
+						style={{ width: '60px' }}
+					/>
 				</div>
 			</div>
 			
@@ -4743,7 +4790,7 @@ const MasterEffects: React.FC<MasterEffectsProps> = ({
 	const handleDragEnd = () => {
 		if (draggedEffect && dropIndex !== null) {
 			const items = Array.from(effects);
-			const fromIndex = items.findIndex((e) => e.id === (draggedEffect as MasterEffect).id);
+			const fromIndex = items.findIndex((e) => (e as MasterEffect).id === (draggedEffect as MasterEffect).id);
 			const [removed] = items.splice(fromIndex, 1);
 			items.splice(dropIndex, 0, removed);
 			setEffects(items);
@@ -5031,6 +5078,10 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 const App: React.FC = () => {
 	const [isInitialized, setIsInitialized] = useState(false);
 	const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
+	const [linkLatency, setLinkLatency] = useState(0);
+	
+	// Refs
+	const lastLocalStartRef = useRef<number>(0);
 	const audioNodesRef = useRef<Map<string, EngineAudioNodes>>(new Map());
 	const filterNodesRef = useRef<{
 		filter1: FilterNodes;
@@ -5083,7 +5134,10 @@ const App: React.FC = () => {
 
 
 	const [masterVolume, setMasterVolume] = useState(0.7);
-	const [clockSource, setClockSource] = useState<"internal" | "midi">("internal");
+	const [clockSource, setClockSource] = useState<"internal" | "midi" | "link">("internal");
+	const [linkPhase, setLinkPhase] = useState(0);
+	const linkSocketRef = useRef<Socket | null>(null);
+
 	const [isTransportPlaying, setIsTransportPlaying] = useState(false);
 	const [sequencerCurrentSteps, setSequencerCurrentSteps] = useState<Map<string, number>>(new Map());
 	const [harmonicTuningSystem, setHarmonicTuningSystem] =
@@ -5119,7 +5173,7 @@ const App: React.FC = () => {
 	const [editingMelodyEngineId, setEditingMelodyEngineId] = useState<string | null>(null);
 
 	const syncRates = useMemo(
-		() => ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2"],
+		() => ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2", "1/1", "2/1", "4/1"],
 		[]
 	);
 
@@ -5155,10 +5209,11 @@ const App: React.FC = () => {
 		globalAutoRandomMode, 
 		isAutoRandomSynced, 
 		autoRandomSyncRateIndex, 
-		clockSource, 
+		clockSource,
 		morphTime, 
 		isMorphSynced, 
-		morphSyncRateIndex 
+		morphSyncRateIndex,
+		linkLatency: 0,
 	});
 
 	useEffect(() => {
@@ -5185,6 +5240,7 @@ const App: React.FC = () => {
 			morphTime,
 			isMorphSynced,
 			morphSyncRateIndex,
+			linkLatency,
 		};
 	}, [
 		engines,
@@ -5209,6 +5265,7 @@ const App: React.FC = () => {
 		morphTime,
 		isMorphSynced,
 		morphSyncRateIndex,
+		linkLatency,
 	]);
 
 	const scaleFrequencies = useMemo(() => {
@@ -5249,12 +5306,10 @@ const App: React.FC = () => {
 				}
 			}
 		}
-		// Remove duplicates and sort
-		return [...new Map(notes.map((item) => [item.value, item])).values()].sort(
-			(a, b) => a.value - b.value
-		);
+		return notes;
 	}, [harmonicTuningSystem, scale, transpose]);
-	
+
+
 	const allNotesOff = useCallback(() => {
 		if (!audioContext) return;
 		const now = audioContext.currentTime;
@@ -5693,6 +5748,223 @@ const App: React.FC = () => {
 		handleRandomize,
 	]);
 
+	// Ref to track if transport change came from Link
+	const isRemoteTransportUpdate = useRef(false);
+	const hasAlignedToLinkRef = useRef(false);
+	const linkStartBeatRef = useRef<number | null>(null);
+	const shouldQuantizeStart = useRef(false);
+	const isWaitingForLinkStart = useRef(false);
+
+	// Ableton Link Integration
+	useEffect(() => {
+		if (clockSource === "link") {
+			const socket = io("http://localhost:3001");
+			linkSocketRef.current = socket;
+
+			socket.on("connect", () => {
+				console.log("Connected to Ableton Link server");
+				socket.emit("request-sync");
+			});
+
+			socket.on("link-state", (state: { bpm: number; phase: number; beat: number; isPlaying: boolean }) => {
+				setBPM(state.bpm);
+				if (state.isPlaying !== isTransportPlaying) {
+					isRemoteTransportUpdate.current = true;
+					setIsTransportPlaying(state.isPlaying);
+				}
+				setLinkPhase(state.phase / 4); 
+			});
+
+			socket.on("bpm-changed", (newBpm: number) => {
+				setBPM(newBpm);
+			});
+
+			socket.on("transport-changed", (isPlaying: boolean) => {
+				if (isPlaying !== latestStateRef.current.isTransportPlaying) {
+					isRemoteTransportUpdate.current = true;
+					setIsTransportPlaying(isPlaying);
+					
+					if (isPlaying) {
+						shouldQuantizeStart.current = true;
+						isWaitingForLinkStart.current = true;
+					} else {
+						linkStartBeatRef.current = null; // Reset start beat
+						isWaitingForLinkStart.current = false;
+						shouldQuantizeStart.current = false;
+					}
+				}
+			});
+
+			socket.on("link-update", (state: { bpm: number; phase: number; beat: number; isPlaying: boolean }) => {
+				// Update phase for visualization
+				setLinkPhase((state.phase % 4) / 4); 
+				
+				// Sync BPM if changed externally
+				if (Math.abs(state.bpm - latestStateRef.current.bpm) > 0.01) {
+					setBPM(state.bpm);
+				}
+				
+				// Sync Transport if changed externally
+				if (state.isPlaying !== latestStateRef.current.isTransportPlaying && !isRandomizingRef.current) {
+					// Prevent race condition: If we just started locally, ignore remote "stop" for a short time
+					const timeSinceLocalStart = Date.now() - (lastLocalStartRef.current || 0);
+					if (latestStateRef.current.isTransportPlaying && !state.isPlaying && timeSinceLocalStart < 500) {
+						console.log("[Link] Ignoring remote stop (race condition protection)");
+					} else {
+						isRemoteTransportUpdate.current = true;
+						setIsTransportPlaying(state.isPlaying); 
+					}
+				}
+
+				// Phase Alignment for Sequencer
+				if (state.isPlaying && latestStateRef.current.clockSource === "link") {
+					// Handle Start Quantization
+					if (shouldQuantizeStart.current) {
+						shouldQuantizeStart.current = false;
+						const quantum = 4; // Assume 4/4 grid
+						const currentBeat = state.beat;
+						
+						// If we are very close to the start of a bar (phase is small), start immediately at the current bar.
+						// Otherwise, wait for the next bar.
+						const phase = state.phase; // 0 to quantum
+						if (phase < 0.1) {
+							// Snap to current bar start
+							linkStartBeatRef.current = currentBeat - phase;
+						} else {
+							// Wait for next bar
+							linkStartBeatRef.current = Math.ceil((currentBeat + 0.01) / quantum) * quantum;
+						}
+						console.log(`[Link] Quantized Start Target: ${linkStartBeatRef.current} (Current: ${currentBeat.toFixed(2)}, Phase: ${phase.toFixed(2)})`);
+					}
+
+					// Check if we are waiting for the start beat
+					if (linkStartBeatRef.current !== null && state.beat < linkStartBeatRef.current) {
+						if (!isWaitingForLinkStart.current) {
+							console.log(`[Link] Waiting... Current: ${state.beat.toFixed(2)}, Target: ${linkStartBeatRef.current}`);
+							isWaitingForLinkStart.current = true;
+						}
+						return; // Wait
+					}
+
+					// If we were waiting and now we are not, reset the scheduler time
+					if (isWaitingForLinkStart.current) {
+						console.log(`[Link] Start beat reached! Resuming scheduler.`);
+						const now = audioContext?.currentTime || 0;
+						engineSchedulerStates.current.forEach((sch) => {
+							sch.nextNoteTime = now + 0.005; // Start immediately (5ms buffer)
+						});
+					}
+					
+					isWaitingForLinkStart.current = false;
+
+					latestStateRef.current.engines.forEach(engine => {
+						const sch = engineSchedulerStates.current.get(engine.id);
+						if (sch) {
+							// Calculate beats per step for this engine
+							let beatsPerStep = 0.25; // Default 1/16
+							const rateStr = engine.sequencerRate;
+							
+							if (rateStr.endsWith("d")) {
+								// Dotted
+								const baseDenom = parseInt(rateStr.replace("d", "").split("/")[1]);
+								beatsPerStep = (4 / baseDenom) * 1.5;
+							} else {
+								const denom = parseInt(rateStr.split("/")[1]);
+								beatsPerStep = 4 / denom;
+							}
+
+							// Calculate target step using Local Beat (relative to start)
+							// We must project the Link beat to the time of the *next scheduled note* 
+							// to compare accurately with the scheduler's current step (which is for that future time).
+							const now = audioContext?.currentTime || 0;
+							const timeDelta = sch.nextNoteTime - now;
+							const beatsPerSecond = state.bpm / 60;
+							
+							// Apply manual latency offset (in seconds)
+							// If we are late, we add latency to "advance" the Link time, forcing the sequencer to catch up.
+							const latencySeconds = (latestStateRef.current.linkLatency || 0) / 1000;
+							
+							// If nextNoteTime is in the past (lag), timeDelta is negative.
+							const projectedLinkBeat = state.beat + ((timeDelta + latencySeconds) * beatsPerSecond);
+
+							// This ensures we always start at Step 0 when transport starts.
+							const localBeat = projectedLinkBeat - (linkStartBeatRef.current || 0);
+							const targetStep = Math.floor(Math.max(0, localBeat) / beatsPerStep) % engine.sequencerSteps;
+
+							const current = sch.currentStep;
+							const steps = engine.sequencerSteps;
+
+							// Calculate drift in beats
+							// currentStep corresponds to the BEGINNING of the step.
+							// So expected beat is currentStep * beatsPerStep.
+							const expectedBeat = current * beatsPerStep;
+							
+							// We compare localBeat (where Link says we are) with expectedBeat (where Sequencer is).
+							// We need to handle the wrap-around of the sequencer steps.
+							// But localBeat grows indefinitely.
+							// So we should compare (localBeat % (steps * beatsPerStep)) with expectedBeat.
+							
+							const loopDurationBeats = steps * beatsPerStep;
+							const localBeatInLoop = localBeat % loopDurationBeats;
+							
+							const beatDiff = Math.abs(localBeatInLoop - expectedBeat);
+							// Handle wrap-around diff (e.g. at end of loop)
+							const shortestDiff = Math.min(beatDiff, loopDurationBeats - beatDiff);
+							
+							// Sync if off by more than 0.1 beats (approx 12ms at 120bpm)
+							// This is much tighter than the previous "1 step" (0.25 beats) threshold.
+							const isSync = shortestDiff <= 0.1;
+							
+							// Only force sync if we are significantly off
+							if (!isSync) {
+								console.log(`[Link] Syncing ${engine.id}: Seq=${current} (Beat ${expectedBeat.toFixed(2)}) -> Link=${targetStep} (Beat ${localBeatInLoop.toFixed(2)}) Diff=${shortestDiff.toFixed(3)}`);
+								sch.currentStep = targetStep;
+								setSequencerCurrentSteps(prev => new Map(prev).set(engine.id, targetStep));
+							}
+						}
+					});
+				} else if (!state.isPlaying && latestStateRef.current.clockSource === "link") {
+					// Reset Link state when stopped
+					if (linkStartBeatRef.current !== null) {
+						console.log("[Link] Remote stop detected. Resetting quantization state.");
+						linkStartBeatRef.current = null;
+						isWaitingForLinkStart.current = false;
+						shouldQuantizeStart.current = false;
+					}
+				}
+			});
+
+			return () => {
+				socket.disconnect();
+				linkSocketRef.current = null;
+			};
+		}
+	}, [clockSource]);
+
+	// Emit Transport Changes to Link
+	useEffect(() => {
+		if (clockSource === "link" && linkSocketRef.current) {
+			if (isRemoteTransportUpdate.current) {
+				isRemoteTransportUpdate.current = false;
+				return;
+			}
+			linkSocketRef.current.emit("start-stop", isTransportPlaying);
+		}
+	}, [isTransportPlaying, clockSource]);
+
+	// Emit BPM Changes to Link
+	useEffect(() => {
+		if (clockSource === "link" && linkSocketRef.current) {
+			// Debounce or check if change originated from Link to avoid loops?
+			// For now, let's assume UI change should propagate.
+			// But we need to distinguish UI change from Link update.
+			// The socket.on("bpm-changed") updates state, which triggers this effect.
+			// We can check if the value is different from what we last received?
+			// Or just emit, and server handles it.
+			linkSocketRef.current.emit("set-bpm", bpm);
+		}
+	}, [bpm, clockSource]);
+
 	const handleToggleLock = useCallback((path: string) => {
 		setLockState(prev => {
 			const parts = path.split('.');
@@ -6074,13 +6346,19 @@ const App: React.FC = () => {
 
 			const currentStepForNote = engineSch.currentStep;
 			
-			if (engine.sequence[currentStepForNote] === 1) {
+			// console.log(`[Seq] ${engine.id} Step: ${currentStepForNote} Rotate: ${engine.sequencerRotate}`);
+
+			// The sequence is already rotated in the state (handleEngineUpdate rotates it).
+			// So we just read directly from the current step.
+			const stepIndexToRead = currentStepForNote % engine.sequencerSteps;
+			
+			if (engine.sequence[stepIndexToRead] === 1) {
 				const noteIdBase = `seq_${engine.id}_${currentStepForNote}_${time}`;
 				
 				// Only trigger notes if sequencer is enabled
 				if (engine.sequencerEnabled) {
 					if (engine.useMelodicSequence) {
-						const freqs = engine.melodicSequence[currentStepForNote];
+						const freqs = engine.melodicSequence[stepIndexToRead];
 						if (Array.isArray(freqs)) {
 							freqs.forEach((freq, i) => {
 								const noteId = `${noteIdBase}_${i}`;
@@ -6103,7 +6381,7 @@ const App: React.FC = () => {
 					if (!engine.useMelodicSequence) {
 						noteOff(noteIdBase, time + noteDuration);
 					} else {
-						const freqs = engine.melodicSequence[currentStepForNote];
+						const freqs = engine.melodicSequence[stepIndexToRead];
 						if (Array.isArray(freqs)) {
 							freqs.forEach((_, i) => {
 								noteOff(`${noteIdBase}_${i}`, time + noteDuration);
@@ -6115,7 +6393,7 @@ const App: React.FC = () => {
 				// Calculate modulation value based on pitch if melodic
 				let modValue = 1.0;
 				if (engine.useMelodicSequence) {
-					const freqs = engine.melodicSequence[currentStepForNote];
+					const freqs = engine.melodicSequence[stepIndexToRead];
 					if (Array.isArray(freqs) && freqs.length > 0) {
 						// Use the first note's pitch for modulation
 						const midiNote = frequencyToMidiNote(freqs[0]);
@@ -6146,8 +6424,53 @@ const App: React.FC = () => {
 
 			engineSch.currentStep = (engineSch.currentStep + 1) % engine.sequencerSteps;
 			
-			if (latestStateRef.current.clockSource === "internal") {
-				const secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
+			if (latestStateRef.current.clockSource === "internal" || latestStateRef.current.clockSource === "link") {
+				let secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
+				
+				// Apply Rate Modulation
+				if (engine.rateModSource && engine.rateModSource !== "none" && engine.rateModDepth > 0) {
+					let modValue = 0;
+					
+					// Get modulation value (-1 to 1 or 0 to 1)
+					if (engine.rateModSource.startsWith("lfo")) {
+						const lfoId = engine.rateModSource;
+						// We need to get the current LFO value. 
+						// Since we don't have direct access to LFO node output here easily without an analyser,
+						// we can approximate it or use the visualizer logic.
+						// Better: Use the LFO state and calculate value based on time.
+						const lfo = latestStateRef.current.lfos.find(l => l.id === lfoId);
+						if (lfo) {
+							// Simple calculation for now: sin(time * rate)
+							// This ignores custom shapes/smoothing for simplicity in scheduler
+							const time = audioContext?.currentTime || 0;
+							const rate = lfo.sync ? (latestStateRef.current.bpm / 60) * (4 / parseInt(lfo.syncRate.split('/')[1])) : lfo.rate;
+							modValue = Math.sin(time * rate * 2 * Math.PI);
+						}
+					} else if (engine.rateModSource.startsWith("engine")) {
+						const sourceEngineId = engine.rateModSource;
+						const sourceEngine = latestStateRef.current.engines.find(e => e.id === sourceEngineId);
+						if (sourceEngine) {
+							// Use the source engine's sequencer progress as mod source
+							const sch = engineSchedulerStates.current.get(sourceEngineId);
+							if (sch) {
+								// Normalize step to 0-1
+								modValue = (sch.currentStep / sourceEngine.sequencerSteps) * 2 - 1; 
+							}
+						}
+					}
+					
+					// Modulate rate: positive mod makes it faster (shorter secondsPerStep), negative slower
+					// Depth 1.0 could double or halve the speed?
+					// Let's say: factor = 1 / (1 + mod * depth)
+					// If mod=1, depth=1 -> factor = 0.5 (2x speed)
+					// If mod=-1, depth=1 -> factor = Infinity (stop)? Cap it.
+					
+					// Safer modulation: 
+					// rateMultiplier = 2 ^ (mod * depth * 2)  (up to +/- 2 octaves speed change)
+					const rateMultiplier = Math.pow(2, modValue * engine.rateModDepth * 2);
+					secondsPerStep /= rateMultiplier;
+				}
+
 				engineSch.nextNoteTime += secondsPerStep;
 			}
 		});
@@ -6205,8 +6528,14 @@ const App: React.FC = () => {
 					sequencerModEventsRef.current.set(engineId, filteredEvents);
 				});
 
-                // --- Schedule Sequencer Notes (Internal Clock Only) ---
-				if (latestStateRef.current.clockSource === "internal") {
+                // --- Schedule Sequencer Notes (Internal & Link Clock) ---
+				if (latestStateRef.current.clockSource === "internal" || latestStateRef.current.clockSource === "link") {
+					if (isWaitingForLinkStart.current) {
+						// Wait for Link start beat
+						schedulerState.current.timerId = window.setTimeout(scheduler, schedulerState.current.lookaheadTime);
+						return;
+					}
+
 					latestStateRef.current.engines.forEach(engine => {
 						// if (!engine.sequencerEnabled) return; // REMOVED: Allow running in background
 						const engineSch = engineSchedulerStates.current.get(engine.id)!;
@@ -7689,8 +8018,33 @@ const App: React.FC = () => {
 		);
 	}, []);
 
+	const handleToggleTransport = useCallback(() => {
+		const newState = !isTransportPlaying;
+		setIsTransportPlaying(newState);
+
+		if (newState) {
+			lastLocalStartRef.current = Date.now();
+		}
+
+		if (clockSource === "link") {
+			// Emit to server to start/stop Ableton
+			linkSocketRef.current?.emit("start-stop", newState);
+
+			if (newState) {
+				// If starting, enable quantized launch
+				shouldQuantizeStart.current = true;
+				isWaitingForLinkStart.current = true;
+			} else {
+				// If stopping, reset
+				isWaitingForLinkStart.current = false;
+				shouldQuantizeStart.current = false;
+				linkStartBeatRef.current = null;
+			}
+		}
+	}, [isTransportPlaying, clockSource]);
+
 	return (
-		<>
+		<div className="app">
 			{!isInitialized && (
 				<div className="init-overlay">
 					<button onClick={initializeAudio}>Initialize Synthesizer</button>
@@ -7704,7 +8058,7 @@ const App: React.FC = () => {
 						bpm={bpm}
 						setBPM={setBPM}
 						isTransportPlaying={isTransportPlaying}
-						onToggleTransport={() => setIsTransportPlaying(p => !p)}
+						onToggleTransport={handleToggleTransport}
 						onPanic={allNotesOff}
 						midiInputs={midiInputs}
 						selectedMidiInputId={selectedMidiInputId}
@@ -7717,6 +8071,7 @@ const App: React.FC = () => {
 						onToggleLock={handleToggleLock}
 						clockSource={clockSource}
 						onClockSourceChange={setClockSource}
+						linkPhase={linkPhase}
 						harmonicTuningSystem={harmonicTuningSystem}
 						setHarmonicTuningSystem={setHarmonicTuningSystem}
 						scale={scale}
@@ -7734,6 +8089,8 @@ const App: React.FC = () => {
 						glideSyncRates={syncRates}
 						onRandomize={handleRandomize}
 						onInitializeAll={handleInitializeAll}
+						linkLatency={linkLatency}
+						setLinkLatency={setLinkLatency}
 					>
 						<PresetManager
 							currentBpm={bpm}
@@ -7973,7 +8330,7 @@ const App: React.FC = () => {
 					/>
 				</div>
 			)}
-		</>
+		</div>
 	);
 };
 
