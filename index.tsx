@@ -4180,6 +4180,14 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 	const p = effect.params;
 	const type = effect.type;
 
+	const getLock = (param: string) => {
+		return lockState.masterEffects[effect.id]?.[effect.type]?.[param] === true;
+	};
+
+	const toggleLock = (param: string) => {
+		onToggleLock(`masterEffects.${effect.id}.${effect.type}.${param}`);
+	};
+
 	const moduleStyle: React.CSSProperties = {
 		boxShadow: isDragging ? "0 5px 15px rgba(0,0,0,0.5)" : "none",
 		opacity: isDragging ? 0.5 : 1,
@@ -4260,42 +4268,56 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Mode</label>
-								<select
-									value={p.distortion.mode}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											distortion: {
-												...p.distortion!,
-												mode: e.target.value as DistortionMode,
-											},
-										})
-									}
-								>
-									{distortionModes.map((mode) => (
-										<option key={mode} value={mode}>
-											{mode}
-										</option>
-									))}
-								</select>
+								<div className="control-with-lock">
+									<select
+										value={p.distortion.mode}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												distortion: {
+													...p.distortion!,
+													mode: e.target.value as DistortionMode,
+												},
+											})
+										}
+									>
+										{distortionModes.map((m) => (
+											<option key={m} value={m}>
+												{m}
+											</option>
+										))}
+									</select>
+									<LockIcon
+										isLocked={getLock("mode")}
+										onClick={() => toggleLock("mode")}
+										title="Lock Mode"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Amount</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.distortion.amount}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											distortion: {
-												...p.distortion!,
-												amount: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.distortion.amount.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.distortion.amount}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												distortion: {
+													...p.distortion!,
+													amount: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.distortion.amount.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("amount")}
+										onClick={() => toggleLock("amount")}
+										title="Lock Amount"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -4303,54 +4325,75 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Time</label>
-								<input
-									type="range"
-									min="0"
-									max="2"
-									step="0.01"
-									value={p.delay.time}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											delay: { ...p.delay!, time: parseFloat(e.target.value) },
-										})
-									}
-								/>
-								<span>{p.delay.time.toFixed(2)}s</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0.01"
+										max="1.0"
+										step="0.01"
+										value={p.delay.time}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												delay: { ...p.delay!, time: parseFloat(e.target.value) },
+											})
+										}
+									/>
+									<span>{p.delay.time.toFixed(2)}s</span>
+									<LockIcon
+										isLocked={getLock("time")}
+										onClick={() => toggleLock("time")}
+										title="Lock Time"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Feedback</label>
-								<input
-									type="range"
-									min="0"
-									max="0.95"
-									step="0.01"
-									value={p.delay.feedback}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											delay: {
-												...p.delay!,
-												feedback: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.delay.feedback.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="0.9"
+										step="0.01"
+										value={p.delay.feedback}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												delay: {
+													...p.delay!,
+													feedback: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.delay.feedback.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("feedback")}
+										onClick={() => toggleLock("feedback")}
+										title="Lock Feedback"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.delay.mix}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											delay: { ...p.delay!, mix: parseFloat(e.target.value) },
-										})
-									}
-								/>
-								<span>{p.delay.mix.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.delay.mix}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												delay: { ...p.delay!, mix: parseFloat(e.target.value) },
+											})
+										}
+									/>
+									<span>{p.delay.mix.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("mix")}
+										onClick={() => toggleLock("mix")}
+										title="Lock Mix"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -4358,38 +4401,52 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Decay</label>
-								<input
-									type="range"
-									min="0.1"
-									max="10"
-									step="0.1"
-									value={p.reverb.decay}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											reverb: {
-												...p.reverb!,
-												decay: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.reverb.decay.toFixed(1)}s</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0.1"
+										max="10"
+										step="0.1"
+										value={p.reverb.decay}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												reverb: {
+													...p.reverb!,
+													decay: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.reverb.decay.toFixed(1)}s</span>
+									<LockIcon
+										isLocked={getLock("decay")}
+										onClick={() => toggleLock("decay")}
+										title="Lock Decay"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.reverb.mix}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											reverb: { ...p.reverb!, mix: parseFloat(e.target.value) },
-										})
-									}
-								/>
-								<span>{p.reverb.mix.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.reverb.mix}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												reverb: { ...p.reverb!, mix: parseFloat(e.target.value) },
+											})
+										}
+									/>
+									<span>{p.reverb.mix.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("mix")}
+										onClick={() => toggleLock("mix")}
+										title="Lock Mix"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -4397,57 +4454,78 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Rate</label>
-								<input
-									type="range"
-									min="0.1"
-									max="10"
-									step="0.1"
-									value={p.chorus.rate}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											chorus: {
-												...p.chorus!,
-												rate: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.chorus.rate.toFixed(1)} Hz</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0.1"
+										max="10"
+										step="0.1"
+										value={p.chorus.rate}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												chorus: {
+													...p.chorus!,
+													rate: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.chorus.rate.toFixed(1)} Hz</span>
+									<LockIcon
+										isLocked={getLock("rate")}
+										onClick={() => toggleLock("rate")}
+										title="Lock Rate"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Depth</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.chorus.depth}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											chorus: {
-												...p.chorus!,
-												depth: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.chorus.depth.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.chorus.depth}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												chorus: {
+													...p.chorus!,
+													depth: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.chorus.depth.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("depth")}
+										onClick={() => toggleLock("depth")}
+										title="Lock Depth"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.chorus.mix}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											chorus: { ...p.chorus!, mix: parseFloat(e.target.value) },
-										})
-									}
-								/>
-								<span>{p.chorus.mix.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.chorus.mix}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												chorus: { ...p.chorus!, mix: parseFloat(e.target.value) },
+											})
+										}
+									/>
+									<span>{p.chorus.mix.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("mix")}
+										onClick={() => toggleLock("mix")}
+										title="Lock Mix"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -4455,79 +4533,107 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Rate</label>
-								<input
-									type="range"
-									min="0.1"
-									max="5"
-									step="0.1"
-									value={p.flanger.rate}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											flanger: {
-												...p.flanger!,
-												rate: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.flanger.rate.toFixed(1)} Hz</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0.1"
+										max="5"
+										step="0.1"
+										value={p.flanger.rate}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												flanger: {
+													...p.flanger!,
+													rate: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.flanger.rate.toFixed(1)} Hz</span>
+									<LockIcon
+										isLocked={getLock("rate")}
+										onClick={() => toggleLock("rate")}
+										title="Lock Rate"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Depth</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.flanger.depth}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											flanger: {
-												...p.flanger!,
-												depth: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.flanger.depth.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.flanger.depth}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												flanger: {
+													...p.flanger!,
+													depth: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.flanger.depth.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("depth")}
+										onClick={() => toggleLock("depth")}
+										title="Lock Depth"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Feedback</label>
-								<input
-									type="range"
-									min="0"
-									max="0.95"
-									step="0.01"
-									value={p.flanger.feedback}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											flanger: {
-												...p.flanger!,
-												feedback: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.flanger.feedback.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="0.9"
+										step="0.01"
+										value={p.flanger.feedback}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												flanger: {
+													...p.flanger!,
+													feedback: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.flanger.feedback.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("feedback")}
+										onClick={() => toggleLock("feedback")}
+										title="Lock Feedback"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.flanger.mix}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											flanger: {
-												...p.flanger!,
-												mix: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.flanger.mix.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.flanger.mix}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												flanger: {
+													...p.flanger!,
+													mix: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.flanger.mix.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("mix")}
+										onClick={() => toggleLock("mix")}
+										title="Lock Mix"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -4535,72 +4641,102 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Rate</label>
-								<input
-									type="range"
-									min="0.1"
-									max="8"
-									step="0.1"
-									value={p.phaser.rate}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											phaser: {
-												...p.phaser!,
-												rate: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.phaser.rate.toFixed(1)} Hz</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0.1"
+										max="10"
+										step="0.1"
+										value={p.phaser.rate}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												phaser: {
+													...p.phaser!,
+													rate: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.phaser.rate.toFixed(1)} Hz</span>
+									<LockIcon
+										isLocked={getLock("rate")}
+										onClick={() => toggleLock("rate")}
+										title="Lock Rate"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Stages</label>
-								<input
-									type="range"
-									min="2"
-									max="12"
-									step="2"
-									value={p.phaser.stages}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											phaser: {
-												...p.phaser!,
-												stages: parseInt(e.target.value),
-											},
-										})
-									}
-								/>
+								<div className="control-with-lock">
+									<select
+										value={p.phaser.stages}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												phaser: {
+													...p.phaser!,
+													stages: parseInt(e.target.value),
+												},
+											})
+										}
+									>
+										{[2, 4, 6, 8, 10, 12].map((s) => (
+											<option key={s} value={s}>
+												{s}
+											</option>
+										))}
+									</select>
+									<LockIcon
+										isLocked={getLock("stages")}
+										onClick={() => toggleLock("stages")}
+										title="Lock Stages"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Q</label>
-								<input
-									type="range"
-									min="0"
-									max="20"
-									step="0.1"
-									value={p.phaser.q}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											phaser: { ...p.phaser!, q: parseFloat(e.target.value) },
-										})
-									}
-								/>
-								<span>{p.phaser.q.toFixed(1)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="1"
+										max="20"
+										step="0.1"
+										value={p.phaser.q}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												phaser: { ...p.phaser!, q: parseFloat(e.target.value) },
+											})
+										}
+									/>
+									<span>{p.phaser.q.toFixed(1)}</span>
+									<LockIcon
+										isLocked={getLock("q")}
+										onClick={() => toggleLock("q")}
+										title="Lock Q"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.phaser.mix}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											phaser: { ...p.phaser!, mix: parseFloat(e.target.value) },
-										})
-									}
-								/>
-								<span>{p.phaser.mix.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.phaser.mix}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												phaser: { ...p.phaser!, mix: parseFloat(e.target.value) },
+											})
+										}
+									/>
+									<span>{p.phaser.mix.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("mix")}
+										onClick={() => toggleLock("mix")}
+										title="Lock Mix"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -4608,80 +4744,108 @@ const EffectModule: React.FC<EffectModuleProps> = ({
 						<>
 							<div className="control-row">
 								<label>Rate</label>
-								<input
-									type="range"
-									min="0.1"
-									max="20"
-									step="0.1"
-									value={p.tremolo.rate}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											tremolo: {
-												...p.tremolo!,
-												rate: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.tremolo.rate.toFixed(1)} Hz</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0.1"
+										max="20"
+										step="0.1"
+										value={p.tremolo.rate}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												tremolo: {
+													...p.tremolo!,
+													rate: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.tremolo.rate.toFixed(1)} Hz</span>
+									<LockIcon
+										isLocked={getLock("rate")}
+										onClick={() => toggleLock("rate")}
+										title="Lock Rate"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Depth</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.tremolo.depth}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											tremolo: {
-												...p.tremolo!,
-												depth: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.tremolo.depth.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.tremolo.depth}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												tremolo: {
+													...p.tremolo!,
+													depth: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.tremolo.depth.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("depth")}
+										onClick={() => toggleLock("depth")}
+										title="Lock Depth"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Shape</label>
-								<select
-									value={p.tremolo.shape}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											tremolo: {
-												...p.tremolo!,
-												shape: e.target.value as LFO_Shape,
-											},
-										})
-									}
-								>
-									{lfoShapes.map((s) => (
-										<option key={s} value={s}>
-											{s}
-										</option>
-									))}
-								</select>
+								<div className="control-with-lock">
+									<select
+										value={p.tremolo.shape}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												tremolo: {
+													...p.tremolo!,
+													shape: e.target.value as LFO_Shape,
+												},
+											})
+										}
+									>
+										{lfoShapes.map((s) => (
+											<option key={s} value={s}>
+												{s}
+											</option>
+										))}
+									</select>
+									<LockIcon
+										isLocked={getLock("shape")}
+										onClick={() => toggleLock("shape")}
+										title="Lock Shape"
+									/>
+								</div>
 							</div>
 							<div className="control-row">
 								<label>Mix</label>
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.01"
-									value={p.tremolo.mix}
-									onChange={(e) =>
-										onUpdate(effect.id, {
-											tremolo: {
-												...p.tremolo!,
-												mix: parseFloat(e.target.value),
-											},
-										})
-									}
-								/>
-								<span>{p.tremolo.mix.toFixed(2)}</span>
+								<div className="control-value-wrapper control-with-lock">
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										value={p.tremolo.mix}
+										onChange={(e) =>
+											onUpdate(effect.id, {
+												tremolo: {
+													...p.tremolo!,
+													mix: parseFloat(e.target.value),
+												},
+											})
+										}
+									/>
+									<span>{p.tremolo.mix.toFixed(2)}</span>
+									<LockIcon
+										isLocked={getLock("mix")}
+										onClick={() => toggleLock("mix")}
+										title="Lock Mix"
+									/>
+								</div>
 							</div>
 						</>
 					)}
@@ -5674,7 +5838,31 @@ const App: React.FC = () => {
 					}
 					// Don't add/remove effects, just morph params
 					const newParams = createRandomizedEffectParams(effect, mode);
-					return { ...effect, params: newParams };
+					
+					// Merge with locks
+					const currentEffectLocks = lockState.masterEffects[effect.id]?.[effect.type];
+					if (!currentEffectLocks) return { ...effect, params: newParams };
+
+					// If we have locks, we need to merge
+					const type = effect.type;
+					const mergedParams = { ...newParams };
+					
+					// We need to cast to any to iterate keys dynamically because of the union type
+					const currentTypeParams = effect.params[type] as any;
+					const newTypeParams = newParams[type] as any;
+					const locks = currentEffectLocks as any;
+					
+					if (currentTypeParams && newTypeParams && locks) {
+						const mergedTypeParams = { ...newTypeParams };
+						Object.keys(newTypeParams).forEach(key => {
+							if (locks[key] === true) {
+								mergedTypeParams[key] = currentTypeParams[key];
+							}
+						});
+						(mergedParams as any)[type] = mergedTypeParams;
+					}
+
+					return { ...effect, params: mergedParams };
 				});
 
 
@@ -5986,22 +6174,22 @@ const App: React.FC = () => {
 					return currentValue;
 				}
 				const [currentKey, ...restKeys] = pathParts;
+				
 				if (restKeys.length === 0) {
-					if (typeof currentValue[currentKey] === 'boolean') {
-						return {
-							...currentValue,
-							[currentKey]: !currentValue[currentKey],
-						};
-					}
-					return currentValue;
-				}
-				if (typeof currentValue[currentKey] === 'object' && currentValue[currentKey] !== null) {
+					// Leaf node: Toggle boolean or initialize to true
+					const val = currentValue?.[currentKey];
 					return {
-						...currentValue,
-						[currentKey]: updateRecursively(currentValue[currentKey], restKeys),
+						...(currentValue || {}),
+						[currentKey]: val === undefined ? true : !val,
 					};
 				}
-				return currentValue;
+
+				// Intermediate node: Traverse or create object
+				const nextValue = currentValue?.[currentKey] || {};
+				return {
+					...(currentValue || {}),
+					[currentKey]: updateRecursively(nextValue, restKeys),
+				};
 			};
 			return updateRecursively(prev, parts);
 		});
