@@ -405,6 +405,7 @@ interface BottomTabsProps {
 	bpm: number;
 	lockState: LockState;
 	onToggleLock: (path: string) => void;
+	onEditLfo: (lfoId: string) => void;
 }
 
 // --- Utils ---
@@ -3776,6 +3777,213 @@ const LfoVisualizer: React.FC<{
 	return <canvas ref={canvasRef} width={200} height={100} className="lfo-visualizer" />;
 });
 
+interface LfoEditorModalProps {
+	lfoState: LFOState;
+	onUpdate: (updates: Partial<LFOState>) => void;
+	onClose: () => void;
+}
+
+const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onClose }) => {
+	const canvasRef = useRef<HTMLCanvasElement>(null);
+
+	useEffect(() => {
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+		const ctx = canvas.getContext("2d");
+		if (!ctx) return;
+
+		const draw = () => {
+			const { width, height } = canvas;
+			ctx.clearRect(0, 0, width, height);
+			
+			// Draw Grid
+			const gridSize = lfoState.gridSize || 0;
+			if (gridSize > 0) {
+				ctx.strokeStyle = "#333";
+				ctx.lineWidth = 1;
+				const stepX = width / gridSize;
+				const stepY = height / gridSize;
+				
+				ctx.beginPath();
+				for (let i = 1; i < gridSize; i++) {
+					ctx.moveTo(i * stepX, 0);
+					ctx.lineTo(i * stepX, height);
+					ctx.moveTo(0, i * stepY);
+					ctx.lineTo(width, i * stepY);
+				}
+				ctx.stroke();
+			}
+
+			// Draw Shape
+			ctx.strokeStyle = "#a45ee5";
+			ctx.lineWidth = 2;
+			ctx.beginPath();
+			
+			const shape = lfoState.customShape || new Array(256).fill(0);
+			const len = shape.length;
+			
+			for (let i = 0; i < len; i++) {
+				const x = (i / (len - 1)) * width;
+				// Invert Y because canvas Y is down, and map -1..1 to height..0
+				const y = (1 - (shape[i] + 1) / 2) * height;
+				if (i === 0) ctx.moveTo(x, y);
+				else ctx.lineTo(x, y);
+			}
+			ctx.stroke();
+		};
+
+		draw();
+	}, [lfoState.customShape, lfoState.gridSize]);
+
+	return (
+		<div className="modal-overlay" style={{
+			position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+			backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 1000,
+			display: 'flex', justifyContent: 'center', alignItems: 'center'
+		}}>
+			<div className="modal-content" style={{
+				backgroundColor: '#1a1a1a', padding: '20px', borderRadius: '8px',
+				width: '800px', maxWidth: '90%', border: '1px solid #444'
+			}} onClick={e => e.stopPropagation()}>
+				<div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+					<h2>Edit LFO Shape: {lfoState.name}</h2>
+					<button className="icon-button" onClick={onClose}>✕</button>
+				</div>
+
+				<div style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}>
+					<label>Grid Size:</label>
+					<div
+						className="value-display"
+						style={{ 
+							width: '40px', textAlign: 'center', cursor: 'ns-resize',
+							background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
+						}}
+						onMouseDown={(e) => {
+							const startY = e.clientY;
+							const startVal = lfoState.gridSize || 0;
+							const handleMove = (moveEvent: MouseEvent) => {
+								const delta = Math.floor((startY - moveEvent.clientY) / 5);
+								const newVal = Math.max(0, Math.min(64, startVal + delta));
+								if (newVal !== lfoState.gridSize) onUpdate({ gridSize: newVal });
+							};
+							const handleUp = () => {
+								window.removeEventListener('mousemove', handleMove);
+								window.removeEventListener('mouseup', handleUp);
+							};
+							window.addEventListener('mousemove', handleMove);
+							window.addEventListener('mouseup', handleUp);
+						}}
+					>
+						{lfoState.gridSize || "Off"}
+					</div>
+					<div style={{ fontSize: '0.8rem', color: '#888' }}>
+						Hold Shift: Even steps | Hold Alt: Odd steps | Shift+Alt: Fibonacci
+					</div>
+				</div>
+
+				<canvas
+					ref={canvasRef}
+					width={760}
+					height={400}
+					style={{ 
+						border: '1px solid #444', background: '#222', 
+						cursor: 'crosshair', borderRadius: '4px', width: '100%'
+					}}
+					onMouseDown={(e) => {
+						const canvas = e.currentTarget;
+						const rect = canvas.getBoundingClientRect();
+						const len = 256;
+						const currentShape = [...(lfoState.customShape || new Array(len).fill(0))];
+						if (currentShape.length !== len) {
+							while(currentShape.length < len) currentShape.push(0);
+							currentShape.length = len;
+						}
+
+						let lastIndex: number | null = null;
+						let lastVal: number | null = null;
+						const gridSize = lfoState.gridSize || 0;
+
+						const handleMove = (moveEvent: MouseEvent) => {
+							const clientX = moveEvent.clientX;
+							const clientY = moveEvent.clientY;
+							let x = Math.max(0, Math.min(canvas.width, clientX - rect.left));
+							let y = Math.max(0, Math.min(canvas.height, clientY - rect.top));
+							
+							if (gridSize > 0) {
+								const stepX = canvas.width / gridSize;
+								const stepY = canvas.height / gridSize;
+								x = Math.round(x / stepX) * stepX;
+								y = Math.round(y / stepY) * stepY;
+								x = Math.max(0, Math.min(canvas.width, x));
+								y = Math.max(0, Math.min(canvas.height, y));
+							}
+
+							const normalizedY = 1 - (y / canvas.height) * 2;
+							const index = Math.min(len - 1, Math.floor((x / canvas.width) * len));
+							
+							if (index >= 0 && index < len) {
+								const updateRange = (startIdx: number, endIdx: number, val: number) => {
+									for (let i = startIdx; i < endIdx; i++) currentShape[i] = val;
+								};
+
+								if (gridSize > 0) {
+									const stepWidth = len / gridSize;
+									const currentStep = Math.floor(index / stepWidth);
+									const getFibonacciSteps = (max: number) => {
+										const steps = new Set<number>();
+										let a = 0, b = 1;
+										while (a < max) { steps.add(a); const next = a + b; a = b; b = next; }
+										return steps;
+									};
+
+									let shouldUpdate = true;
+									if (moveEvent.shiftKey && moveEvent.altKey) {
+										if (!getFibonacciSteps(gridSize).has(currentStep)) shouldUpdate = false;
+									} else if (moveEvent.shiftKey) {
+										if (currentStep % 2 !== 0) shouldUpdate = false;
+									} else if (moveEvent.altKey) {
+										if (currentStep % 2 === 0) shouldUpdate = false;
+									}
+
+									if (shouldUpdate) {
+										const start = Math.floor(currentStep * stepWidth);
+										const end = Math.floor((currentStep + 1) * stepWidth);
+										updateRange(start, Math.min(len, end), normalizedY);
+									}
+								} else {
+									currentShape[index] = normalizedY;
+									if (lastIndex !== null && Math.abs(index - lastIndex) > 1) {
+										const start = Math.min(lastIndex, index);
+										const end = Math.max(lastIndex, index);
+										const startVal = lastIndex < index ? lastVal! : normalizedY;
+										const endVal = lastIndex < index ? normalizedY : lastVal!;
+										for (let i = start + 1; i < end; i++) {
+											const t = (i - start) / (end - start);
+											currentShape[i] = startVal + (endVal - startVal) * t;
+										}
+									}
+								}
+								onUpdate({ customShape: [...currentShape] });
+								lastIndex = index;
+								lastVal = normalizedY;
+							}
+						};
+
+						const handleUp = () => {
+							window.removeEventListener('mousemove', handleMove);
+							window.removeEventListener('mouseup', handleUp);
+						};
+
+						window.addEventListener('mousemove', handleMove);
+						window.addEventListener('mouseup', handleUp);
+						handleMove(e.nativeEvent); // Trigger initial draw
+					}}
+				/>
+			</div>
+		</div>
+	);
+};
+
 const LFOControls: React.FC<LFOControlsProps> = ({
 	lfoState,
 	onUpdate,
@@ -3784,6 +3992,7 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 	bpm,
 	lockState,
 	onToggleLock,
+	onEdit,
 }) => {
 	const getLock = (path: string) =>
 		lockState.lfos[lfoState.id]?.[path] ?? false;
@@ -3854,6 +4063,15 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 						onClick={() => onToggleLock(`lfos.${lfoState.id}.shape`)}
 						title="Lock LFO Shape"
 					/>
+					{lfoState.shape === 'custom' && (
+						<button 
+							className="small"
+							onClick={() => onEdit(lfoState.id)}
+							style={{ marginLeft: '0.5rem' }}
+						>
+							Edit
+						</button>
+					)}
 				</div>
 			</div>
 			<div className="control-row">
@@ -3941,229 +4159,7 @@ const LFOControls: React.FC<LFOControlsProps> = ({
 				</div>
 			</div>
 			
-			{lfoState.shape === 'custom' && (
-				<div className="control-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-					<div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginBottom: '0.5rem', alignItems: 'center' }}>
-						<label>Draw Shape</label>
-						<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-							<label style={{ fontSize: '0.8rem', color: '#888' }}>Grid:</label>
-							<div
-								className="value-display"
-								style={{ 
-									width: '40px', 
-									textAlign: 'center', 
-									cursor: 'ns-resize',
-									background: '#333',
-									padding: '2px 4px',
-									borderRadius: '4px',
-									userSelect: 'none'
-								}}
-								onMouseDown={(e) => {
-									const startY = e.clientY;
-									const startVal = lfoState.gridSize || 0;
-									
-									const handleMove = (moveEvent: MouseEvent) => {
-										const delta = Math.floor((startY - moveEvent.clientY) / 5);
-										const newVal = Math.max(0, Math.min(64, startVal + delta));
-										if (newVal !== lfoState.gridSize) {
-											onUpdate({ gridSize: newVal });
-										}
-									};
-									
-									const handleUp = () => {
-										window.removeEventListener('mousemove', handleMove);
-										window.removeEventListener('mouseup', handleUp);
-									};
-									
-									window.addEventListener('mousemove', handleMove);
-									window.addEventListener('mouseup', handleUp);
-								}}
-							>
-								{lfoState.gridSize || "Off"}
-							</div>
-						</div>
-					</div>
-					<canvas
-						width={200}
-						height={100}
-						style={{ 
-							border: '1px solid #444', 
-							background: '#222', 
-							cursor: 'crosshair',
-							borderRadius: '4px'
-						}}
-						onMouseDown={(e) => {
-							const canvas = e.currentTarget;
-							const rect = canvas.getBoundingClientRect();
-							const ctx = canvas.getContext('2d');
-							if (!ctx) return;
-							
-							const len = 256;
-							// Create a local mutable copy of the shape for the duration of the drag
-							const currentShape = [...(lfoState.customShape || new Array(len).fill(0))];
-							// Ensure length is correct
-							if (currentShape.length !== len) {
-								while(currentShape.length < len) currentShape.push(0);
-								currentShape.length = len;
-							}
-
-							let lastIndex: number | null = null;
-							let lastVal: number | null = null;
-							const gridSize = lfoState.gridSize || 0;
-
-							const draw = (e: MouseEvent | React.MouseEvent) => {
-								const clientX = e.clientX;
-								const clientY = e.clientY;
-								let x = Math.max(0, Math.min(canvas.width, clientX - rect.left));
-								let y = Math.max(0, Math.min(canvas.height, clientY - rect.top));
-								
-								// Grid Snapping
-								if (gridSize > 0) {
-									const stepX = canvas.width / gridSize;
-									const stepY = canvas.height / gridSize;
-									x = Math.round(x / stepX) * stepX;
-									y = Math.round(y / stepY) * stepY;
-									
-									// Clamp to bounds after snapping
-									x = Math.max(0, Math.min(canvas.width, x));
-									y = Math.max(0, Math.min(canvas.height, y));
-								}
-
-								// Normalize Y to -1 to 1 range (inverted because canvas Y is down)
-								const normalizedY = 1 - (y / canvas.height) * 2;
-								
-								// Update custom shape array
-								const index = Math.min(len - 1, Math.floor((x / canvas.width) * len));
-								
-								if (index >= 0 && index < len) {
-									const updateRange = (startIdx: number, endIdx: number, val: number) => {
-										for (let i = startIdx; i < endIdx; i++) {
-											currentShape[i] = val;
-										}
-									};
-
-									if (gridSize > 0) {
-										const stepWidth = len / gridSize;
-										const currentStep = Math.floor(index / stepWidth);
-										
-										// Fibonacci sequence generator
-										const getFibonacciSteps = (max: number) => {
-											const steps = new Set<number>();
-											let a = 0, b = 1;
-											while (a < max) {
-												steps.add(a);
-												const next = a + b;
-												a = b;
-												b = next;
-											}
-											return steps;
-										};
-
-										let shouldUpdate = true;
-										
-										if (e.shiftKey && e.altKey) {
-											// Fibonacci Mode
-											const fibSteps = getFibonacciSteps(gridSize);
-											if (!fibSteps.has(currentStep)) shouldUpdate = false;
-										} else if (e.shiftKey) {
-											// Even steps
-											if (currentStep % 2 !== 0) shouldUpdate = false;
-										} else if (e.altKey) {
-											// Odd steps
-											if (currentStep % 2 === 0) shouldUpdate = false;
-										}
-
-										if (shouldUpdate) {
-											const start = Math.floor(currentStep * stepWidth);
-											const end = Math.floor((currentStep + 1) * stepWidth);
-											updateRange(start, Math.min(len, end), normalizedY);
-										}
-									} else {
-										// Normal drawing
-										currentShape[index] = normalizedY;
-										
-										// Interpolate if we skipped points (only in normal mode)
-										if (lastIndex !== null && Math.abs(index - lastIndex) > 1) {
-											const start = Math.min(lastIndex, index);
-											const end = Math.max(lastIndex, index);
-											const startVal = lastIndex < index ? lastVal! : normalizedY;
-											const endVal = lastIndex < index ? normalizedY : lastVal!;
-											
-											for (let i = start + 1; i < end; i++) {
-												const t = (i - start) / (end - start);
-												currentShape[i] = startVal + (endVal - startVal) * t;
-											}
-										}
-									}
-									
-									onUpdate({ customShape: [...currentShape] });
-									lastIndex = index;
-									lastVal = normalizedY;
-								}
-							};
-							
-							draw(e);
-							
-							const moveHandler = (moveEvent: MouseEvent) => {
-								draw(moveEvent);
-							};
-							
-							const upHandler = () => {
-								window.removeEventListener('mousemove', moveHandler);
-								window.removeEventListener('mouseup', upHandler);
-								lastIndex = null;
-								lastVal = null;
-							};
-							
-							window.addEventListener('mousemove', moveHandler);
-							window.addEventListener('mouseup', upHandler);
-						}}
-						ref={(canvas) => {
-							if (canvas) {
-								const ctx = canvas.getContext('2d');
-								if (ctx) {
-									ctx.clearRect(0, 0, canvas.width, canvas.height);
-									
-									// Draw Grid
-									const gridSize = lfoState.gridSize || 0;
-									if (gridSize > 0) {
-										ctx.strokeStyle = '#333';
-										ctx.lineWidth = 1;
-										ctx.beginPath();
-										const stepX = canvas.width / gridSize;
-										const stepY = canvas.height / gridSize;
-										
-										for (let i = 1; i < gridSize; i++) {
-											// Vertical lines
-											ctx.moveTo(i * stepX, 0);
-											ctx.lineTo(i * stepX, canvas.height);
-											// Horizontal lines
-											ctx.moveTo(0, i * stepY);
-											ctx.lineTo(canvas.width, i * stepY);
-										}
-										ctx.stroke();
-									}
-
-									// Draw Shape
-									if (lfoState.customShape) {
-										ctx.strokeStyle = '#00f5d4';
-										ctx.lineWidth = 2;
-										ctx.beginPath();
-										const len = lfoState.customShape.length;
-										for (let i = 0; i < len; i++) {
-											const x = (i / len) * canvas.width;
-											const y = ((1 - lfoState.customShape[i]) / 2) * canvas.height;
-											if (i === 0) ctx.moveTo(x, y);
-											else ctx.lineTo(x, y);
-										}
-										ctx.stroke();
-									}
-								}
-							}
-						}}
-					/>
-				</div>
-			)}
+			
 		</div>
 	);
 };
@@ -4994,6 +4990,7 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 	bpm,
 	lockState,
 	onToggleLock,
+	onEditLfo,
 }) => {
 	const [activeTab, setActiveTab] = useState<"lfos" | "routing">("lfos");
 
@@ -5058,6 +5055,7 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 							bpm={bpm}
 							lockState={lockState}
 							onToggleLock={onToggleLock}
+							onEdit={onEditLfo}
 						/>
 					))}
 				</div>
@@ -5171,6 +5169,7 @@ const App: React.FC = () => {
 		null
 	);
 	const [editingMelodyEngineId, setEditingMelodyEngineId] = useState<string | null>(null);
+	const [editingLfoId, setEditingLfoId] = useState<string | null>(null);
 
 	const syncRates = useMemo(
 		() => ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2", "1/1", "2/1", "4/1"],
@@ -7433,7 +7432,8 @@ const App: React.FC = () => {
 				morphTime
 			);
 			
-			// console.log(`[Morph] Duration: ${duration}, Time: ${morphTime}`);
+			
+
 
 			// Safety check for invalid duration
 			if (!duration || duration <= 0 || isNaN(duration)) {
@@ -7443,7 +7443,6 @@ const App: React.FC = () => {
 			}
 
 			const progress = Math.min((now - startTime) / duration, 1);
-			// console.log(`[Morph] Progress: ${progress}`);
 			
 			// Safety check for invalid progress
 			if (isNaN(progress)) {
@@ -7455,6 +7454,45 @@ const App: React.FC = () => {
 			const targetState = morphTargetRef.current;
 			const audioNow = audioContext.currentTime;
 			const rampTime = 0.01;
+
+			// Interpolate discrete parameters (Steps, Pulses, Rotate)
+			// We only update React state if the rounded integer values change to avoid thrashing.
+			if (startState && targetState) {
+				let enginesChanged = false;
+				const currentEngines = latestStateRef.current.engines;
+				
+				const newEngines = currentEngines.map((engine) => {
+					const start = startState.engines.find(e => e.id === engine.id);
+					const target = targetState.engines.find(e => e.id === engine.id);
+					if (!start || !target) return engine;
+
+					// Interpolate and round to nearest integer
+					const newSteps = Math.round(lerp(start.sequencerSteps, target.sequencerSteps, progress));
+					const newPulses = Math.round(lerp(start.sequencerPulses, target.sequencerPulses, progress));
+					const newRotate = Math.round(lerp(start.sequencerRotate, target.sequencerRotate, progress));
+
+					// Check if anything changed from the CURRENT state
+					if (newSteps !== engine.sequencerSteps || 
+						newPulses !== engine.sequencerPulses || 
+						newRotate !== engine.sequencerRotate) {
+						
+						enginesChanged = true;
+						return {
+							...engine,
+							sequencerSteps: newSteps,
+							sequencerPulses: newPulses,
+							sequencerRotate: newRotate,
+							// Regenerate sequence based on new values
+							sequence: rotatePattern(generateEuclideanPattern(newSteps, newPulses), newRotate)
+						};
+					}
+					return engine;
+				});
+
+				if (enginesChanged) {
+					setEngines(newEngines);
+				}
+			}
 
 
 
@@ -8275,7 +8313,15 @@ const App: React.FC = () => {
 							onClose={() => setEditingMelodyEngineId(null)}
 							currentStep={engineSchedulerStates.current.get(editingMelodyEngineId)?.currentStep || 0}
 						/>
-					)}		
+					)}
+					
+					{editingLfoId && (
+						<LfoEditorModal
+							lfoState={lfos.find(l => l.id === editingLfoId)!}
+							onUpdate={(updates) => setLfos(prev => prev.map(l => l.id === editingLfoId ? {...l, ...updates} : l))}
+							onClose={() => setEditingLfoId(null)}
+						/>
+					)}
 					<div className="processing-container">
 						<div className="filters-container">
 							 <div className="filters-container-header">
@@ -8327,6 +8373,7 @@ const App: React.FC = () => {
 						bpm={bpm}
 						lockState={lockState}
 						onToggleLock={handleToggleLock}
+						onEditLfo={setEditingLfoId}
 					/>
 				</div>
 			)}
