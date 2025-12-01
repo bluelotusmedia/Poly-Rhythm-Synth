@@ -122,6 +122,13 @@ interface LFORoutingState {
 	engine3GrainDensity: boolean;
 	engine3GrainPosition: boolean;
 	engine3GrainJitter: boolean;
+
+	engine1Rate: boolean;
+	engine2Rate: boolean;
+	engine3Rate: boolean;
+	lfo1Rate: boolean;
+	lfo2Rate: boolean;
+	lfo3Rate: boolean;
 }
 
 interface EngineState {
@@ -145,8 +152,7 @@ interface EngineState {
 	filterDestination: "filter1" | "filter2" | "direct";
 	randomOctaveRange: number; // 1-4
 	randomBaseOctave: number; // 1-6
-	rateModSource: string;
-	rateModDepth: number;
+
 }
 
 interface LFOState {
@@ -158,8 +164,9 @@ interface LFOState {
 	sync: boolean;
 	syncRate: string; // e.g. '1/4', '1/8'
 	routing: LFORoutingState;
-	customShape?: number[]; // Array of values 0-1 for custom LFO
-	smoothing: number; // 0 to 1
+	customShape?: number[]; // Array of values -1 to 1
+	smoothing?: number; // 0 to 1
+
 	gridSize?: number; // 0 = off, >0 = number of steps
 }
 
@@ -586,7 +593,6 @@ const lfoShapes: readonly LFO_Shape[] = [
 	"triangle",
 	"rampDown",
 	"rampUp",
-	"triangle",
 	"random",
 	"noise",
 	"perlin",
@@ -647,6 +653,12 @@ const DEFAULT_LFO_ROUTING_STATE: LFORoutingState = {
 	engine3GrainDensity: false,
 	engine3GrainPosition: false,
 	engine3GrainJitter: false,
+	engine1Rate: false,
+	engine2Rate: false,
+	engine3Rate: false,
+	lfo1Rate: false,
+	lfo2Rate: false,
+	lfo3Rate: false,
 };
 
 const getInitialState = () => {
@@ -689,8 +701,7 @@ const getInitialState = () => {
 			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
 			randomOctaveRange: 2,
 			randomBaseOctave: 3,
-			rateModSource: "none",
-			rateModDepth: 0,
+
 		},
 		{
 			id: "engine2",
@@ -730,8 +741,7 @@ const getInitialState = () => {
 			filterDestination: "filter1" as "filter1" | "filter2" | "direct",
 			randomOctaveRange: 2,
 			randomBaseOctave: 3,
-			rateModSource: "none",
-			rateModDepth: 0,
+
 		},
 		{
 			id: "engine3",
@@ -770,8 +780,7 @@ const getInitialState = () => {
 			filterDestination: "filter2" as "filter1" | "filter2" | "direct",
 			randomOctaveRange: 2,
 			randomBaseOctave: 3,
-			rateModSource: "none",
-			rateModDepth: 0,
+
 		}
 	];
 
@@ -796,6 +805,9 @@ const getInitialState = () => {
 				sync: false,
 				syncRate: "1/4",
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				smoothing: 0,
+
+				gridSize: 16,
 			},
 			{
 				id: "lfo2",
@@ -806,6 +818,9 @@ const getInitialState = () => {
 				sync: false,
 				syncRate: "1/8",
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				smoothing: 0,
+
+				gridSize: 16,
 			},
 			{
 				id: "lfo3",
@@ -814,8 +829,12 @@ const getInitialState = () => {
 				depth: 0.7,
 				shape: "sawtooth" as LFO_Shape,
 				sync: true,
-				syncRate: "1/2",
+				syncRate: "1/16",
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				smoothing: 0,
+
+				gridSize: 16,
+
 			},
 		],
 		filter1: {
@@ -2810,33 +2829,7 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 				</div>
 			</div>
 			
-			<div className="control-row">
-				<label>Rate Mod</label>
-				<div className="control-value-wrapper" style={{ gap: '0.5rem' }}>
-					<select
-						value={engine.rateModSource || "none"}
-						onChange={(e) => onUpdate(engine.id, { rateModSource: e.target.value })}
-						style={{ width: '80px' }}
-					>
-						<option value="none">None</option>
-						<option value="lfo1">LFO 1</option>
-						<option value="lfo2">LFO 2</option>
-						<option value="lfo3">LFO 3</option>
-						<option value="engine1">Eng 1</option>
-						<option value="engine2">Eng 2</option>
-						<option value="engine3">Eng 3</option>
-					</select>
-					<input
-						type="range"
-						min="0"
-						max="1"
-						step="0.01"
-						value={engine.rateModDepth || 0}
-						onChange={(e) => onUpdate(engine.id, { rateModDepth: parseFloat(e.target.value) })}
-						style={{ width: '60px' }}
-					/>
-				</div>
-			</div>
+
 			
 			<div className="control-row">
 				<label>Rnd Range</label>
@@ -2873,21 +2866,19 @@ const EngineControls: React.FC<EngineControlsProps> = ({
 
 			<div className="control-row">
 				<label>Rate</label>
-				<div className="control-with-lock">
+				<div className="control-value-wrapper control-with-lock">
 					<select
 						value={engine.sequencerRate}
-						onChange={(e) =>
-							onUpdate(engine.id, { sequencerRate: e.target.value })
-						}
+						onChange={(e) => onUpdate(engine.id, { sequencerRate: e.target.value })}
 					>
-						{sequencerRates.map((rate) => (
-							<option key={rate} value={rate}>
-								{rate}
+						{sequencerRates.map((r) => (
+							<option key={r} value={r}>
+								{r}
 							</option>
 						))}
 					</select>
 					<LockIcon
-						isLocked={getLock(`engines.${engine.id}.sequencerRate`)}
+						isLocked={getLock("sequencerRate")}
 						onClick={() => onToggleLock(`engines.${engine.id}.sequencerRate`)}
 						title="Lock Sequencer Rate"
 					/>
@@ -4895,7 +4886,14 @@ const RoutingMatrix: React.FC<RoutingMatrixProps> = ({
 				label: `${engine.name} Grain Jitter`,
 				key: `engine${engine.id.slice(-1)}GrainJitter`,
 			},
+			{
+				label: `${engine.name} Rate`,
+				key: `engine${engine.id.slice(-1)}Rate`,
+			},
 		]),
+		{ label: "LFO 1 Rate", key: "lfo1Rate" },
+		{ label: "LFO 2 Rate", key: "lfo2Rate" },
+		{ label: "LFO 3 Rate", key: "lfo3Rate" },
 	];
 
 	const handleLfoCheckboxChange = (
@@ -5089,7 +5087,17 @@ const App: React.FC = () => {
 	const masterAnalyserNodeRef = useRef<AnalyserNode | null>(null);
 	const masterBusRef = useRef<GainNode | null>(null);
 	const lfoNodesRef = useRef<
-		Map<string, { lfoNode: OscillatorNode; depthGain: GainNode; smoothingFilter: BiquadFilterNode; cachedShape: LFO_Shape | null }>
+		Map<
+			string,
+			{
+				lfoNode: OscillatorNode;
+				depthGain: GainNode;
+				smoothingFilter: BiquadFilterNode;
+				rateModGain: GainNode;
+				fmSends: Map<string, GainNode>; // Map<targetLfoId, GainNode>
+				cachedShape: PeriodicWave | null;
+			}
+		>
 	>(new Map());
 	const lfoRoutingBussesRef = useRef<LfoRoutingBusses | null>(null);
 	const samplesRef = useRef<Map<string, AudioBuffer>>(new Map());
@@ -6095,6 +6103,8 @@ const App: React.FC = () => {
             initialAppState.lfos.forEach((lfo: LFOState) => {
                 const lfoNode = context.createOscillator();
                 const depthGain = context.createGain(); // Define depthGain here
+                const rateModGain = context.createGain(); // For FM
+                
                 // Create Smoothing Filter
                 const smoothingFilter = context.createBiquadFilter();
                 smoothingFilter.type = "lowpass";
@@ -6103,8 +6113,34 @@ const App: React.FC = () => {
                 lfoNode.connect(smoothingFilter);
                 smoothingFilter.connect(depthGain);
                 
+                // Connect rate mod gain to frequency
+                rateModGain.connect(lfoNode.frequency);
+                
+                // Create FM Sends (Matrix Mixer)
+                // For each potential target LFO (including self if we want feedback, but let's stick to others for now? No, matrix allows all)
+                const fmSends = new Map<string, GainNode>();
+                initialAppState.lfos.forEach(targetLfo => {
+                    const sendGain = context.createGain();
+                    sendGain.gain.value = 0; // Default off
+                    depthGain.connect(sendGain);
+                    fmSends.set(targetLfo.id, sendGain);
+                });
+
                 lfoNode.start();
-                lfoNodesRef.current.set(lfo.id, { lfoNode, depthGain, smoothingFilter, cachedShape: null });
+                lfoNodesRef.current.set(lfo.id, { lfoNode, depthGain, smoothingFilter, rateModGain, fmSends, cachedShape: null });
+            });
+
+            // Second pass: Connect FM Sends to Targets
+            initialAppState.lfos.forEach(sourceLfo => {
+                const sourceNodes = lfoNodesRef.current.get(sourceLfo.id);
+                if (!sourceNodes) return;
+                
+                sourceNodes.fmSends.forEach((sendGain, targetId) => {
+                    const targetNodes = lfoNodesRef.current.get(targetId);
+                    if (targetNodes) {
+                        sendGain.connect(targetNodes.rateModGain);
+                    }
+                });
             });
 
 
@@ -6426,47 +6462,114 @@ const App: React.FC = () => {
 			if (latestStateRef.current.clockSource === "internal" || latestStateRef.current.clockSource === "link") {
 				let secondsPerStep = (60 / latestStateRef.current.bpm) / (parseInt(engine.sequencerRate.split('/')[1]) / 4);
 				
-				// Apply Rate Modulation
-				if (engine.rateModSource && engine.rateModSource !== "none" && engine.rateModDepth > 0) {
-					let modValue = 0;
-					
-					// Get modulation value (-1 to 1 or 0 to 1)
-					if (engine.rateModSource.startsWith("lfo")) {
-						const lfoId = engine.rateModSource;
-						// We need to get the current LFO value. 
-						// Since we don't have direct access to LFO node output here easily without an analyser,
-						// we can approximate it or use the visualizer logic.
-						// Better: Use the LFO state and calculate value based on time.
-						const lfo = latestStateRef.current.lfos.find(l => l.id === lfoId);
-						if (lfo) {
-							// Simple calculation for now: sin(time * rate)
-							// This ignores custom shapes/smoothing for simplicity in scheduler
-							const time = audioContext?.currentTime || 0;
-							const rate = lfo.sync ? (latestStateRef.current.bpm / 60) * (4 / parseInt(lfo.syncRate.split('/')[1])) : lfo.rate;
-							modValue = Math.sin(time * rate * 2 * Math.PI);
+				// Apply Rate Modulation from Mod Matrix
+				let totalRateMod = 0;
+				latestStateRef.current.lfos.forEach(lfo => {
+					// Check routing
+					// engine.id is "engine1", "engine2", etc.
+					// routing key is "engine1Rate", etc.
+					const routingKey = `${engine.id}Rate` as keyof LFORoutingState;
+					if (lfo.routing[routingKey]) {
+						// Calculate LFO value
+						const time = audioContext?.currentTime || performance.now() / 1000;
+						const rate = lfo.sync ? (latestStateRef.current.bpm / 60) * (4 / parseInt(lfo.syncRate.split('/')[1])) : lfo.rate;
+
+						// Calculate phase based on time and rate
+						const phaseRaw = (time * rate) % 1;
+						const phase = phaseRaw < 0 ? 1 + phaseRaw : phaseRaw;
+						
+						let modValue = 0;
+						switch (lfo.shape) {
+							case "sine":
+								modValue = Math.sin(phase * 2 * Math.PI);
+								break;
+							case "square":
+								modValue = phase < 0.5 ? 1 : -1;
+								break;
+							case "rampDown":
+								modValue = 1 - 2 * phase;
+								break;
+							case "rampUp":
+								modValue = 2 * phase - 1;
+								break;
+							case "triangle":
+								modValue = 2 * Math.abs(2 * (phase - Math.floor(phase + 0.5))) - 1;
+								break;
+							case "random":
+								modValue = random1D(phase);
+								break;
+							case "noise":
+								modValue = smoothNoise1D(phase) * 2 - 1;
+								break;
+							case "perlin":
+								modValue = noise1D(phase);
+								break;
+							case "custom":
+								if (lfo.customShape && lfo.customShape.length > 0) {
+									const idx = Math.floor(phase * lfo.customShape.length);
+									modValue = lfo.customShape[idx % lfo.customShape.length];
+								}
+								break;
+							default:
+								modValue = 0;
 						}
-					} else if (engine.rateModSource.startsWith("engine")) {
-						const sourceEngineId = engine.rateModSource;
-						const sourceEngine = latestStateRef.current.engines.find(e => e.id === sourceEngineId);
-						if (sourceEngine) {
-							// Use the source engine's sequencer progress as mod source
-							const sch = engineSchedulerStates.current.get(sourceEngineId);
-							if (sch) {
-								// Normalize step to 0-1
-								modValue = (sch.currentStep / sourceEngine.sequencerSteps) * 2 - 1; 
+						
+						// Add to total modulation, scaled by LFO depth
+						totalRateMod += modValue * lfo.depth;
+						if (Math.random() < 0.01) {
+							console.log(`[RateMod] LFO ${lfo.id} -> ${engine.id}: mod=${modValue.toFixed(2)} depth=${lfo.depth} total=${totalRateMod.toFixed(2)}`);
+						}
+					}
+				});
+
+				// Apply Engine Pitch Modulation from Mod Matrix
+				latestStateRef.current.engines.forEach(sourceEngine => {
+					const routingKey = `${engine.id}Rate` as keyof LFORoutingState;
+					if (sourceEngine.routing[routingKey]) {
+						// Get source engine's current step
+						const sourceSch = engineSchedulerStates.current.get(sourceEngine.id);
+						if (sourceSch) {
+							let pitchValue = 0; // 0 to 1
+							
+							if (sourceEngine.useMelodicSequence) {
+								// Use the pitch at the CURRENT step of the source engine
+								const freqs = sourceEngine.melodicSequence[sourceSch.currentStep];
+								if (Array.isArray(freqs) && freqs.length > 0) {
+									const midi = frequencyToMidiNote(freqs[0]);
+									pitchValue = Math.max(0, Math.min(1, midi / 127));
+								} else {
+									// Fallback to base frequency if sequence is empty
+									const midi = frequencyToMidiNote(sourceEngine.synth.frequency);
+									pitchValue = Math.max(0, Math.min(1, midi / 127));
+								}
+							} else {
+								// Fixed pitch
+								const midi = frequencyToMidiNote(sourceEngine.synth.frequency);
+								pitchValue = Math.max(0, Math.min(1, midi / 127));
+							}
+							
+							// Center around Middle C (approx 0.5) -> +/- 0.5 range
+							// This allows pitch to both speed up and slow down the rate
+							const centeredMod = (pitchValue - 0.5) * 2; // -1 to 1
+							
+							// Add to total modulation
+							// We don't have a specific depth control for Engine->Engine routing yet,
+							// so we'll use a fixed depth or maybe 0.5?
+							// Let's use 1.0 for now (full range).
+							totalRateMod += centeredMod;
+							if (Math.random() < 0.01) {
+								console.log(`[RateMod] Engine ${sourceEngine.id} -> ${engine.id}: pitch=${pitchValue.toFixed(2)} mod=${centeredMod.toFixed(2)} total=${totalRateMod.toFixed(2)}`);
 							}
 						}
 					}
-					
-					// Modulate rate: positive mod makes it faster (shorter secondsPerStep), negative slower
-					// Depth 1.0 could double or halve the speed?
-					// Let's say: factor = 1 / (1 + mod * depth)
-					// If mod=1, depth=1 -> factor = 0.5 (2x speed)
-					// If mod=-1, depth=1 -> factor = Infinity (stop)? Cap it.
-					
-					// Safer modulation: 
-					// rateMultiplier = 2 ^ (mod * depth * 2)  (up to +/- 2 octaves speed change)
-					const rateMultiplier = Math.pow(2, modValue * engine.rateModDepth * 2);
+				});
+
+				if (totalRateMod !== 0) {
+					// rateMultiplier = 2 ^ (totalMod * 2) (up to +/- 2 octaves for full depth)
+					const rateMultiplier = Math.pow(2, totalRateMod * 2);
+					if (Math.random() < 0.01) {
+						console.log(`[RateMod] Final ${engine.id}: totalMod=${totalRateMod.toFixed(2)} mult=${rateMultiplier.toFixed(2)} oldSec=${secondsPerStep.toFixed(3)} newSec=${(secondsPerStep / rateMultiplier).toFixed(3)}`);
+					}
 					secondsPerStep /= rateMultiplier;
 				}
 
@@ -7197,7 +7300,7 @@ const App: React.FC = () => {
             const lfoNodes = lfoNodesRef.current.get(lfo.id);
             if (!lfoNodes) return;
 
-            const { lfoNode, depthGain } = lfoNodes;
+            const { lfoNode, depthGain, rateModGain } = lfoNodes;
             const cached = lfoNodes as any; // Cast to access cachedShape
 
 			// Handle Waveform Shape
@@ -7285,34 +7388,22 @@ const App: React.FC = () => {
                  safeSetTargetAtTime(smoothingFilter.frequency, cutoff, now, 0.1);
             }
 
-			let lfoFrequency = lfo.rate;
-			if (lfo.sync) {
-				const syncRate = lfo.syncRate;
-				let noteValueInBeats = 1;
-				// lfoSyncRates does not have dotted notes, but this is robust
-				const isDotted = syncRate.endsWith("d");
-				const cleanRate = syncRate.replace("d", "");
+            lfoNode.frequency.setTargetAtTime(currentRate, now, 0.01);
 
-				if (cleanRate.includes("/")) {
-					const parts = cleanRate.split("/");
-					const numerator = parseFloat(parts[0]);
-					const denominator = parseFloat(parts[1]);
-					if (denominator && !isNaN(numerator)) noteValueInBeats = (4 * numerator) / denominator;
-				} else {
-					const val = parseFloat(cleanRate);
-					if (val) noteValueInBeats = 4 / val;
-				}
+			// Set Rate Mod Sensitivity (Proportional FM)
+			// rateModGain.gain = currentRate. This means if input is 1.0 (full depth), we modulate by +/- 100% of rate.
+			rateModGain.gain.setTargetAtTime(currentRate, now, 0.01);
 
-				if (isDotted) {
-					noteValueInBeats *= 1.5;
-				}
-
-				const durationInSeconds = noteValueInBeats * (60 / bpm);
-				if (durationInSeconds > 0) {
-					lfoFrequency = 1 / durationInSeconds;
-				}
+			// Update FM Routing (Matrix Mixer)
+			if (lfoNodes.fmSends) {
+				lfoNodes.fmSends.forEach((sendGain, targetId) => {
+					const routingKey = `${targetId}Rate` as keyof LFORoutingState;
+					const isConnected = lfo.routing[routingKey];
+					// If connected, set gain to 1 (pass signal). If not, 0.
+					// The signal is already scaled by source LFO depth (via depthGain).
+					sendGain.gain.setTargetAtTime(isConnected ? 1 : 0, now, 0.01);
+				});
 			}
-            lfoNode.frequency.setTargetAtTime(lfoFrequency, now, 0.01);
 
             // Update routing
             Object.entries(lfo.routing).forEach(([dest, isConnected]) => {
