@@ -1709,32 +1709,36 @@ const InitializeIcon = () => (
 		<path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"></path>
 	</svg>
 );
-const LockIcon = ({
-	isLocked,
-	onClick,
-	title,
-}: {
-	isLocked: boolean;
-	onClick: () => void;
-	title: string;
-}) => (
-	<button
-		className={`lock-icon ${isLocked ? "locked" : ""}`}
-		onClick={onClick}
+const LockIcon = ({ isLocked, onClick, title }: { isLocked: boolean; onClick: (e: React.MouseEvent) => void; title?: string }) => (
+	<button 
+		className={`icon-button lock-button ${isLocked ? "locked" : ""}`} 
+		onClick={(e) => { e.stopPropagation(); onClick(e); }}
 		title={title}
 	>
-		<svg
-			xmlns="http://www.w3.org/2000/svg"
-			viewBox="0 0 24 24"
-			fill="currentColor"
-		>
-			{isLocked ? (
-				<path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"></path>
-			) : (
-				<path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.65 1.35-3 3-3s3 1.35 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"></path>
-			)}
-		</svg>
+		{isLocked ? (
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+				<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+				<path d="M7 11V7a5 5 0 0 1 10 0v4h-3V7a2 2 0 0 0-4 0v4H7z"></path>
+			</svg>
+		) : (
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" style={{ opacity: 0.5 }}>
+				<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+				<path d="M7 11V7a5 5 0 0 1 9.9-1h-3a2 2 0 0 0-4 0v4H7z"></path>
+			</svg>
+		)}
 	</button>
+);
+
+const UndoIcon = () => (
+	<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+		<path d="M3 9l6 6M3 9l6-6M3 9h14a5 5 0 0 1 0 10" />
+	</svg>
+);
+
+const RedoIcon = () => (
+	<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+		<path d="M21 9l-6 6M21 9l-6-6M21 9H7a5 5 0 0 0 0 10" />
+	</svg>
 );
 
 const AccordionIcon = ({ isExpanded }: { isExpanded: boolean }) => (
@@ -2025,6 +2029,8 @@ interface TopBarProps {
 	onInitializeAll: () => void;
 	linkLatency: number;
 	setLinkLatency: (latency: number) => void;
+	onUndo: () => void;
+	onRedo: () => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({
@@ -2067,6 +2073,8 @@ const TopBar: React.FC<TopBarProps> = ({
 	onInitializeAll,
 	linkLatency,
 	setLinkLatency,
+	onUndo,
+	onRedo,
 }) => {
 	const [localBpm, setLocalBpm] = useState(bpm);
 	const [isDraggingBpm, setIsDraggingBpm] = useState(false);
@@ -2448,6 +2456,22 @@ const TopBar: React.FC<TopBarProps> = ({
 							)}
 						</div>
 					</div>
+				</div>
+				<div className="top-bar-group undo-redo-group" style={{ marginLeft: 'auto' }}>
+					<button
+						className="icon-button"
+						onClick={(e) => { e.stopPropagation(); onUndo(); }}
+						title="Undo"
+					>
+						<UndoIcon />
+					</button>
+					<button
+						className="icon-button"
+						onClick={(e) => { e.stopPropagation(); onRedo(); }}
+						title="Redo"
+					>
+						<RedoIcon />
+					</button>
 				</div>
 			</div>
 		</div>
@@ -5289,13 +5313,15 @@ const App: React.FC = () => {
 	const lfoRoutingBussesRef = useRef<LfoRoutingBusses | null>(null);
 	const samplesRef = useRef<Map<string, AudioBuffer>>(new Map());
 	const activeVoicesRef = useRef<Map<string, ActiveVoice>>(new Map());
-	const activeMonoNotePerEngineRef = useRef<Map<string, {note: number, freq: number}>>(new Map());
+	const activeMonoNotePerEngineRef = useRef<Map<string, {note: number, freq: number, noteId: string}>>(new Map());
 	const lastPlayedNotePerEngineRef = useRef<Map<string, number>>(new Map());
 	const effectNodesRef = useRef<Map<string, MasterEffectNodes>>(new Map());
     const noiseBuffersRef = useRef<Map<NoiseType, AudioBuffer>>(new Map());
 	const reverbImpulseCache = useRef<Map<string, AudioBuffer>>(new Map());
 	const dummyGainRef = useRef<GainNode | null>(null);
 	const sequencerModEventsRef = useRef<Map<string, {start: number, end: number, value?: number}[]>>(new Map());
+	const historyStack = useRef<Preset["data"][]>([]);
+	const futureStack = useRef<Preset["data"][]>([]);
 
 	// --- State Management ---
 	const initialAppState = useMemo(() => getInitialState(), []);
@@ -5577,8 +5603,171 @@ const App: React.FC = () => {
 
 	}, [audioContext]);
 
+	const saveToHistory = useCallback(() => {
+		const currentState: Preset["data"] = {
+			engines,
+			lfos,
+			filter1: filter1State,
+			filter2: filter2State,
+			filterRouting,
+			masterEffects,
+			bpm,
+			scale,
+			transpose,
+			harmonicTuningSystem,
+			voicingMode,
+			glideTime,
+			isGlideSynced,
+			glideSyncRateIndex,
+			isGlobalAutoRandomEnabled,
+			globalAutoRandomInterval,
+			globalAutoRandomMode,
+			isAutoRandomSynced,
+			autoRandomSyncRateIndex,
+			morphTime,
+			isMorphSynced,
+			morphSyncRateIndex,
+		};
+		historyStack.current.push(JSON.parse(JSON.stringify(currentState)));
+		if (historyStack.current.length > 50) {
+			historyStack.current.shift();
+		}
+		futureStack.current = [];
+	}, [
+		engines, lfos, filter1State, filter2State, filterRouting, masterEffects,
+		bpm, scale, transpose, harmonicTuningSystem, voicingMode, glideTime,
+		isGlideSynced, glideSyncRateIndex, isGlobalAutoRandomEnabled,
+		globalAutoRandomInterval, globalAutoRandomMode, isAutoRandomSynced,
+		autoRandomSyncRateIndex, morphTime, isMorphSynced, morphSyncRateIndex
+	]);
+
+	const handleUndo = useCallback(() => {
+		if (historyStack.current.length === 0) return;
+		
+		const currentState: Preset["data"] = {
+			engines,
+			lfos,
+			filter1: filter1State,
+			filter2: filter2State,
+			filterRouting,
+			masterEffects,
+			bpm,
+			scale,
+			transpose,
+			harmonicTuningSystem,
+			voicingMode,
+			glideTime,
+			isGlideSynced,
+			glideSyncRateIndex,
+			isGlobalAutoRandomEnabled,
+			globalAutoRandomInterval,
+			globalAutoRandomMode,
+			isAutoRandomSynced,
+			autoRandomSyncRateIndex,
+			morphTime,
+			isMorphSynced,
+			morphSyncRateIndex,
+		};
+		futureStack.current.push(JSON.parse(JSON.stringify(currentState)));
+
+		const previousState = historyStack.current.pop();
+		if (previousState) {
+			setEngines(previousState.engines);
+			setLfos(previousState.lfos);
+			setFilter1State(previousState.filter1);
+			setFilter2State(previousState.filter2);
+			setFilterRouting(previousState.filterRouting);
+			setMasterEffects(previousState.masterEffects);
+			setBPM(previousState.bpm);
+			setScale(previousState.scale);
+			setTranspose(previousState.transpose);
+			setHarmonicTuningSystem(previousState.harmonicTuningSystem);
+			setVoicingMode(previousState.voicingMode);
+			setGlideTime(previousState.glideTime);
+			setIsGlideSynced(previousState.isGlideSynced);
+			setGlideSyncRateIndex(previousState.glideSyncRateIndex);
+			setIsGlobalAutoRandomEnabled(previousState.isGlobalAutoRandomEnabled);
+			setGlobalAutoRandomInterval(previousState.globalAutoRandomInterval);
+			setGlobalAutoRandomMode(previousState.globalAutoRandomMode);
+			setIsAutoRandomSynced(previousState.isAutoRandomSynced);
+			setAutoRandomSyncRateIndex(previousState.autoRandomSyncRateIndex);
+			setMorphTime(previousState.morphTime);
+			setIsMorphSynced(previousState.isMorphSynced);
+			setMorphSyncRateIndex(previousState.morphSyncRateIndex);
+		}
+	}, [
+		engines, lfos, filter1State, filter2State, filterRouting, masterEffects,
+		bpm, scale, transpose, harmonicTuningSystem, voicingMode, glideTime,
+		isGlideSynced, glideSyncRateIndex, isGlobalAutoRandomEnabled,
+		globalAutoRandomInterval, globalAutoRandomMode, isAutoRandomSynced,
+		autoRandomSyncRateIndex, morphTime, isMorphSynced, morphSyncRateIndex
+	]);
+
+	const handleRedo = useCallback(() => {
+		if (futureStack.current.length === 0) return;
+
+		const currentState: Preset["data"] = {
+			engines,
+			lfos,
+			filter1: filter1State,
+			filter2: filter2State,
+			filterRouting,
+			masterEffects,
+			bpm,
+			scale,
+			transpose,
+			harmonicTuningSystem,
+			voicingMode,
+			glideTime,
+			isGlideSynced,
+			glideSyncRateIndex,
+			isGlobalAutoRandomEnabled,
+			globalAutoRandomInterval,
+			globalAutoRandomMode,
+			isAutoRandomSynced,
+			autoRandomSyncRateIndex,
+			morphTime,
+			isMorphSynced,
+			morphSyncRateIndex,
+		};
+		historyStack.current.push(JSON.parse(JSON.stringify(currentState)));
+
+		const nextState = futureStack.current.pop();
+		if (nextState) {
+			setEngines(nextState.engines);
+			setLfos(nextState.lfos);
+			setFilter1State(nextState.filter1);
+			setFilter2State(nextState.filter2);
+			setFilterRouting(nextState.filterRouting);
+			setMasterEffects(nextState.masterEffects);
+			setBPM(nextState.bpm);
+			setScale(nextState.scale);
+			setTranspose(nextState.transpose);
+			setHarmonicTuningSystem(nextState.harmonicTuningSystem);
+			setVoicingMode(nextState.voicingMode);
+			setGlideTime(nextState.glideTime);
+			setIsGlideSynced(nextState.isGlideSynced);
+			setGlideSyncRateIndex(nextState.glideSyncRateIndex);
+			setIsGlobalAutoRandomEnabled(nextState.isGlobalAutoRandomEnabled);
+			setGlobalAutoRandomInterval(nextState.globalAutoRandomInterval);
+			setGlobalAutoRandomMode(nextState.globalAutoRandomMode);
+			setIsAutoRandomSynced(nextState.isAutoRandomSynced);
+			setAutoRandomSyncRateIndex(nextState.autoRandomSyncRateIndex);
+			setMorphTime(nextState.morphTime);
+			setIsMorphSynced(nextState.isMorphSynced);
+			setMorphSyncRateIndex(nextState.morphSyncRateIndex);
+		}
+	}, [
+		engines, lfos, filter1State, filter2State, filterRouting, masterEffects,
+		bpm, scale, transpose, harmonicTuningSystem, voicingMode, glideTime,
+		isGlideSynced, glideSyncRateIndex, isGlobalAutoRandomEnabled,
+		globalAutoRandomInterval, globalAutoRandomMode, isAutoRandomSynced,
+		autoRandomSyncRateIndex, morphTime, isMorphSynced, morphSyncRateIndex
+	]);
+
 	const handleRandomize = useCallback(
 		(mode: RandomizeMode, scope: string) => {
+			saveToHistory();
 			console.log(`handleRandomize called with mode: ${mode}, scope: ${scope}`);
 			// Block MIDI and stop notes
 			isRandomizingRef.current = true;
@@ -6488,13 +6677,16 @@ const App: React.FC = () => {
 		const targetFrequency = explicitFrequency ?? midiNoteToFrequency(midiNote + transpose, harmonicTuningSystem);
 		
 		if (voicingMode !== 'poly') {
-			noteOff(activeMonoNotePerEngineRef.current.get(engineId)?.note.toString()!, scheduledTime);
+			const activeMono = activeMonoNotePerEngineRef.current.get(engineId);
+			if (activeMono) {
+				noteOff(activeMono.noteId, scheduledTime);
+			}
 
 			const lastNote = lastPlayedNotePerEngineRef.current.get(engineId);
 			if (lastNote && voicingMode === 'legato' && activeVoicesRef.current.size > 0) {
 				startFrequency = midiNoteToFrequency(lastNote, harmonicTuningSystem);
 			}
-			activeMonoNotePerEngineRef.current.set(engineId, { note: midiNote, freq: targetFrequency });
+			activeMonoNotePerEngineRef.current.set(engineId, { note: midiNote, freq: targetFrequency, noteId });
 		}
 		lastPlayedNotePerEngineRef.current.set(engineId, midiNote);
 	
@@ -8221,12 +8413,15 @@ const App: React.FC = () => {
 	}, []);
 	
 	const handleInitializeAll = useCallback(() => {
-		const initial = getInitialState();
-		setEngines(initial.engines);
-		setLfos(initial.lfos);
-		setFilter1State(initial.filter1);
-		setFilter2State(initial.filter2);
-		setMasterEffects(initial.masterEffects);
+		saveToHistory();
+		if (window.confirm("Are you sure you want to initialize the entire patch?")) {
+			const initial = getInitialState();
+			setEngines(initial.engines);
+			setLfos(initial.lfos);
+			setFilter1State(initial.filter1);
+			setFilter2State(initial.filter2);
+			setMasterEffects(initial.masterEffects);
+		}
 	}, []);
 
 	const handlePanic = useCallback(() => {
@@ -8453,10 +8648,13 @@ const App: React.FC = () => {
 						onInitializeAll={handleInitializeAll}
 						linkLatency={linkLatency}
 						setLinkLatency={setLinkLatency}
+						onUndo={handleUndo}
+						onRedo={handleRedo}
 					>
 						<PresetManager
 							currentBpm={bpm}
 							onLoadPreset={async (preset) => {
+								saveToHistory();
 								// Stop everything first
 								allNotesOff();
 								setIsTransportPlaying(false);
