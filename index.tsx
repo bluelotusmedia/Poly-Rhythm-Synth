@@ -7476,7 +7476,18 @@ const App: React.FC = () => {
 					nodes.dry.gain.setTargetAtTime(1 - params.phaser!.mix, now, 0.01);
 					break;
 				case 'tremolo':
-					nodes.lfo.type = params.tremolo!.shape === 'ramp' ? 'sawtooth' : params.tremolo!.shape;
+					// Map LFO_Shape to valid OscillatorType
+					let oscType: OscillatorType = 'sine';
+					const shape = params.tremolo!.shape;
+					if (shape === 'sine' || shape === 'square' || shape === 'triangle' || shape === 'sawtooth') {
+						oscType = shape as OscillatorType;
+					} else if (shape === 'rampDown') {
+						oscType = 'sawtooth';
+					} else if (shape === 'rampUp') {
+						oscType = 'sawtooth'; // Approximation
+					}
+					// 'random', 'noise', 'perlin', 'custom' fallback to 'sine' to prevent crash
+					nodes.lfo.type = oscType;
 					nodes.lfo.frequency.setTargetAtTime(params.tremolo!.rate, now, 0.01);
 					nodes.lfoGain.gain.setTargetAtTime(params.tremolo!.depth, now, 0.01);
 					// Tremolo mix is handled by depth
