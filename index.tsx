@@ -34,6 +34,8 @@ type MasterEffectType =
 	| "tremolo"
 	| "eq";
 
+const syncRates = ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2", "1/1", "2/1", "4/1"];
+
 interface MasterEffect {
 	id: string;
 	type: MasterEffectType;
@@ -170,6 +172,23 @@ interface LFOState {
 	gridSize?: number; // 0 = off, >0 = number of steps
 }
 
+interface MSEGPoint {
+	time: number; // 0 to 1 (relative to duration)
+	value: number; // 0 to 1
+	curve: number; // -1 to 1 (exponential to logarithmic)
+}
+
+interface MSEGState {
+	id: string;
+	name: string;
+	points: MSEGPoint[];
+	loop: boolean;
+	sync: boolean;
+	rate: number; // Hz if not synced
+	syncRateIndex: number;
+	routing: LFORoutingState;
+}
+
 // --- Parameter Lock State ---
 interface LockState {
 	master: { volume: boolean };
@@ -177,6 +196,7 @@ interface LockState {
 		[id: string]: { [key: string]: boolean | { [key: string]: boolean } };
 	};
 	lfos: { [id: string]: { [key: string]: boolean } };
+	msegs: { [id: string]: { [key: string]: boolean } };
 	filter1: { [key: string]: boolean };
 	filter2: { [key: string]: boolean };
 	masterEffects: {
@@ -270,6 +290,7 @@ interface Preset {
 	data: {
 		engines: EngineState[];
 		lfos: LFOState[];
+		msegs: MSEGState[];
 		filter1: any;
 		filter2: any;
 		filterRouting: FilterRouting;
@@ -470,7 +491,6 @@ function noise1D(x: number, period: number = 1) {
     // Wrap indices
     // We want the noise to loop every 'period' units of input?
     // Actually, usually we pass x in [0, period].
-    // Let's assume input x is 0..1 for one cycle.
     // We map 0..1 to 0..N (e.g. 4 or 8 bumps).
     const freq = 4; // 4 bumps per cycle
     const scaledX = x * freq;
@@ -837,6 +857,38 @@ const getInitialState = () => {
 
 			},
 		],
+		msegs: [
+			{
+				id: "mseg1",
+				name: "MSEG 1",
+				points: [{ time: 0, value: 0, curve: 0 }, { time: 0.5, value: 1, curve: 0 }, { time: 1, value: 0, curve: 0 }],
+				loop: true,
+				sync: true,
+				rate: 1,
+				syncRateIndex: 3,
+				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+			},
+			{
+				id: "mseg2",
+				name: "MSEG 2",
+				points: [{ time: 0, value: 1, curve: 0 }, { time: 1, value: 0, curve: 0 }],
+				loop: false,
+				sync: true,
+				rate: 0.5,
+				syncRateIndex: 4,
+				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+			},
+			{
+				id: "mseg3",
+				name: "MSEG 3",
+				points: [{ time: 0, value: 0, curve: 0 }, { time: 0.2, value: 1, curve: 0 }, { time: 0.4, value: 0.5, curve: 0 }, { time: 1, value: 0, curve: 0 }],
+				loop: true,
+				sync: false,
+				rate: 2,
+				syncRateIndex: 3,
+				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+			},
+		],
 		filter1: {
 			enabled: false,
 			cutoff: 20000,
@@ -903,6 +955,18 @@ const getInitialLockState = (): LockState => {
 					shape: false,
 					sync: false,
 					syncRate: false,
+				},
+			])
+		),
+		msegs: Object.fromEntries(
+			initialState.msegs.map((m) => [
+				m.id,
+				{
+					rate: false,
+					sync: false,
+					syncRate: false,
+					points: false,
+					loop: false,
 				},
 			])
 		),
@@ -5069,9 +5133,20 @@ const MasterEffects: React.FC<MasterEffectsProps> = ({
 	);
 };
 
+interface RoutingMatrixProps {
+	lfoStates: LFOState[];
+	onLfoUpdate: (lfoId: string, updates: Partial<LFOState>) => void;
+	msegs?: MSEGState[]; // Optional for now to avoid breaking if not passed immediately
+	onMsegUpdate?: (msegId: string, updates: Partial<MSEGState>) => void;
+	engineStates: EngineState[];
+	onEngineUpdate: (engineId: string, updates: Partial<EngineState>) => void;
+}
+
 const RoutingMatrix: React.FC<RoutingMatrixProps> = ({
 	lfoStates,
 	onLfoUpdate,
+	msegs = [],
+	onMsegUpdate,
 	engineStates,
 	onEngineUpdate,
 }) => {
@@ -5130,6 +5205,17 @@ const RoutingMatrix: React.FC<RoutingMatrixProps> = ({
 		}
 	};
 
+	const handleMsegCheckboxChange = (
+		msegId: string,
+		destKey: keyof LFORoutingState,
+		isChecked: boolean
+	) => {
+		const mseg = msegs.find((m) => m.id === msegId);
+		if (mseg && onMsegUpdate) {
+			onMsegUpdate(msegId, { routing: { ...mseg.routing, [destKey]: isChecked } });
+		}
+	};
+
 	const handleSequencerCheckboxChange = (
 		engineId: string,
 		destKey: keyof LFORoutingState,
@@ -5153,6 +5239,11 @@ const RoutingMatrix: React.FC<RoutingMatrixProps> = ({
 							<div>{lfo.name}</div>
 						</th>
 					))}
+					{msegs.map((mseg) => (
+						<th key={mseg.id} className="rotated-header">
+							<div>{mseg.name}</div>
+						</th>
+					))}
 					{engineStates.map((engine) => (
 						<th key={engine.id} className="rotated-header">
 							<div>SEQ {engine.id.slice(-1)}</div>
@@ -5172,6 +5263,21 @@ const RoutingMatrix: React.FC<RoutingMatrixProps> = ({
 									onChange={(e) =>
 										handleLfoCheckboxChange(
 											lfo.id,
+											dest.key as keyof LFORoutingState,
+											e.target.checked
+										)
+									}
+								/>
+							</td>
+						))}
+						{msegs.map((mseg) => (
+							<td key={`${mseg.id}-${dest.key}`}>
+								<input
+									type="checkbox"
+									checked={mseg.routing[dest.key as keyof LFORoutingState]}
+									onChange={(e) =>
+										handleMsegCheckboxChange(
+											mseg.id,
 											dest.key as keyof LFORoutingState,
 											e.target.checked
 										)
@@ -5201,9 +5307,405 @@ const RoutingMatrix: React.FC<RoutingMatrixProps> = ({
 	);
 };
 
+interface MSEGEditorProps {
+	mseg: MSEGState;
+	onUpdate: (updates: Partial<MSEGState>) => void;
+	width?: number;
+	height?: number;
+	readOnly?: boolean;
+}
+
+const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, height = 200, readOnly = false }) => {
+	const canvasRef = useRef<HTMLCanvasElement>(null);
+	const [draggedPointIndex, setDraggedPointIndex] = useState<number | null>(null);
+	const [draggedCurveIndex, setDraggedCurveIndex] = useState<number | null>(null);
+
+	useEffect(() => {
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+		const ctx = canvas.getContext("2d");
+		if (!ctx) return;
+
+		const draw = () => {
+			ctx.clearRect(0, 0, width, height);
+
+			// Draw Grid
+			ctx.strokeStyle = "#333";
+			ctx.lineWidth = 1;
+			ctx.beginPath();
+			for (let i = 0; i <= 10; i++) {
+				const x = (i / 10) * width;
+				ctx.moveTo(x, 0);
+				ctx.lineTo(x, height);
+				const y = (i / 10) * height;
+				ctx.moveTo(0, y);
+				ctx.lineTo(width, y);
+			}
+			ctx.stroke();
+
+			// Draw MSEG Line
+			ctx.strokeStyle = "#00ffcc";
+			ctx.lineWidth = 2;
+			ctx.beginPath();
+			
+			const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
+			
+			if (sortedPoints.length > 0) {
+				const startX = sortedPoints[0].time * width;
+				const startY = (1 - sortedPoints[0].value) * height;
+				ctx.moveTo(startX, startY);
+
+				for (let i = 1; i < sortedPoints.length; i++) {
+					const p1 = sortedPoints[i - 1];
+					const p2 = sortedPoints[i];
+					const x1 = p1.time * width;
+					const y1 = (1 - p1.value) * height;
+					const x2 = p2.time * width;
+					const y2 = (1 - p2.value) * height;
+
+					// Calculate control point for quadratic curve
+					// Curve value -1 to 1. 0 is linear.
+					// We offset the midpoint perpendicular to the line.
+					const midX = (x1 + x2) / 2;
+					const midY = (y1 + y2) / 2;
+					
+					// Perpendicular vector
+					const dx = x2 - x1;
+					const dy = y2 - y1;
+					const len = Math.sqrt(dx*dx + dy*dy);
+					const perpX = -dy / len;
+					const perpY = dx / len;
+					
+					// Control point offset
+					const offset = p1.curve * len * 0.5;
+					const cpX = midX + perpX * offset;
+					const cpY = midY + perpY * offset;
+
+					ctx.quadraticCurveTo(cpX, cpY, x2, y2);
+				}
+			}
+			ctx.stroke();
+
+			// Draw Points
+			sortedPoints.forEach((p, i) => {
+				const x = p.time * width;
+				const y = (1 - p.value) * height;
+				
+				ctx.fillStyle = draggedPointIndex === i ? "#fff" : "#00ffcc";
+				ctx.beginPath();
+				ctx.arc(x, y, readOnly ? 3 : 5, 0, Math.PI * 2);
+				ctx.fill();
+			});
+			
+			// Draw Curve Handles (visual feedback when dragging curve)
+			if (draggedCurveIndex !== null) {
+				const p1 = sortedPoints[draggedCurveIndex];
+				const p2 = sortedPoints[draggedCurveIndex + 1];
+				if (p1 && p2) {
+					const x1 = p1.time * width;
+					const y1 = (1 - p1.value) * height;
+					const x2 = p2.time * width;
+					const y2 = (1 - p2.value) * height;
+					const midX = (x1 + x2) / 2;
+					const midY = (y1 + y2) / 2;
+					const dx = x2 - x1;
+					const dy = y2 - y1;
+					const len = Math.sqrt(dx*dx + dy*dy);
+					const perpX = -dy / len;
+					const perpY = dx / len;
+					const offset = p1.curve * len * 0.5;
+					const cpX = midX + perpX * offset;
+					const cpY = midY + perpY * offset;
+					
+					ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+					ctx.beginPath();
+					ctx.arc(cpX, cpY, 4, 0, Math.PI * 2);
+					ctx.fill();
+				}
+			}
+		};
+
+		draw();
+	}, [mseg.points, width, height, draggedPointIndex, draggedCurveIndex, readOnly]);
+
+	const handleMouseDown = (e: React.MouseEvent) => {
+		if (readOnly) return;
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+		const rect = canvas.getBoundingClientRect();
+		const x = e.clientX - rect.left;
+		const y = e.clientY - rect.top;
+
+		// Check if clicking existing point
+		const clickThreshold = 10;
+		const pointIndex = mseg.points.findIndex(p => {
+			const px = p.time * width;
+			const py = (1 - p.value) * height;
+			return Math.sqrt(Math.pow(x - px, 2) + Math.pow(y - py, 2)) < clickThreshold;
+		});
+
+		if (pointIndex !== -1) {
+			// Remove point on double click (simulated with modifier for now or just check logic)
+			if (e.altKey) {
+				if (mseg.points.length > 2) {
+					const newPoints = [...mseg.points];
+					newPoints.splice(pointIndex, 1);
+					onUpdate({ points: newPoints });
+				}
+			} else {
+				setDraggedPointIndex(pointIndex);
+			}
+		} else {
+			// Check if clicking near a segment to bend it (Alt + Click)
+			if (e.altKey) {
+				const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
+				for (let i = 0; i < sortedPoints.length - 1; i++) {
+					const p1 = sortedPoints[i];
+					const p2 = sortedPoints[i + 1];
+					const x1 = p1.time * width;
+					const y1 = (1 - p1.value) * height;
+					const x2 = p2.time * width;
+					const y2 = (1 - p2.value) * height;
+					
+					// Simple distance check to line segment
+					const A = x - x1;
+					const B = y - y1;
+					const C = x2 - x1;
+					const D = y2 - y1;
+					const dot = A * C + B * D;
+					const lenSq = C * C + D * D;
+					let param = -1;
+					if (lenSq !== 0) param = dot / lenSq;
+					
+					if (param >= 0 && param <= 1) {
+						const xx = x1 + param * C;
+						const yy = y1 + param * D;
+						const dist = Math.sqrt((x - xx) * (x - xx) + (y - yy) * (y - yy));
+						if (dist < 10) {
+							setDraggedCurveIndex(i);
+							return;
+						}
+					}
+				}
+			}
+
+			// Add new point if not bending
+			if (!e.altKey) {
+				const time = Math.max(0, Math.min(1, x / width));
+				const value = Math.max(0, Math.min(1, 1 - y / height));
+				const newPoints = [...mseg.points, { time, value, curve: 0 }];
+				newPoints.sort((a, b) => a.time - b.time);
+				onUpdate({ points: newPoints });
+			}
+		}
+	};
+
+	const handleMouseMove = (e: React.MouseEvent) => {
+		if (readOnly) return;
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+		const rect = canvas.getBoundingClientRect();
+		const x = e.clientX - rect.left;
+		const y = e.clientY - rect.top;
+
+		if (draggedPointIndex !== null) {
+			const time = Math.max(0, Math.min(1, x / width));
+			const value = Math.max(0, Math.min(1, 1 - y / height));
+
+			const newPoints = [...mseg.points];
+			newPoints[draggedPointIndex] = { ...newPoints[draggedPointIndex], time, value };
+			newPoints.sort((a, b) => a.time - b.time);
+			onUpdate({ points: newPoints });
+		} else if (draggedCurveIndex !== null) {
+			// Adjust curve based on mouse Y relative to segment midpoint
+			const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
+			const p1 = sortedPoints[draggedCurveIndex];
+			const p2 = sortedPoints[draggedCurveIndex + 1];
+			
+			if (p1 && p2) {
+				const x1 = p1.time * width;
+				const y1 = (1 - p1.value) * height;
+				const x2 = p2.time * width;
+				const y2 = (1 - p2.value) * height;
+				
+				// Calculate distance from line
+				const midX = (x1 + x2) / 2;
+				const midY = (y1 + y2) / 2;
+				
+				// Vector from mid to mouse
+				const dx = x - midX;
+				const dy = y - midY;
+				
+				// Perpendicular vector (normalized)
+				const segDx = x2 - x1;
+				const segDy = y2 - y1;
+				const segLen = Math.sqrt(segDx*segDx + segDy*segDy);
+				const perpX = -segDy / segLen;
+				const perpY = segDx / segLen;
+				
+				// Project mouse vector onto perpendicular
+				const projection = dx * perpX + dy * perpY;
+				
+				// Normalize curve value roughly -1 to 1 based on distance
+				// Max curve at roughly 1/2 segment length distance
+				let newCurve = (projection / (segLen * 0.5)) * 2;
+				newCurve = Math.max(-1, Math.min(1, newCurve));
+				
+				const newPoints = [...mseg.points];
+				// Find the actual index in the unsorted array if needed, but here we assume sorted order is maintained or we find by reference
+				// Since we sort every render, we need to be careful. 
+				// Best to find the point in the original array that matches p1
+				const originalIndex = newPoints.findIndex(p => p.time === p1.time && p.value === p1.value);
+				if (originalIndex !== -1) {
+					newPoints[originalIndex] = { ...newPoints[originalIndex], curve: newCurve };
+					onUpdate({ points: newPoints });
+				}
+			}
+		}
+	};
+
+	const handleMouseUp = () => {
+		if (readOnly) return;
+		setDraggedPointIndex(null);
+		setDraggedCurveIndex(null);
+	};
+
+	return (
+		<canvas
+			ref={canvasRef}
+			width={width}
+			height={height}
+			style={{ background: "#222", borderRadius: "4px", cursor: readOnly ? "default" : "crosshair" }}
+			onMouseDown={handleMouseDown}
+			onMouseMove={handleMouseMove}
+			onMouseUp={handleMouseUp}
+			onMouseLeave={handleMouseUp}
+		/>
+	);
+};
+
+interface MSEGControlsProps {
+	mseg: MSEGState;
+	onUpdate: (updates: Partial<MSEGState>) => void;
+	bpm: number;
+	lockState: LockState;
+	onToggleLock: (path: string) => void;
+}
+
+const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockState, onToggleLock }) => {
+	const [isExpanded, setIsExpanded] = useState(false);
+
+	const getLock = (path: string) => {
+		// Simplified lock check
+		return false; 
+	};
+
+	if (isExpanded) {
+		return (
+			<div style={{
+				position: 'fixed',
+				top: 0,
+				left: 0,
+				width: '100vw',
+				height: '100vh',
+				background: 'rgba(0,0,0,0.9)',
+				zIndex: 1000,
+				display: 'flex',
+				alignItems: 'center',
+				justifyContent: 'center'
+			}}>
+				<div style={{
+					background: '#1a1a1a',
+					padding: '2rem',
+					borderRadius: '8px',
+					width: '90%',
+					maxWidth: '1000px',
+					display: 'flex',
+					flexDirection: 'column',
+					gap: '1rem'
+				}}>
+					<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+						<h2>{mseg.name} Editor</h2>
+						<button onClick={() => setIsExpanded(false)} style={{ padding: '0.5rem 1rem', background: '#444', border: 'none', color: '#fff', borderRadius: '4px', cursor: 'pointer' }}>Close</button>
+					</div>
+					
+					<div className="control-group-header">
+						<div className="toggle-group">
+							<button className={mseg.loop ? "active" : ""} onClick={() => onUpdate({ loop: !mseg.loop })}>Loop</button>
+							<button className={mseg.sync ? "active" : ""} onClick={() => onUpdate({ sync: !mseg.sync })}>Sync</button>
+						</div>
+					</div>
+					
+					<div style={{ display: 'flex', gap: '1rem', flexDirection: 'column' }}>
+						<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={900} height={400} />
+						
+						<div className="control-row">
+							<label>Rate</label>
+							{mseg.sync ? (
+								<select
+									value={mseg.syncRateIndex}
+									onChange={(e) => onUpdate({ syncRateIndex: parseInt(e.target.value) })}
+									style={{ padding: '0.5rem', background: '#333', color: '#fff', border: 'none', borderRadius: '4px' }}
+								>
+									{syncRates.map((rate, i) => (
+										<option key={i} value={i}>{rate}</option>
+									))}
+								</select>
+							) : (
+								<div className="control-value-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+									<input
+										type="range"
+										min="0.1"
+										max="20"
+										step="0.1"
+										value={mseg.rate}
+										onChange={(e) => onUpdate({ rate: parseFloat(e.target.value) })}
+										style={{ flex: 1 }}
+									/>
+									<span>{mseg.rate.toFixed(1)} Hz</span>
+								</div>
+							)}
+						</div>
+					</div>
+				</div>
+			</div>
+		);
+	}
+
+	return (
+		<div className="lfo-controls" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem', background: '#1a1a1a', borderRadius: '8px', width: '220px' }}>
+			<div className="control-group-header" style={{ marginBottom: '0.5rem' }}>
+				<h4 style={{ margin: 0 }}>{mseg.name}</h4>
+				<button onClick={() => setIsExpanded(true)} style={{ fontSize: '0.8rem', padding: '0.2rem 0.5rem' }}>Edit</button>
+			</div>
+			
+			<div onClick={() => setIsExpanded(true)} style={{ cursor: 'pointer' }}>
+				<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={200} height={100} readOnly={true} />
+			</div>
+		</div>
+	);
+};
+
+interface BottomTabsProps {
+	lfoStates: LFOState[];
+	handleLfoUpdate: (lfoId: string, updates: Partial<LFOState>) => void;
+	msegs: MSEGState[];
+	handleMsegUpdate: (msegId: string, updates: Partial<MSEGState>) => void;
+	engineStates: EngineState[];
+	handleEngineUpdate: (engineId: string, updates: Partial<EngineState>) => void;
+	onRandomize: (mode: RandomizeMode, scope: string) => void;
+	onInitialize: (scope: string) => void;
+	bpm: number;
+	lockState: LockState;
+	onToggleLock: (path: string) => void;
+	onEditLfo: (lfoId: string) => void;
+}
+
 const BottomTabs: React.FC<BottomTabsProps> = ({
 	lfoStates,
 	handleLfoUpdate,
+	msegs,
+	handleMsegUpdate,
 	engineStates,
 	handleEngineUpdate,
 	onRandomize,
@@ -5213,7 +5715,7 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 	onToggleLock,
 	onEditLfo,
 }) => {
-	const [activeTab, setActiveTab] = useState<"lfos" | "routing">("lfos");
+	const [activeTab, setActiveTab] = useState<"lfos" | "msegs" | "routing">("lfos");
 
 	return (
 		<div className="bottom-module-container">
@@ -5226,6 +5728,14 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 						onClick={() => setActiveTab("lfos")}
 					>
 						LFOs
+					</button>
+					<button
+						className={`bottom-tab-button ${
+							activeTab === "msegs" ? "active" : ""
+						}`}
+						onClick={() => setActiveTab("msegs")}
+					>
+						MSEGs
 					</button>
 					<button
 						className={`bottom-tab-button ${
@@ -5281,10 +5791,26 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 					))}
 				</div>
 			)}
+			{activeTab === "msegs" && (
+				<div className="lfo-grid-container">
+					{msegs.map((mseg) => (
+						<MSEGControls
+							key={mseg.id}
+							mseg={mseg}
+							onUpdate={(updates) => handleMsegUpdate(mseg.id, updates)}
+							bpm={bpm}
+							lockState={lockState}
+							onToggleLock={onToggleLock}
+						/>
+					))}
+				</div>
+			)}
 			{activeTab === "routing" && (
 				<RoutingMatrix
 					lfoStates={lfoStates}
 					onLfoUpdate={handleLfoUpdate}
+					msegs={msegs}
+					onMsegUpdate={handleMsegUpdate}
 					engineStates={engineStates}
 					onEngineUpdate={handleEngineUpdate}
 				/>
@@ -5322,6 +5848,17 @@ const App: React.FC = () => {
 			}
 		>
 	>(new Map());
+	const msegNodesRef = useRef<
+		Map<
+			string,
+			{
+				gain: GainNode;
+				source: AudioBufferSourceNode | null;
+				buffer: AudioBuffer | null;
+				cachedState: MSEGState | null;
+			}
+		>
+	>(new Map());
 	const lfoRoutingBussesRef = useRef<LfoRoutingBusses | null>(null);
 	const samplesRef = useRef<Map<string, AudioBuffer>>(new Map());
 	const activeVoicesRef = useRef<Map<string, ActiveVoice>>(new Map());
@@ -5342,6 +5879,7 @@ const App: React.FC = () => {
 		initialAppState.engines
 	);
 	const [lfos, setLfos] = useState<LFOState[]>(initialAppState.lfos);
+	const [msegs, setMsegs] = useState<MSEGState[]>(initialAppState.msegs);
 	const [filter1State, setFilter1State] = useState<FilterState>(
 		initialAppState.filter1
 	);
@@ -5405,11 +5943,6 @@ const App: React.FC = () => {
 	const [editingMelodyEngineId, setEditingMelodyEngineId] = useState<string | null>(null);
 	const [editingLfoId, setEditingLfoId] = useState<string | null>(null);
 
-	const syncRates = useMemo(
-		() => ["1/64", "1/32", "1/16", "1/8", "1/8d", "1/4", "1/4d", "1/2", "1/1", "2/1", "4/1"],
-		[]
-	);
-
 	const [lockState, setLockState] = useState<LockState>(getInitialLockState());
 
 	// Global Auto-Random State
@@ -5426,6 +5959,7 @@ const App: React.FC = () => {
 	const latestStateRef = useRef({ 
 		engines, 
 		lfos, 
+		msegs,
 		filter1State, 
 		filter2State, 
 		filterRouting, 
@@ -5453,6 +5987,7 @@ const App: React.FC = () => {
 		latestStateRef.current = {
 			engines,
 			lfos,
+			msegs,
 			filter1State,
 			filter2State,
 			filterRouting,
@@ -5478,6 +6013,7 @@ const App: React.FC = () => {
 	}, [
 		engines,
 		lfos,
+		msegs,
 		filter1State,
 		filter2State,
 		filterRouting,
@@ -5620,6 +6156,7 @@ const App: React.FC = () => {
 		const currentState: Preset["data"] = {
 			engines,
 			lfos,
+			msegs,
 			filter1: filter1State,
 			filter2: filter2State,
 			filterRouting,
@@ -5660,6 +6197,7 @@ const App: React.FC = () => {
 		const currentState: Preset["data"] = {
 			engines,
 			lfos,
+			msegs,
 			filter1: filter1State,
 			filter2: filter2State,
 			filterRouting,
@@ -5687,6 +6225,7 @@ const App: React.FC = () => {
 		if (previousState) {
 			setEngines(previousState.engines);
 			setLfos(previousState.lfos);
+			setMsegs(previousState.msegs || initialAppState.msegs);
 			setFilter1State(previousState.filter1);
 			setFilter2State(previousState.filter2);
 			setFilterRouting(previousState.filterRouting);
@@ -5709,7 +6248,7 @@ const App: React.FC = () => {
 			setMorphSyncRateIndex(previousState.morphSyncRateIndex);
 		}
 	}, [
-		engines, lfos, filter1State, filter2State, filterRouting, masterEffects,
+		engines, lfos, msegs, filter1State, filter2State, filterRouting, masterEffects,
 		bpm, scale, transpose, harmonicTuningSystem, voicingMode, glideTime,
 		isGlideSynced, glideSyncRateIndex, isGlobalAutoRandomEnabled,
 		globalAutoRandomInterval, globalAutoRandomMode, isAutoRandomSynced,
@@ -5722,6 +6261,7 @@ const App: React.FC = () => {
 		const currentState: Preset["data"] = {
 			engines,
 			lfos,
+			msegs,
 			filter1: filter1State,
 			filter2: filter2State,
 			filterRouting,
@@ -5749,6 +6289,7 @@ const App: React.FC = () => {
 		if (nextState) {
 			setEngines(nextState.engines);
 			setLfos(nextState.lfos);
+			setMsegs(nextState.msegs || initialAppState.msegs);
 			setFilter1State(nextState.filter1);
 			setFilter2State(nextState.filter2);
 			setFilterRouting(nextState.filterRouting);
@@ -6013,6 +6554,72 @@ const App: React.FC = () => {
 					return { ...lfo, ...newState };
 				});
 
+				const newMsegs = msegs.map((mseg): MSEGState => {
+					if (scope !== "global" && scope !== mseg.id) return mseg;
+					const locks = lockState.msegs[mseg.id];
+					const shouldChangeRhythm = mode === "rhythmic" || mode === "chaos";
+					const shouldChangeMelody = mode === "melodic" || mode === "chaos";
+
+					const newState: Partial<MSEGState> = {};
+					if (shouldChangeRhythm && !locks.rate) newState.rate = getRandom(0.1, 20);
+					if (shouldChangeRhythm && !locks.sync) newState.sync = getRandomBool();
+					if (shouldChangeRhythm && !locks.syncRate)
+						newState.syncRateIndex = getRandomInt(0, syncRates.length - 1);
+					
+					if (shouldChangeMelody && !locks.points) {
+						// Enhanced Pattern Generation
+						const points: MSEGPoint[] = [];
+						const isChaos = mode === "chaos";
+						
+						if (isChaos) {
+							// Chaos: Random points, random curves
+							const numPoints = getRandomInt(3, 12);
+							points.push({ time: 0, value: getRandom(0, 1), curve: getRandom(-0.8, 0.8) });
+							for(let i=1; i<numPoints-1; i++) {
+								points.push({ 
+									time: getRandom(0.05, 0.95), 
+									value: getRandom(0, 1), 
+									curve: getRandom(-0.8, 0.8) 
+								});
+							}
+							points.push({ time: 1, value: getRandom(0, 1), curve: 0 });
+						} else {
+							// Melodic/Rhythmic: Grid-snapped, cleaner shapes
+							const gridDivisions = getRandomElement([4, 8, 16]);
+							const numPoints = getRandomInt(3, 9);
+							
+							// Always start at 0
+							points.push({ time: 0, value: getRandomElement([0, 0.5, 1]), curve: getRandom(-0.5, 0.5) });
+							
+							// Generate intermediate points on grid
+							const usedTimes = new Set([0, 1]);
+							for(let i=0; i<numPoints-2; i++) {
+								let t = Math.floor(getRandom(1, gridDivisions)) / gridDivisions;
+								if (!usedTimes.has(t)) {
+									usedTimes.add(t);
+									points.push({ 
+										time: t, 
+										value: getRandomElement([0, 0.25, 0.5, 0.75, 1]), 
+										curve: getRandom(-0.5, 0.5) 
+									});
+								}
+							}
+							
+							// End point
+							points.push({ time: 1, value: getRandomElement([0, 0.5, 1]), curve: 0 });
+						}
+						
+						points.sort((a,b) => a.time - b.time);
+						newState.points = points;
+					}
+					
+					if (shouldChangeRhythm && !locks.loop) newState.loop = getRandomBool();
+
+					if (mode === "chaos" && scope === "global") newState.routing = randomizeRouting();
+
+					return { ...mseg, ...newState };
+				});
+
 				const shouldChangeMelodyGlobal = mode === "melodic" || mode === "chaos";
 
 				const newFilter1 =
@@ -6088,6 +6695,7 @@ const App: React.FC = () => {
 				return {
 					engines: newEngines,
 					lfos: newLfos,
+					msegs: newMsegs,
 					filter1State: newFilter1,
 					filter2State: newFilter2,
 					masterEffects: newMasterEffects,
@@ -6702,6 +7310,28 @@ const App: React.FC = () => {
 	}, [audioContext]);
 	
 	const noteOn = useCallback((engineId: string, noteId: string, midiNote: number, time: number, explicitFrequency?: number) => {
+		// Trigger non-looping MSEGs
+		const { msegs } = latestStateRef.current;
+		if (msegs && msegNodesRef.current && audioContext) {
+			msegs.forEach(mseg => {
+				if (!mseg.loop) {
+					const nodes = msegNodesRef.current.get(mseg.id);
+					if (nodes && nodes.buffer) {
+						// Restart
+						if (nodes.source) {
+							try { nodes.source.stop(); } catch(e) {}
+							nodes.source.disconnect();
+						}
+						const source = audioContext.createBufferSource();
+						source.buffer = nodes.buffer;
+						source.loop = false;
+						source.connect(nodes.gain);
+						source.start(time);
+						nodes.source = source;
+					}
+				}
+			});
+		}
 		if (!audioContext) return;
 
 		const now = audioContext.currentTime;
@@ -7925,6 +8555,165 @@ const App: React.FC = () => {
         });
     }, [audioContext, lfos, bpm]);
 
+	// MSEG Update
+	useEffect(() => {
+		if (!audioContext || !msegNodesRef.current || !lfoRoutingBussesRef.current) return;
+		const now = audioContext.currentTime;
+
+		msegs.forEach(mseg => {
+			let nodes = msegNodesRef.current.get(mseg.id);
+            if (!nodes) {
+                 const gain = audioContext.createGain();
+                 nodes = { gain, source: null, buffer: null, cachedState: null };
+                 msegNodesRef.current.set(mseg.id, nodes);
+            }
+            
+            // Check if update needed
+            const cached = nodes.cachedState;
+            const needsUpdate = !cached || 
+                cached.points !== mseg.points || 
+                cached.rate !== mseg.rate || 
+                cached.sync !== mseg.sync || 
+                cached.syncRateIndex !== mseg.syncRateIndex ||
+                cached.loop !== mseg.loop;
+
+            if (needsUpdate) {
+                // Generate Buffer
+                let duration = 1;
+                if (mseg.sync) {
+                    const rateStr = syncRates[mseg.syncRateIndex] || "1/4";
+                    let beats = 1;
+                    
+                    let cleanRate = rateStr;
+                    let modifier = 1;
+                    if (rateStr.endsWith('d')) {
+                        cleanRate = rateStr.slice(0, -1);
+                        modifier = 1.5;
+                    } else if (rateStr.endsWith('t')) {
+                        cleanRate = rateStr.slice(0, -1);
+                        modifier = 2/3;
+                    }
+
+                    if (cleanRate.includes('/')) {
+                        const [num, den] = cleanRate.split('/').map(Number);
+                        if (den) beats = (4 * num) / den;
+                    } else {
+                        const val = parseFloat(cleanRate);
+                        if (val) beats = 4 / val;
+                    }
+                    beats *= modifier;
+                    duration = beats * (60 / Math.max(1, bpm));
+                } else {
+                    duration = 1 / Math.max(0.01, mseg.rate);
+                }
+                
+                const sampleRate = audioContext.sampleRate;
+                // Ensure at least 1 frame to prevent crash
+                const length = Math.max(1, Math.floor(duration * sampleRate));
+                const buffer = audioContext.createBuffer(1, length, sampleRate);
+                const data = buffer.getChannelData(0);
+                
+                // Render points
+                const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
+                if (sortedPoints.length === 0) {
+                    data.fill(0);
+                } else {
+                    // Fill buffer
+                    for (let i = 0; i < length; i++) {
+                        const t = i / length; // 0 to 1
+                        // Find segment
+                        let p1 = sortedPoints[0];
+                        let p2 = sortedPoints[0];
+                        
+                        if (t <= sortedPoints[0].time) {
+                            p1 = sortedPoints[0];
+                            p2 = sortedPoints[0];
+                        } else if (t >= sortedPoints[sortedPoints.length - 1].time) {
+                            p1 = sortedPoints[sortedPoints.length - 1];
+                            p2 = sortedPoints[sortedPoints.length - 1];
+                        } else {
+                            for (let j = 0; j < sortedPoints.length - 1; j++) {
+                                if (t >= sortedPoints[j].time && t <= sortedPoints[j+1].time) {
+                                    p1 = sortedPoints[j];
+                                    p2 = sortedPoints[j+1];
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (p1 === p2) {
+                            data[i] = p1.value;
+                        } else {
+                            const segmentDuration = p2.time - p1.time;
+                            let segmentT = (t - p1.time) / segmentDuration;
+                            
+                            // Apply curve
+                            // Simple power curve approximation or quadratic bezier logic
+                            // Let's use a power-like curve for smoother modulation response
+                            // curve > 0: convex (fast start), curve < 0: concave (slow start)
+                            // Map -1..1 to power 0.1..10
+                            
+                            if (Math.abs(p1.curve) > 0.01) {
+                                // Bending logic:
+                                // We want to map linear T (0..1) to a curved T' (0..1)
+                                // Standard approach: t' = t^power
+                                // If curve is 0.5, we want it to bend "up" (convex) -> power < 1
+                                // If curve is -0.5, we want it to bend "down" (concave) -> power > 1
+                                
+                                const power = p1.curve > 0 
+                                    ? 1 - p1.curve * 0.9 // 0.1 to 1
+                                    : 1 - p1.curve * 4;  // 1 to 5 (approx)
+                                    
+                                segmentT = Math.pow(segmentT, power);
+                            }
+
+                            data[i] = p1.value + (p2.value - p1.value) * segmentT;
+                        }
+                    }
+                }
+                
+                nodes.buffer = buffer;
+                nodes.cachedState = mseg;
+                
+                // Restart Source
+                if (nodes.source) {
+                    try { nodes.source.stop(); } catch(e) {}
+                    nodes.source.disconnect();
+                }
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.loop = mseg.loop;
+                source.connect(nodes.gain);
+                source.start(now);
+                nodes.source = source;
+            }
+            
+            // Update Routing
+             Object.entries(mseg.routing).forEach(([dest, isConnected]) => {
+				const destKey = dest as keyof LFORoutingState;
+				let targetBus: GainNode | undefined;
+				if (destKey.startsWith('filter')) {
+					const filterNum = destKey.includes('1') ? 'filter1' : 'filter2';
+					const param = destKey.includes('Cutoff') ? 'cutoffModBus' : 'resonanceModBus';
+					targetBus = lfoRoutingBussesRef.current![filterNum][param];
+				} else if (destKey.startsWith('engine')) {
+					const engineId = `engine${destKey.charAt(6)}`;
+					const paramKey = destKey.substring(7) as keyof EngineModBusses;
+					const busKey = paramKey.charAt(0).toLowerCase() + paramKey.slice(1);
+					targetBus = lfoRoutingBussesRef.current!.engineModBusses.get(engineId)?.[busKey as keyof EngineModBusses];
+				}
+
+                if (targetBus) {
+					try { nodes!.gain.disconnect(targetBus); } catch(e) {}
+                    if (isConnected) {
+						nodes!.gain.connect(targetBus);
+					}
+                }
+            });
+		});
+	}, [audioContext, msegs, bpm]);
+
 	// Sequencer Modulation Routing Update
 	useEffect(() => {
 		if (!audioContext || !lfoRoutingBussesRef.current) return;
@@ -8487,6 +9276,7 @@ const App: React.FC = () => {
 			const initial = getInitialState();
 			setEngines(initial.engines);
 			setLfos(initial.lfos);
+			setMsegs(initial.msegs);
 			setFilter1State(initial.filter1);
 			setFilter2State(initial.filter2);
 			setMasterEffects(initial.masterEffects);
@@ -8957,6 +9747,8 @@ const App: React.FC = () => {
 					<BottomTabs 
 						lfoStates={lfos}
 						handleLfoUpdate={(lfoId, updates) => setLfos(prev => prev.map(l => l.id === lfoId ? {...l, ...updates} : l))}
+						msegs={msegs}
+						handleMsegUpdate={(msegId, updates) => setMsegs(prev => prev.map(m => m.id === msegId ? {...m, ...updates} : m))}
 						engineStates={engines}
 						handleEngineUpdate={handleEngineUpdate}
 						onRandomize={handleRandomize}
