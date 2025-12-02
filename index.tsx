@@ -2068,6 +2068,15 @@ const TopBar: React.FC<TopBarProps> = ({
 	linkLatency,
 	setLinkLatency,
 }) => {
+	const [localBpm, setLocalBpm] = useState(bpm);
+	const [isDraggingBpm, setIsDraggingBpm] = useState(false);
+
+	useEffect(() => {
+		if (!isDraggingBpm) {
+			setLocalBpm(bpm);
+		}
+	}, [bpm, isDraggingBpm]);
+
 	const handleDebug = () => {
 		console.log("--- DEBUG STATE ---");
 		console.log("AudioContext State:", new (window.AudioContext || (window as any).webkitAudioContext)().state); // Check global context state if possible, or just log
@@ -2222,8 +2231,16 @@ const TopBar: React.FC<TopBarProps> = ({
 									type="range"
 									min="30"
 									max="300"
-									value={bpm}
-									onChange={(e) => setBPM(parseInt(e.target.value))}
+									value={localBpm}
+									onChange={(e) => {
+										const newVal = parseInt(e.target.value);
+										setLocalBpm(newVal);
+										setBPM(newVal);
+									}}
+									onMouseDown={() => setIsDraggingBpm(true)}
+									onMouseUp={() => setIsDraggingBpm(false)}
+									onTouchStart={() => setIsDraggingBpm(true)}
+									onTouchEnd={() => setIsDraggingBpm(false)}
 									style={{ width: '80px' }}
 								/>
 								<span style={{ minWidth: '30px' }}>{bpm.toFixed(1)}</span>
@@ -2553,7 +2570,7 @@ const MainControlPanel: React.FC<MainControlPanelProps> = ({
 							<div className="control-value-wrapper">
 								<input
 									type="range"
-									min="100"
+									min="0"
 									max="8000"
 									step="10"
 									value={morphTime}
@@ -5955,6 +5972,7 @@ const App: React.FC = () => {
 	const linkStartBeatRef = useRef<number | null>(null);
 	const shouldQuantizeStart = useRef(false);
 	const isWaitingForLinkStart = useRef(false);
+	const isRemoteBpmUpdate = useRef(false);
 
 	// Ableton Link Integration
 	useEffect(() => {
@@ -5968,6 +5986,7 @@ const App: React.FC = () => {
 			});
 
 			socket.on("link-state", (state: { bpm: number; phase: number; beat: number; isPlaying: boolean }) => {
+				isRemoteBpmUpdate.current = true;
 				setBPM(state.bpm);
 				if (state.isPlaying !== isTransportPlaying) {
 					isRemoteTransportUpdate.current = true;
@@ -5977,6 +5996,7 @@ const App: React.FC = () => {
 			});
 
 			socket.on("bpm-changed", (newBpm: number) => {
+				isRemoteBpmUpdate.current = true;
 				setBPM(newBpm);
 			});
 
@@ -6002,6 +6022,7 @@ const App: React.FC = () => {
 				
 				// Sync BPM if changed externally
 				if (Math.abs(state.bpm - latestStateRef.current.bpm) > 0.01) {
+					isRemoteBpmUpdate.current = true;
 					setBPM(state.bpm);
 				}
 				
@@ -6156,12 +6177,10 @@ const App: React.FC = () => {
 	// Emit BPM Changes to Link
 	useEffect(() => {
 		if (clockSource === "link" && linkSocketRef.current) {
-			// Debounce or check if change originated from Link to avoid loops?
-			// For now, let's assume UI change should propagate.
-			// But we need to distinguish UI change from Link update.
-			// The socket.on("bpm-changed") updates state, which triggers this effect.
-			// We can check if the value is different from what we last received?
-			// Or just emit, and server handles it.
+			if (isRemoteBpmUpdate.current) {
+				isRemoteBpmUpdate.current = false;
+				return;
+			}
 			linkSocketRef.current.emit("set-bpm", bpm);
 		}
 	}, [bpm, clockSource]);
@@ -6984,17 +7003,26 @@ const App: React.FC = () => {
         }
     }, [isTransportPlaying, audioContext, noteOn, noteOff]);
 
+	// Keep track of midiAccess to prevent garbage collection
+	const midiAccessRef = useRef<any>(null);
+
 	// MIDI Setup
 	useEffect(() => {
 		const setupMidi = async () => {
 			if (navigator.requestMIDIAccess) {
 				try {
 					const midiAccess = await navigator.requestMIDIAccess();
-					const inputs = Array.from(midiAccess.inputs.values());
-					setMidiInputs(inputs);
+					midiAccessRef.current = midiAccess; // Store in ref
+					
+					const getConnectedInputs = () => {
+						return Array.from(midiAccess.inputs.values()).filter(input => input.state !== "disconnected");
+					};
 
-					midiAccess.onstatechange = () => {
-						setMidiInputs(Array.from(midiAccess.inputs.values()));
+					setMidiInputs(getConnectedInputs());
+
+					midiAccess.onstatechange = (e: any) => {
+						console.log("MIDI State Change:", e.port.name, e.port.state, e.port.connection);
+						setMidiInputs(getConnectedInputs());
 					};
 				} catch (error) {
 					console.error("MIDI access denied or not available.", error);
