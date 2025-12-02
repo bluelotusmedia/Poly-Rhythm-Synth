@@ -1895,15 +1895,15 @@ const LockIcon = ({ isLocked, onClick, title }: { isLocked: boolean; onClick: (e
 
 const UndoIcon = () => (
 	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-		<path d="M3 7v6h6" />
-		<path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+		<path d="M9 14 4 9l5-5" fill="none"/>
+		<path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11" fill="none"/>
 	</svg>
 );
 
 const RedoIcon = () => (
 	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-		<path d="M21 7v6h-6" />
-		<path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
+		<path d="m15 14 5-5-5-5" fill="none"/>
+		<path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13" fill="none"/>
 	</svg>
 );
 
