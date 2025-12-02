@@ -183,6 +183,7 @@ interface MSEGState {
 	name: string;
 	points: MSEGPoint[];
 	loop: boolean;
+	retrigger: boolean; // New: Restart on note on even if looping
 	sync: boolean;
 	rate: number; // Hz if not synced
 	syncRateIndex: number;
@@ -863,6 +864,7 @@ const getInitialState = () => {
 				name: "MSEG 1",
 				points: [{ time: 0, value: 0, curve: 0 }, { time: 0.5, value: 1, curve: 0 }, { time: 1, value: 0, curve: 0 }],
 				loop: true,
+				retrigger: false,
 				sync: true,
 				rate: 1,
 				syncRateIndex: 3,
@@ -873,6 +875,7 @@ const getInitialState = () => {
 				name: "MSEG 2",
 				points: [{ time: 0, value: 1, curve: 0 }, { time: 1, value: 0, curve: 0 }],
 				loop: false,
+				retrigger: true,
 				sync: true,
 				rate: 0.5,
 				syncRateIndex: 4,
@@ -883,6 +886,7 @@ const getInitialState = () => {
 				name: "MSEG 3",
 				points: [{ time: 0, value: 0, curve: 0 }, { time: 0.2, value: 1, curve: 0 }, { time: 0.4, value: 0.5, curve: 0 }, { time: 1, value: 0, curve: 0 }],
 				loop: true,
+				retrigger: false,
 				sync: false,
 				rate: 2,
 				syncRateIndex: 3,
@@ -967,6 +971,7 @@ const getInitialLockState = (): LockState => {
 					syncRate: false,
 					points: false,
 					loop: false,
+					retrigger: false,
 				},
 			])
 		),
@@ -1029,6 +1034,89 @@ const getDefaultEffectParams = (
 		default:
 			return {};
 	}
+};
+
+const calculateMSEGValue = (mseg: MSEGState, time: number, bpm: number, triggerTime: number = 0): number => {
+	// Calculate frequency/duration
+	let duration = 1; // seconds
+	if (mseg.sync) {
+		const syncRate = syncRates[mseg.syncRateIndex];
+		duration = calculateTimeFromSync(bpm, true, mseg.syncRateIndex, syncRates, 1000) / 1000;
+	} else {
+		duration = 1 / mseg.rate;
+	}
+
+	if (duration <= 0) return 0;
+
+	// Calculate phase
+	let phase = 0;
+	if (mseg.loop) {
+		// Free running loop
+		phase = (time % duration) / duration;
+	} else {
+		// Triggered one-shot
+		const elapsed = time - triggerTime;
+		if (elapsed < 0) return 0; // Not triggered yet
+		if (elapsed >= duration) return mseg.points[mseg.points.length - 1].value; // Hold last value
+		phase = elapsed / duration;
+	}
+
+	// Find segment
+	const points = mseg.points;
+	if (points.length < 2) return 0;
+
+	// Sort points just in case (though they should be sorted)
+	// Optimization: assume sorted for performance in audio loop? Let's rely on state being sorted.
+	
+	let p1 = points[0];
+	let p2 = points[1];
+	
+	// Handle phase wrapping for loop? 
+	// The points define the shape from 0 to 1.
+	// We just need to find where 'phase' falls.
+	
+	for (let i = 0; i < points.length - 1; i++) {
+		if (phase >= points[i].time && phase <= points[i+1].time) {
+			p1 = points[i];
+			p2 = points[i+1];
+			break;
+		}
+	}
+	
+	// Interpolate
+	const segmentDuration = p2.time - p1.time;
+	if (segmentDuration <= 0) return p1.value;
+	
+	const t = (phase - p1.time) / segmentDuration;
+	
+	// Apply Curve
+	// Curve is -1 to 1. 
+	// 0 = linear.
+	// Positive = exponential (fast start, slow end)? Or ease-out?
+	// Negative = logarithmic (slow start, fast end)? Or ease-in?
+	// Let's match the canvas visualization logic or standard MSEG curves.
+	// Canvas uses quadratic bezier control point.
+	// Here we need a 1D function y = f(t).
+	// Power function is common: y = t^k
+	
+	let k = 1;
+	if (p1.curve !== 0) {
+		// Map curve -1..1 to exponent
+		// 0 -> 1
+		// 1 -> 3 (or higher)
+		// -1 -> 0.33 (or lower)
+		if (p1.curve > 0) {
+			k = 1 + p1.curve * 4; // 1 to 5
+		} else {
+			k = 1 / (1 + Math.abs(p1.curve) * 4); // 1 to 0.2
+		}
+	}
+	
+	// Simple power curve for now. 
+	// Note: This might not match the Bezier perfectly but is good for audio modulation.
+	const curvedT = Math.pow(t, k);
+	
+	return p1.value + (p2.value - p1.value) * curvedT;
 };
 
 const createRandomizedEffectParams = (
@@ -5313,37 +5401,53 @@ interface MSEGEditorProps {
 	width?: number;
 	height?: number;
 	readOnly?: boolean;
+	audioContext?: AudioContext | null;
+	gridSubdivision?: number;
 }
 
-const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, height = 200, readOnly = false }) => {
+const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, height = 200, readOnly = false, audioContext, gridSubdivision = 16 }) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const [draggedPointIndex, setDraggedPointIndex] = useState<number | null>(null);
 	const [draggedCurveIndex, setDraggedCurveIndex] = useState<number | null>(null);
+	const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
+	const [hoveredCurveIndex, setHoveredCurveIndex] = useState<number | null>(null);
 
+	// Animation loop for playhead
 	useEffect(() => {
-		const canvas = canvasRef.current;
-		if (!canvas) return;
-		const ctx = canvas.getContext("2d");
-		if (!ctx) return;
+		let animationFrameId: number;
 
-		const draw = () => {
+		const render = () => {
+			const canvas = canvasRef.current;
+			if (!canvas) return;
+			const ctx = canvas.getContext("2d");
+			if (!ctx) return;
+
 			ctx.clearRect(0, 0, width, height);
 
-			// Draw Grid
+			// --- 1. Draw Grid ---
 			ctx.strokeStyle = "#333";
 			ctx.lineWidth = 1;
 			ctx.beginPath();
-			for (let i = 0; i <= 10; i++) {
-				const x = (i / 10) * width;
+			
+			// Vertical Grid (Time)
+			// Use gridSubdivision
+			const divisions = mseg.sync ? gridSubdivision : 10; 
+			for (let i = 0; i <= divisions; i++) {
+				const x = (i / divisions) * width;
 				ctx.moveTo(x, 0);
 				ctx.lineTo(x, height);
-				const y = (i / 10) * height;
+			}
+			
+			// Horizontal Grid (Value)
+			// Draw center line and quarters
+			for (let i = 0; i <= 4; i++) {
+				const y = (i / 4) * height;
 				ctx.moveTo(0, y);
 				ctx.lineTo(width, y);
 			}
 			ctx.stroke();
 
-			// Draw MSEG Line
+			// --- 2. Draw MSEG Line ---
 			ctx.strokeStyle = "#00ffcc";
 			ctx.lineWidth = 2;
 			ctx.beginPath();
@@ -5363,20 +5467,14 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 					const x2 = p2.time * width;
 					const y2 = (1 - p2.value) * height;
 
-					// Calculate control point for quadratic curve
-					// Curve value -1 to 1. 0 is linear.
-					// We offset the midpoint perpendicular to the line.
+					// Curve Logic
 					const midX = (x1 + x2) / 2;
 					const midY = (y1 + y2) / 2;
-					
-					// Perpendicular vector
 					const dx = x2 - x1;
 					const dy = y2 - y1;
 					const len = Math.sqrt(dx*dx + dy*dy);
 					const perpX = -dy / len;
 					const perpY = dx / len;
-					
-					// Control point offset
 					const offset = p1.curve * len * 0.5;
 					const cpX = midX + perpX * offset;
 					const cpY = midY + perpY * offset;
@@ -5386,57 +5484,106 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 			}
 			ctx.stroke();
 
-			// Draw Points
+			// --- 3. Draw Points ---
 			sortedPoints.forEach((p, i) => {
 				const x = p.time * width;
 				const y = (1 - p.value) * height;
 				
-				ctx.fillStyle = draggedPointIndex === i ? "#fff" : "#00ffcc";
+				const isHovered = hoveredPointIndex === i;
+				const isDragged = draggedPointIndex === i;
+				
+				ctx.fillStyle = isDragged || isHovered ? "#fff" : "#00ffcc";
 				ctx.beginPath();
-				ctx.arc(x, y, readOnly ? 3 : 5, 0, Math.PI * 2);
+				// Larger radius for interaction, visual radius smaller
+				const radius = readOnly ? 3 : (isHovered || isDragged ? 7 : 5);
+				ctx.arc(x, y, radius, 0, Math.PI * 2);
 				ctx.fill();
+				
+				// Stroke for selected/hovered
+				if (isHovered || isDragged) {
+					ctx.strokeStyle = "#fff";
+					ctx.lineWidth = 2;
+					ctx.stroke();
+				}
 			});
 			
-			// Draw Curve Handles (visual feedback when dragging curve)
-			if (draggedCurveIndex !== null) {
-				const p1 = sortedPoints[draggedCurveIndex];
-				const p2 = sortedPoints[draggedCurveIndex + 1];
-				if (p1 && p2) {
-					const x1 = p1.time * width;
-					const y1 = (1 - p1.value) * height;
-					const x2 = p2.time * width;
-					const y2 = (1 - p2.value) * height;
-					const midX = (x1 + x2) / 2;
-					const midY = (y1 + y2) / 2;
-					const dx = x2 - x1;
-					const dy = y2 - y1;
-					const len = Math.sqrt(dx*dx + dy*dy);
-					const perpX = -dy / len;
-					const perpY = dx / len;
-					const offset = p1.curve * len * 0.5;
-					const cpX = midX + perpX * offset;
-					const cpY = midY + perpY * offset;
-					
-					ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
-					ctx.beginPath();
-					ctx.arc(cpX, cpY, 4, 0, Math.PI * 2);
-					ctx.fill();
+			// --- 4. Draw Curve Handles (on hover/drag) ---
+			if (!readOnly) {
+				for (let i = 0; i < sortedPoints.length - 1; i++) {
+					if (i === hoveredCurveIndex || i === draggedCurveIndex) {
+						const p1 = sortedPoints[i];
+						const p2 = sortedPoints[i + 1];
+						const x1 = p1.time * width;
+						const y1 = (1 - p1.value) * height;
+						const x2 = p2.time * width;
+						const y2 = (1 - p2.value) * height;
+						const midX = (x1 + x2) / 2;
+						const midY = (y1 + y2) / 2;
+						const dx = x2 - x1;
+						const dy = y2 - y1;
+						const len = Math.sqrt(dx*dx + dy*dy);
+						const perpX = -dy / len;
+						const perpY = dx / len;
+						const offset = p1.curve * len * 0.5;
+						const cpX = midX + perpX * offset;
+						const cpY = midY + perpY * offset;
+						
+						ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+						ctx.beginPath();
+						ctx.arc(cpX, cpY, 4, 0, Math.PI * 2);
+						ctx.fill();
+					}
 				}
 			}
+
+			// --- 5. Playhead ---
+			if (audioContext && !readOnly) {
+				// Calculate phase based on time
+				// This is an approximation. A real robust implementation would need exact trigger times from the engine.
+				// For looping synced MSEGs, we can use global time.
+				if (mseg.loop && mseg.sync) {
+					// ... (Sync calculation logic same as buffer gen) ...
+					// Simplified for visualization:
+					const now = audioContext.currentTime;
+					// Assuming 120bpm default if not passed, but we should pass bpm. 
+					// For now, let's just animate a simple looper if we can't get exact phase.
+					// A better approach: The engine should write the current phase to a SharedArrayBuffer or similar, 
+					// but for React, we can just estimate.
+					
+					// Let's draw a "ghost" playhead that just loops 0-1 based on rate
+					// This is purely visual feedback that it IS running.
+					
+					// TODO: Pass actual phase from engine for accurate visualization
+				}
+			}
+
+			animationFrameId = requestAnimationFrame(render);
 		};
 
-		draw();
-	}, [mseg.points, width, height, draggedPointIndex, draggedCurveIndex, readOnly]);
+		render();
+
+		return () => cancelAnimationFrame(animationFrameId);
+	}, [mseg, width, height, draggedPointIndex, draggedCurveIndex, hoveredPointIndex, hoveredCurveIndex, readOnly, audioContext]);
+
+	// --- Interaction Handlers ---
+
+	const getMousePos = (e: React.MouseEvent) => {
+		const canvas = canvasRef.current;
+		if (!canvas) return { x: 0, y: 0 };
+		const rect = canvas.getBoundingClientRect();
+		const scaleX = canvas.width / rect.width;
+		const scaleY = canvas.height / rect.height;
+		return {
+			x: (e.clientX - rect.left) * scaleX,
+			y: (e.clientY - rect.top) * scaleY
+		};
+	};
 
 	const handleMouseDown = (e: React.MouseEvent) => {
 		if (readOnly) return;
-		const canvas = canvasRef.current;
-		if (!canvas) return;
-		const rect = canvas.getBoundingClientRect();
-		const x = e.clientX - rect.left;
-		const y = e.clientY - rect.top;
-
-		// Check if clicking existing point
+		const { x, y } = getMousePos(e);
+		
+		// 1. Check Points
 		const clickThreshold = 10;
 		const pointIndex = mseg.points.findIndex(p => {
 			const px = p.time * width;
@@ -5445,19 +5592,75 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 		});
 
 		if (pointIndex !== -1) {
-			// Remove point on double click (simulated with modifier for now or just check logic)
+			// Alt + Click = Reset Point Value/Curve
 			if (e.altKey) {
-				if (mseg.points.length > 2) {
-					const newPoints = [...mseg.points];
-					newPoints.splice(pointIndex, 1);
-					onUpdate({ points: newPoints });
-				}
-			} else {
-				setDraggedPointIndex(pointIndex);
+				const newPoints = [...mseg.points];
+				// Reset curve
+				if (pointIndex < newPoints.length - 1) newPoints[pointIndex].curve = 0;
+				// Reset value (snap to 0, 0.5, 1)
+				// For now just set to 0.5 or nearest grid? Let's just reset curve.
+				onUpdate({ points: newPoints });
+				return;
 			}
-		} else {
-			// Check if clicking near a segment to bend it (Alt + Click)
-			if (e.altKey) {
+			
+			setDraggedPointIndex(pointIndex);
+			return;
+		}
+
+		// 2. Check Curves (Segments)
+		// We check distance to the curve/line
+		const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
+		for (let i = 0; i < sortedPoints.length - 1; i++) {
+			const p1 = sortedPoints[i];
+			const p2 = sortedPoints[i + 1];
+			const x1 = p1.time * width;
+			const y1 = (1 - p1.value) * height;
+			const x2 = p2.time * width;
+			const y2 = (1 - p2.value) * height;
+			
+			// Simple distance to line segment
+			const A = x - x1;
+			const B = y - y1;
+			const C = x2 - x1;
+			const D = y2 - y1;
+			const dot = A * C + B * D;
+			const lenSq = C * C + D * D;
+			let param = -1;
+			if (lenSq !== 0) param = dot / lenSq;
+			
+			if (param >= 0 && param <= 1) {
+				const xx = x1 + param * C;
+				const yy = y1 + param * D;
+				const dist = Math.sqrt((x - xx) * (x - xx) + (y - yy) * (y - yy));
+				
+				// Larger threshold for easier grabbing
+				if (dist < 15) {
+					// Found a segment!
+					setDraggedCurveIndex(i);
+					return;
+				}
+			}
+		}
+	};
+
+	const handleMouseMove = (e: React.MouseEvent) => {
+		if (readOnly) return;
+		const { x, y } = getMousePos(e);
+		
+		// Update Hover State
+		if (draggedPointIndex === null && draggedCurveIndex === null) {
+			// Check Points
+			const clickThreshold = 10;
+			const pointIndex = mseg.points.findIndex(p => {
+				const px = p.time * width;
+				const py = (1 - p.value) * height;
+				return Math.sqrt(Math.pow(x - px, 2) + Math.pow(y - py, 2)) < clickThreshold;
+			});
+			setHoveredPointIndex(pointIndex !== -1 ? pointIndex : null);
+			
+			// Check Curves
+			if (pointIndex === -1) {
+				let curveIdx = null;
 				const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
 				for (let i = 0; i < sortedPoints.length - 1; i++) {
 					const p1 = sortedPoints[i];
@@ -5467,7 +5670,6 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 					const x2 = p2.time * width;
 					const y2 = (1 - p2.value) * height;
 					
-					// Simple distance check to line segment
 					const A = x - x1;
 					const B = y - y1;
 					const C = x2 - x1;
@@ -5481,43 +5683,45 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 						const xx = x1 + param * C;
 						const yy = y1 + param * D;
 						const dist = Math.sqrt((x - xx) * (x - xx) + (y - yy) * (y - yy));
-						if (dist < 10) {
-							setDraggedCurveIndex(i);
-							return;
+						if (dist < 15) {
+							curveIdx = i;
+							break;
 						}
 					}
 				}
-			}
-
-			// Add new point if not bending
-			if (!e.altKey) {
-				const time = Math.max(0, Math.min(1, x / width));
-				const value = Math.max(0, Math.min(1, 1 - y / height));
-				const newPoints = [...mseg.points, { time, value, curve: 0 }];
-				newPoints.sort((a, b) => a.time - b.time);
-				onUpdate({ points: newPoints });
+				setHoveredCurveIndex(curveIdx);
+			} else {
+				setHoveredCurveIndex(null);
 			}
 		}
-	};
 
-	const handleMouseMove = (e: React.MouseEvent) => {
-		if (readOnly) return;
-		const canvas = canvasRef.current;
-		if (!canvas) return;
-		const rect = canvas.getBoundingClientRect();
-		const x = e.clientX - rect.left;
-		const y = e.clientY - rect.top;
-
+		// Handle Dragging Point
 		if (draggedPointIndex !== null) {
-			const time = Math.max(0, Math.min(1, x / width));
-			const value = Math.max(0, Math.min(1, 1 - y / height));
+			let time = Math.max(0, Math.min(1, x / width));
+			let value = Math.max(0, Math.min(1, 1 - y / height));
+
+			// Shift = Fine Tune (no snap)
+			// Default = Snap to grid if close
+			if (!e.shiftKey) {
+				// Snap Time
+				const gridDivisions = mseg.sync ? gridSubdivision : 10;
+				const snapThreshold = 0.02;
+				const snappedTime = Math.round(time * gridDivisions) / gridDivisions;
+				if (Math.abs(time - snappedTime) < snapThreshold) time = snappedTime;
+				
+				// Snap Value
+				const valGrid = 4; // 0, 0.25, 0.5, 0.75, 1
+				const snappedVal = Math.round(value * valGrid) / valGrid;
+				if (Math.abs(value - snappedVal) < snapThreshold) value = snappedVal;
+			}
 
 			const newPoints = [...mseg.points];
 			newPoints[draggedPointIndex] = { ...newPoints[draggedPointIndex], time, value };
 			newPoints.sort((a, b) => a.time - b.time);
 			onUpdate({ points: newPoints });
-		} else if (draggedCurveIndex !== null) {
-			// Adjust curve based on mouse Y relative to segment midpoint
+		} 
+		// Handle Dragging Curve
+		else if (draggedCurveIndex !== null) {
 			const sortedPoints = [...mseg.points].sort((a, b) => a.time - b.time);
 			const p1 = sortedPoints[draggedCurveIndex];
 			const p2 = sortedPoints[draggedCurveIndex + 1];
@@ -5528,33 +5732,28 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 				const x2 = p2.time * width;
 				const y2 = (1 - p2.value) * height;
 				
-				// Calculate distance from line
 				const midX = (x1 + x2) / 2;
 				const midY = (y1 + y2) / 2;
 				
-				// Vector from mid to mouse
 				const dx = x - midX;
 				const dy = y - midY;
 				
-				// Perpendicular vector (normalized)
 				const segDx = x2 - x1;
 				const segDy = y2 - y1;
 				const segLen = Math.sqrt(segDx*segDx + segDy*segDy);
 				const perpX = -segDy / segLen;
 				const perpY = segDx / segLen;
 				
-				// Project mouse vector onto perpendicular
 				const projection = dx * perpX + dy * perpY;
 				
-				// Normalize curve value roughly -1 to 1 based on distance
-				// Max curve at roughly 1/2 segment length distance
+				// Sensitivity
 				let newCurve = (projection / (segLen * 0.5)) * 2;
 				newCurve = Math.max(-1, Math.min(1, newCurve));
 				
+				// Alt + Click resets curve (handled in MouseDown, but if dragging with Alt, maybe snap to 0?)
+				if (e.altKey && Math.abs(newCurve) < 0.1) newCurve = 0;
+
 				const newPoints = [...mseg.points];
-				// Find the actual index in the unsorted array if needed, but here we assume sorted order is maintained or we find by reference
-				// Since we sort every render, we need to be careful. 
-				// Best to find the point in the original array that matches p1
 				const originalIndex = newPoints.findIndex(p => p.time === p1.time && p.value === p1.value);
 				if (originalIndex !== -1) {
 					newPoints[originalIndex] = { ...newPoints[originalIndex], curve: newCurve };
@@ -5569,17 +5768,54 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 		setDraggedPointIndex(null);
 		setDraggedCurveIndex(null);
 	};
+	
+	const handleDoubleClick = (e: React.MouseEvent) => {
+		if (readOnly) return;
+		const { x, y } = getMousePos(e);
+		
+		// Check if double clicking a point -> Delete
+		const clickThreshold = 10;
+		const pointIndex = mseg.points.findIndex(p => {
+			const px = p.time * width;
+			const py = (1 - p.value) * height;
+			return Math.sqrt(Math.pow(x - px, 2) + Math.pow(y - py, 2)) < clickThreshold;
+		});
+
+		if (pointIndex !== -1) {
+			// Don't delete if only 2 points left
+			if (mseg.points.length > 2) {
+				const newPoints = [...mseg.points];
+				newPoints.splice(pointIndex, 1);
+				onUpdate({ points: newPoints });
+			}
+		} else {
+			// Add new point
+			const time = Math.max(0, Math.min(1, x / width));
+			const value = Math.max(0, Math.min(1, 1 - y / height));
+			const newPoints = [...mseg.points, { time, value, curve: 0 }];
+			newPoints.sort((a, b) => a.time - b.time);
+			onUpdate({ points: newPoints });
+		}
+	};
 
 	return (
 		<canvas
 			ref={canvasRef}
 			width={width}
 			height={height}
-			style={{ background: "#222", borderRadius: "4px", cursor: readOnly ? "default" : "crosshair" }}
+			style={{ 
+				background: "#222", 
+				borderRadius: "4px", 
+				cursor: readOnly ? "default" : (hoveredPointIndex !== null ? "pointer" : (hoveredCurveIndex !== null ? "ns-resize" : "crosshair")),
+				width: "100%",
+				height: "100%",
+				display: "block"
+			}}
 			onMouseDown={handleMouseDown}
 			onMouseMove={handleMouseMove}
 			onMouseUp={handleMouseUp}
 			onMouseLeave={handleMouseUp}
+			onDoubleClick={handleDoubleClick}
 		/>
 	);
 };
@@ -5590,14 +5826,17 @@ interface MSEGControlsProps {
 	bpm: number;
 	lockState: LockState;
 	onToggleLock: (path: string) => void;
+	audioContext: AudioContext | null;
+	onRandomize: (mode: RandomizeMode, scope: string) => void;
+	onInitialize: (scope: string) => void;
 }
 
-const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockState, onToggleLock }) => {
+const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockState, onToggleLock, audioContext, onRandomize, onInitialize }) => {
 	const [isExpanded, setIsExpanded] = useState(false);
+	const [gridSubdivision, setGridSubdivision] = useState(16);
 
 	const getLock = (path: string) => {
-		// Simplified lock check
-		return false; 
+		return lockState.msegs[mseg.id]?.[path] ?? false;
 	};
 
 	if (isExpanded) {
@@ -5626,7 +5865,24 @@ const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockSt
 				}}>
 					<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
 						<h2>{mseg.name} Editor</h2>
-						<button onClick={() => setIsExpanded(false)} style={{ padding: '0.5rem 1rem', background: '#444', border: 'none', color: '#fff', borderRadius: '4px', cursor: 'pointer' }}>Close</button>
+						<div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+							{mseg.sync && (
+								<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+									<label>Grid:</label>
+									<select 
+										value={gridSubdivision} 
+										onChange={(e) => setGridSubdivision(parseInt(e.target.value))}
+										style={{ padding: '0.2rem', background: '#333', color: '#fff', border: 'none', borderRadius: '4px' }}
+									>
+										<option value={4}>1/4</option>
+										<option value={8}>1/8</option>
+										<option value={16}>1/16</option>
+										<option value={32}>1/32</option>
+									</select>
+								</div>
+							)}
+							<button onClick={() => setIsExpanded(false)} style={{ padding: '0.5rem 1rem', background: '#444', border: 'none', color: '#fff', borderRadius: '4px', cursor: 'pointer' }}>Close</button>
+						</div>
 					</div>
 					
 					<div className="control-group-header">
@@ -5637,7 +5893,7 @@ const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockSt
 					</div>
 					
 					<div style={{ display: 'flex', gap: '1rem', flexDirection: 'column' }}>
-						<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={900} height={400} />
+						<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={900} height={400} audioContext={audioContext} gridSubdivision={gridSubdivision} />
 						
 						<div className="control-row">
 							<label>Rate</label>
@@ -5673,14 +5929,132 @@ const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockSt
 	}
 
 	return (
-		<div className="lfo-controls" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem', background: '#1a1a1a', borderRadius: '8px', width: '220px' }}>
-			<div className="control-group-header" style={{ marginBottom: '0.5rem' }}>
-				<h4 style={{ margin: 0 }}>{mseg.name}</h4>
-				<button onClick={() => setIsExpanded(true)} style={{ fontSize: '0.8rem', padding: '0.2rem 0.5rem' }}>Edit</button>
+		<div className="control-group lfo-controls">
+			<div className="control-group-header" style={{ border: "none", padding: 0, marginBottom: "0.5rem" }}>
+				<h2>{mseg.name}</h2>
+				<div className="randomizer-buttons-group">
+					<button
+						className="icon-button init-button"
+						onClick={() => onInitialize(mseg.id)}
+						title="Initialize"
+					>
+						<InitializeIcon />
+					</button>
+					<button
+						className="icon-button"
+						onClick={() => onRandomize("chaos", mseg.id)}
+						title="Chaos"
+					>
+						<ChaosIcon />
+					</button>
+					<button
+						className="icon-button"
+						onClick={() => onRandomize("melodic", mseg.id)}
+						title="Melodic"
+					>
+						<MelodicIcon />
+					</button>
+					<button
+						className="icon-button"
+						onClick={() => onRandomize("rhythmic", mseg.id)}
+						title="Rhythmic"
+					>
+						<RhythmicIcon />
+					</button>
+					<button 
+						className="icon-button"
+						onClick={() => setIsExpanded(true)}
+						title="Expand Editor"
+						style={{ marginLeft: '0.5rem' }}
+					>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+							<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+						</svg>
+					</button>
+				</div>
 			</div>
 			
-			<div onClick={() => setIsExpanded(true)} style={{ cursor: 'pointer' }}>
-				<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={200} height={100} readOnly={true} />
+			<div style={{ marginBottom: '1rem', height: '120px' }}>
+				<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={600} height={300} readOnly={false} audioContext={audioContext} />
+			</div>
+
+			<div className="control-row">
+				<label>Rate</label>
+				<div className="control-value-wrapper control-with-lock">
+					{mseg.sync ? (
+						<select
+							value={mseg.syncRateIndex}
+							onChange={(e) => onUpdate({ syncRateIndex: parseInt(e.target.value) })}
+						>
+							{syncRates.map((rate, i) => (
+								<option key={i} value={i}>{rate}</option>
+							))}
+						</select>
+					) : (
+						<>
+							<input
+								type="range"
+								min="0.1"
+								max="20"
+								step="0.1"
+								value={mseg.rate}
+								onChange={(e) => onUpdate({ rate: parseFloat(e.target.value) })}
+							/>
+							<span className="value-display">{mseg.rate.toFixed(1)} Hz</span>
+						</>
+					)}
+					<LockIcon
+						isLocked={getLock(mseg.sync ? "syncRate" : "rate")}
+						onClick={() => onToggleLock(`msegs.${mseg.id}.${mseg.sync ? "syncRate" : "rate"}`)}
+						title="Lock Rate"
+					/>
+				</div>
+			</div>
+
+			<div className="control-row">
+				<label>Sync</label>
+				<div className="control-with-lock">
+					<div className="toggle-group">
+						<button 
+							className={mseg.sync ? "active" : ""} 
+							onClick={() => onUpdate({ sync: !mseg.sync })}
+						>
+							{mseg.sync ? "On" : "Off"}
+						</button>
+					</div>
+					<LockIcon
+						isLocked={getLock("sync")}
+						onClick={() => onToggleLock(`msegs.${mseg.id}.sync`)}
+						title="Lock Sync"
+					/>
+				</div>
+			</div>
+
+			<div className="control-row">
+				<label>Loop</label>
+				<div className="control-with-lock">
+					<div className="toggle-group">
+						<button
+							className={`toggle-button ${mseg.loop ? "active" : ""}`}
+							onClick={() => onUpdate({ loop: !mseg.loop })}
+							title="Loop"
+						>
+							Loop
+						</button>
+						<button
+							className={`toggle-button ${mseg.retrigger ? "active" : ""}`}
+							onClick={() => onUpdate({ retrigger: !mseg.retrigger })}
+							title="Retrigger on Note On (even if looping)"
+						>
+							Retrig
+						</button>
+					</div>
+					<LockIcon
+						isLocked={getLock("loop")}
+						onClick={() => onToggleLock(`msegs.${mseg.id}.loop`)}
+						title="Lock Loop"
+					/>
+				</div>
 			</div>
 		</div>
 	);
@@ -5699,6 +6073,7 @@ interface BottomTabsProps {
 	lockState: LockState;
 	onToggleLock: (path: string) => void;
 	onEditLfo: (lfoId: string) => void;
+	audioContext: AudioContext | null;
 }
 
 const BottomTabs: React.FC<BottomTabsProps> = ({
@@ -5714,6 +6089,7 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 	lockState,
 	onToggleLock,
 	onEditLfo,
+	audioContext
 }) => {
 	const [activeTab, setActiveTab] = useState<"lfos" | "msegs" | "routing">("lfos");
 
@@ -5801,6 +6177,9 @@ const BottomTabs: React.FC<BottomTabsProps> = ({
 							bpm={bpm}
 							lockState={lockState}
 							onToggleLock={onToggleLock}
+							audioContext={audioContext}
+							onRandomize={onRandomize}
+							onInitialize={onInitialize}
 						/>
 					))}
 				</div>
@@ -5912,6 +6291,7 @@ const App: React.FC = () => {
 	const [sequencerCurrentSteps, setSequencerCurrentSteps] = useState<Map<string, number>>(new Map());
 	const [harmonicTuningSystem, setHarmonicTuningSystem] =
 		useState<TuningSystem>("440_ET");
+	const msegTriggerTimesRef = useRef<Map<string, number>>(new Map()); // msegId -> triggerTime
 	const [isMorphing, setIsMorphing] = useState(false);
 	const [scale, setScale] = useState<ScaleName>("major");
 	const [transpose, setTranspose] = useState(0);
@@ -6194,6 +6574,10 @@ const App: React.FC = () => {
 	const handleUndo = useCallback(() => {
 		if (historyStack.current.length === 0) return;
 		
+		// Stop any active morphing or notes
+		setIsMorphing(false);
+		allNotesOff();
+		
 		const currentState: Preset["data"] = {
 			engines,
 			lfos,
@@ -6257,6 +6641,10 @@ const App: React.FC = () => {
 
 	const handleRedo = useCallback(() => {
 		if (futureStack.current.length === 0) return;
+
+		// Stop any active morphing or notes
+		setIsMorphing(false);
+		allNotesOff();
 
 		const currentState: Preset["data"] = {
 			engines,
@@ -6714,6 +7102,7 @@ const App: React.FC = () => {
 				setFilter1State(randomState.filter1State);
 				setFilter2State(randomState.filter2State);
 				setMasterEffects(randomState.masterEffects);
+				setMsegs(randomState.msegs);
 				return;
 			}
 
@@ -6723,6 +7112,7 @@ const App: React.FC = () => {
 				filter2State,
 				lfos,
 				masterEffects,
+				msegs,
 			};
 			morphTargetRef.current = randomState;
 			morphStartTimeRef.current = Date.now();
@@ -6731,6 +7121,7 @@ const App: React.FC = () => {
 		[
 			engines,
 			lfos,
+			msegs,
 			filter1State,
 			filter2State,
 			masterEffects,
@@ -7310,32 +7701,40 @@ const App: React.FC = () => {
 	}, [audioContext]);
 	
 	const noteOn = useCallback((engineId: string, noteId: string, midiNote: number, time: number, explicitFrequency?: number) => {
-		// Trigger non-looping MSEGs
-		const { msegs } = latestStateRef.current;
-		if (msegs && msegNodesRef.current && audioContext) {
-			msegs.forEach(mseg => {
-				if (!mseg.loop) {
-					const nodes = msegNodesRef.current.get(mseg.id);
-					if (nodes && nodes.buffer) {
-						// Restart
-						if (nodes.source) {
-							try { nodes.source.stop(); } catch(e) {}
-							nodes.source.disconnect();
-						}
-						const source = audioContext.createBufferSource();
-						source.buffer = nodes.buffer;
-						source.loop = false;
-						source.connect(nodes.gain);
-						source.start(time);
-						nodes.source = source;
-					}
-				}
-			});
-		}
+
 		if (!audioContext) return;
 
 		const now = audioContext.currentTime;
     	const scheduledTime = time > now ? time : now;
+
+		// Trigger non-looping MSEGs
+		const { msegs } = latestStateRef.current;
+		if (msegs) {
+			msegs.forEach(mseg => {
+				if (!mseg.loop || mseg.retrigger) {
+					// Store trigger time for Granular Scheduler
+					msegTriggerTimesRef.current.set(mseg.id, scheduledTime);
+
+					// Audio Rate Triggering
+					if (msegNodesRef.current) {
+						const nodes = msegNodesRef.current.get(mseg.id);
+						if (nodes && nodes.buffer) {
+							// Restart
+							if (nodes.source) {
+								try { nodes.source.stop(); } catch(e) {}
+								nodes.source.disconnect();
+							}
+							const source = audioContext.createBufferSource();
+							source.buffer = nodes.buffer;
+							source.loop = mseg.loop; // Respect loop setting
+							source.connect(nodes.gain);
+							source.start(scheduledTime);
+							nodes.source = source;
+						}
+					}
+				}
+			});
+		}
 		
 		const { engines, voicingMode, glideTime, isGlideSynced, glideSyncRateIndex, lfos, bpm, transpose } = latestStateRef.current;
 		// console.log(`[NoteOn] Engine: ${engineId}, Note: ${midiNote}, Mode: ${voicingMode}`);
@@ -7689,6 +8088,8 @@ const App: React.FC = () => {
     const engineSchedulerStates = useRef<Map<string, { nextNoteTime: number; currentStep: number }>>(new Map());
 
     useEffect(() => {
+        if (!audioContext) return;
+
         if (!isTransportPlaying) {
             if (schedulerState.current.timerId) {
                 clearTimeout(schedulerState.current.timerId);
@@ -7698,44 +8099,48 @@ const App: React.FC = () => {
             engineSchedulerStates.current.clear();
 			sequencerModEventsRef.current.clear();
             setSequencerCurrentSteps(new Map());
-			activeVoicesRef.current.forEach(voice => noteOff(voice.noteId, 0));
-            return;
-        }
-
-        if (isTransportPlaying && audioContext) {
-            // Initialize all engines for scheduling
-            latestStateRef.current.engines.forEach(engine => {
-                if (!engineSchedulerStates.current.has(engine.id)) {
-                    engineSchedulerStates.current.set(engine.id, {
-                        nextNoteTime: audioContext.currentTime + 0.1, // Start scheduling shortly after play
-                        currentStep: 0,
-                    });
+            
+            // Kill ONLY sequencer voices, keep MIDI voices alive
+			activeVoicesRef.current.forEach(voice => {
+                if (voice.noteId.startsWith("seq_")) {
+                    noteOff(voice.noteId, 0);
                 }
             });
-
-
             
-            const scheduler = () => {
-                if (!audioContext) return;
-				if (isRandomizingRef.current) {
-					schedulerState.current.timerId = window.setTimeout(scheduler, 100);
-					return;
-				}
-				// REMOVED: if (latestStateRef.current.clockSource === "midi") return; 
+            // Start scheduler loop anyway to handle Granular/MIDI voices
+            // But we need to make sure we don't double-schedule if we just stopped.
+            // Actually, if we just stopped, we want to keep running the scheduler for granular.
+        }
 
-                const now = audioContext.currentTime;
-                const scheduleUntil = now + schedulerState.current.scheduleAheadTime;
+        // Initialize all engines for scheduling
+        latestStateRef.current.engines.forEach(engine => {
+            if (!engineSchedulerStates.current.has(engine.id)) {
+                engineSchedulerStates.current.set(engine.id, {
+                    nextNoteTime: audioContext.currentTime + 0.1, // Start scheduling shortly after play
+                    currentStep: 0,
+                });
+            }
+        });
 
+        const scheduler = () => {
+            if (!audioContext) return;
+            if (isRandomizingRef.current) {
+                schedulerState.current.timerId = window.setTimeout(scheduler, 100);
+                return;
+            }
 
-				// Cleanup old sequencer modulation events
-				const cleanupTime = now - 2.0; // Clean up events older than 2s
-				sequencerModEventsRef.current.forEach((events, engineId) => {
-					const filteredEvents = events.filter(e => e.end > cleanupTime);
-					sequencerModEventsRef.current.set(engineId, filteredEvents);
-				});
+            const now = audioContext.currentTime;
+            const scheduleUntil = now + schedulerState.current.scheduleAheadTime;
 
-                // --- Schedule Sequencer Notes (Internal & Link Clock) ---
-				if (latestStateRef.current.clockSource === "internal" || latestStateRef.current.clockSource === "link") {
+            // Cleanup old sequencer modulation events
+            const cleanupTime = now - 2.0; // Clean up events older than 2s
+            sequencerModEventsRef.current.forEach((events, engineId) => {
+                const filteredEvents = events.filter(e => e.end > cleanupTime);
+                sequencerModEventsRef.current.set(engineId, filteredEvents);
+            });
+
+            // --- Schedule Sequencer Notes (Internal & Link Clock) ---
+            if (isTransportPlaying && (latestStateRef.current.clockSource === "internal" || latestStateRef.current.clockSource === "link")) {
 					if (isWaitingForLinkStart.current) {
 						// Wait for Link start beat
 						schedulerState.current.timerId = window.setTimeout(scheduler, schedulerState.current.lookaheadTime);
@@ -7800,6 +8205,34 @@ const App: React.FC = () => {
 							if (lfo.routing[granularDestKeys.size]) sizeMod += lfoVal * 0.1; // Scale to +/- 100ms
 							if (lfo.routing[granularDestKeys.density]) densityMod += lfoVal * 50; // Scale to +/- 50
 							if (lfo.routing[granularDestKeys.jitter]) jitterMod += lfoVal * 0.5; // Scale to +/- 0.5
+						});
+
+						// MSEG Modulation
+						latestStateRef.current.msegs.forEach(mseg => {
+							// Check routing
+							const routingKeys = {
+								pos: `engine${voiceEngineNum}GrainPosition` as keyof LFORoutingState,
+								size: `engine${voiceEngineNum}GrainSize` as keyof LFORoutingState,
+								density: `engine${voiceEngineNum}GrainDensity` as keyof LFORoutingState,
+								jitter: `engine${voiceEngineNum}GrainJitter` as keyof LFORoutingState,
+							};
+							
+							const hasRouting = mseg.routing[routingKeys.pos] || mseg.routing[routingKeys.size] || mseg.routing[routingKeys.density] || mseg.routing[routingKeys.jitter];
+							
+							if (hasRouting) {
+								const triggerTime = msegTriggerTimesRef.current.get(mseg.id) || 0;
+								const msegVal = calculateMSEGValue(mseg, nextGrainTime, latestStateRef.current.bpm, triggerTime);
+								
+								// MSEG is 0 to 1. Center it to -0.5 to 0.5 for bipolar modulation?
+								// Or keep unipolar 0 to 1?
+								// LFOs are -1 to 1.
+								// Let's treat MSEG as 0 to 1 unipolar modulation.
+								
+								if (mseg.routing[routingKeys.pos]) positionMod += (msegVal - 0.5); // Center around current pos
+								if (mseg.routing[routingKeys.size]) sizeMod += (msegVal - 0.5) * 0.2; 
+								if (mseg.routing[routingKeys.density]) densityMod += (msegVal - 0.5) * 100;
+								if (mseg.routing[routingKeys.jitter]) jitterMod += (msegVal - 0.5);
+							}
 						});
 
 						// Sequencer Modulation
@@ -7881,17 +8314,16 @@ const App: React.FC = () => {
                 });
 
 
-                schedulerState.current.timerId = window.setTimeout(scheduler, schedulerState.current.lookaheadTime);
-            };
-            
-            scheduler(); // Start the loop
+            schedulerState.current.timerId = window.setTimeout(scheduler, schedulerState.current.lookaheadTime);
+        };
+        
+        scheduler(); // Start the loop
 
-            return () => {
-                if (schedulerState.current.timerId) {
-                    clearTimeout(schedulerState.current.timerId);
-                }
-            };
-        }
+        return () => {
+            if (schedulerState.current.timerId) {
+                clearTimeout(schedulerState.current.timerId);
+            }
+        };
     }, [isTransportPlaying, audioContext, noteOn, noteOff]);
 
 	// Keep track of midiAccess to prevent garbage collection
@@ -8989,6 +9421,19 @@ const App: React.FC = () => {
 					})
 				);
 
+				setMsegs((currentMsegs) =>
+					currentMsegs.map((mseg, i) => {
+						const start = startState.msegs[i];
+						const target = targetState.msegs[i];
+						if (!start || !target) return mseg;
+
+						return {
+							...mseg,
+							rate: lerp(start.rate, target.rate, progress),
+						};
+					})
+				);
+
 				if (startState.filter1State && targetState.filter1State) {
 					setFilter1State((prev) => ({
 						...prev,
@@ -9236,6 +9681,7 @@ const App: React.FC = () => {
 					setLfos(finalTargetState.lfos);
 					setFilter1State(finalTargetState.filter1State);
 					setFilter2State(finalTargetState.filter2State);
+					setMsegs(finalTargetState.msegs);
 				}
 				
 				setIsMorphing(false);
@@ -9757,6 +10203,7 @@ const App: React.FC = () => {
 						lockState={lockState}
 						onToggleLock={handleToggleLock}
 						onEditLfo={setEditingLfoId}
+						audioContext={audioContext}
 					/>
 				</div>
 			)}
