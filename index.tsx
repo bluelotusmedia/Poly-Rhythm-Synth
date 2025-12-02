@@ -168,8 +168,8 @@ interface LFOState {
 	routing: LFORoutingState;
 	customShape?: number[]; // Array of values -1 to 1
 	smoothing?: number; // 0 to 1
-
-	gridSize?: number; // 0 = off, >0 = number of steps
+	gridSizeX?: number; // 0 = off, >0 = divisions
+	gridSizeY?: number; // 0 = off, >0 = divisions
 }
 
 interface MSEGPoint {
@@ -188,6 +188,8 @@ interface MSEGState {
 	rate: number; // Hz if not synced
 	syncRateIndex: number;
 	routing: LFORoutingState;
+	gridSizeX?: number; // 0 = off, >0 = number of steps (Time)
+	gridSizeY?: number; // 0 = off, >0 = number of steps (Value)
 }
 
 // --- Parameter Lock State ---
@@ -820,42 +822,46 @@ const getInitialState = () => {
 			{
 				id: "lfo1",
 				name: "LFO 1",
-				rate: 5,
+				rate: 0.1,
 				depth: 0.5,
 				shape: "sine" as LFO_Shape,
 				sync: false,
 				syncRate: "1/4",
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				customShape: new Array(256).fill(0).map((_, i) => Math.sin(i / 256 * Math.PI * 2)),
 				smoothing: 0,
-
-				gridSize: 16,
+				gridSizeX: 0,
+				gridSizeY: 0,
 			},
 			{
 				id: "lfo2",
 				name: "LFO 2",
-				rate: 2,
+				shape: "triangle" as LFO_Shape,
+				rate: 0.5,
 				depth: 0.6,
-				shape: "square" as LFO_Shape,
-				sync: false,
-				syncRate: "1/8",
+				sync: true,
+				syncRate: "1/8d",
+				syncRateIndex: 4,
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				customShape: new Array(256).fill(0).map((_, i) => i < 128 ? (i / 128) * 2 - 1 : (1 - (i - 128) / 128) * 2 - 1),
 				smoothing: 0,
-
-				gridSize: 16,
+				gridSizeX: 0,
+				gridSizeY: 0,
 			},
 			{
 				id: "lfo3",
 				name: "LFO 3",
-				rate: 0.3,
+				shape: "square" as LFO_Shape,
+				rate: 4,
 				depth: 0.7,
-				shape: "sawtooth" as LFO_Shape,
-				sync: true,
-				syncRate: "1/16",
+				sync: false,
+				syncRate: "1/8",
+				syncRateIndex: 3,
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				customShape: new Array(256).fill(0).map((_, i) => i < 128 ? 1 : -1),
 				smoothing: 0,
-
-				gridSize: 16,
-
+				gridSizeX: 0,
+				gridSizeY: 0,
 			},
 		],
 		msegs: [
@@ -869,6 +875,8 @@ const getInitialState = () => {
 				rate: 1,
 				syncRateIndex: 3,
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				gridSizeX: 0,
+				gridSizeY: 0,
 			},
 			{
 				id: "mseg2",
@@ -880,6 +888,8 @@ const getInitialState = () => {
 				rate: 0.5,
 				syncRateIndex: 4,
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				gridSizeX: 0,
+				gridSizeY: 0,
 			},
 			{
 				id: "mseg3",
@@ -891,6 +901,8 @@ const getInitialState = () => {
 				rate: 2,
 				syncRateIndex: 3,
 				routing: { ...DEFAULT_LFO_ROUTING_STATE },
+				gridSizeX: 0,
+				gridSizeY: 0,
 			},
 		],
 		filter1: {
@@ -3999,17 +4011,26 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 			ctx.clearRect(0, 0, width, height);
 			
 			// Draw Grid
-			const gridSize = lfoState.gridSize || 0;
-			if (gridSize > 0) {
+			const gridSizeX = lfoState.gridSizeX || 0;
+			if (gridSizeX > 0) {
 				ctx.strokeStyle = "#333";
 				ctx.lineWidth = 1;
-				const stepX = width / gridSize;
-				const stepY = height / gridSize;
-				
+				const stepX = width / gridSizeX;
 				ctx.beginPath();
-				for (let i = 1; i < gridSize; i++) {
+				for (let i = 1; i < gridSizeX; i++) {
 					ctx.moveTo(i * stepX, 0);
 					ctx.lineTo(i * stepX, height);
+				}
+				ctx.stroke();
+			}
+
+			const gridSizeY = lfoState.gridSizeY || 0;
+			if (gridSizeY > 0) {
+				ctx.strokeStyle = "#333";
+				ctx.lineWidth = 1;
+				const stepY = height / gridSizeY;
+				ctx.beginPath();
+				for (let i = 1; i < gridSizeY; i++) {
 					ctx.moveTo(0, i * stepY);
 					ctx.lineTo(width, i * stepY);
 				}
@@ -4035,7 +4056,7 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 		};
 
 		draw();
-	}, [lfoState.customShape, lfoState.gridSize]);
+	}, [lfoState.customShape, lfoState.gridSizeX, lfoState.gridSizeY]);
 
 	return (
 		<div className="modal-overlay" style={{
@@ -4053,30 +4074,59 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 				</div>
 
 				<div style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}>
-					<label>Grid Size:</label>
-					<div
-						className="value-display"
-						style={{ 
-							width: '40px', textAlign: 'center', cursor: 'ns-resize',
-							background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
-						}}
-						onMouseDown={(e) => {
-							const startY = e.clientY;
-							const startVal = lfoState.gridSize || 0;
-							const handleMove = (moveEvent: MouseEvent) => {
-								const delta = Math.floor((startY - moveEvent.clientY) / 5);
-								const newVal = Math.max(0, Math.min(64, startVal + delta));
-								if (newVal !== lfoState.gridSize) onUpdate({ gridSize: newVal });
-							};
-							const handleUp = () => {
-								window.removeEventListener('mousemove', handleMove);
-								window.removeEventListener('mouseup', handleUp);
-							};
-							window.addEventListener('mousemove', handleMove);
-							window.addEventListener('mouseup', handleUp);
-						}}
-					>
-						{lfoState.gridSize || "Off"}
+					<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+						<label>Grid X:</label>
+						<div
+							className="value-display"
+							style={{ 
+								width: '40px', textAlign: 'center', cursor: 'ns-resize',
+								background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
+							}}
+							onMouseDown={(e) => {
+								const startY = e.clientY;
+								const startVal = lfoState.gridSizeX || 0;
+								const handleMove = (moveEvent: MouseEvent) => {
+									const delta = Math.floor((startY - moveEvent.clientY) / 5);
+									const newVal = Math.max(0, Math.min(64, startVal + delta));
+									if (newVal !== lfoState.gridSizeX) onUpdate({ gridSizeX: newVal });
+								};
+								const handleUp = () => {
+									window.removeEventListener('mousemove', handleMove);
+									window.removeEventListener('mouseup', handleUp);
+								};
+								window.addEventListener('mousemove', handleMove);
+								window.addEventListener('mouseup', handleUp);
+							}}
+						>
+							{lfoState.gridSizeX || "Off"}
+						</div>
+					</div>
+					<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+						<label>Grid Y:</label>
+						<div
+							className="value-display"
+							style={{ 
+								width: '40px', textAlign: 'center', cursor: 'ns-resize',
+								background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
+							}}
+							onMouseDown={(e) => {
+								const startY = e.clientY;
+								const startVal = lfoState.gridSizeY || 0;
+								const handleMove = (moveEvent: MouseEvent) => {
+									const delta = Math.floor((startY - moveEvent.clientY) / 5);
+									const newVal = Math.max(0, Math.min(64, startVal + delta));
+									if (newVal !== lfoState.gridSizeY) onUpdate({ gridSizeY: newVal });
+								};
+								const handleUp = () => {
+									window.removeEventListener('mousemove', handleMove);
+									window.removeEventListener('mouseup', handleUp);
+								};
+								window.addEventListener('mousemove', handleMove);
+								window.addEventListener('mouseup', handleUp);
+							}}
+						>
+							{lfoState.gridSizeY || "Off"}
+						</div>
 					</div>
 					<div style={{ fontSize: '0.8rem', color: '#888' }}>
 						Hold Shift: Even steps | Hold Alt: Odd steps | Shift+Alt: Fibonacci
@@ -4103,7 +4153,8 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 
 						let lastIndex: number | null = null;
 						let lastVal: number | null = null;
-						const gridSize = lfoState.gridSize || 0;
+						const gridSizeX = lfoState.gridSizeX || 0;
+						const gridSizeY = lfoState.gridSizeY || 0;
 
 						const handleMove = (moveEvent: MouseEvent) => {
 							const clientX = moveEvent.clientX;
@@ -4111,12 +4162,14 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 							let x = Math.max(0, Math.min(canvas.width, clientX - rect.left));
 							let y = Math.max(0, Math.min(canvas.height, clientY - rect.top));
 							
-							if (gridSize > 0) {
-								const stepX = canvas.width / gridSize;
-								const stepY = canvas.height / gridSize;
+							if (gridSizeX > 0) {
+								const stepX = canvas.width / gridSizeX;
 								x = Math.round(x / stepX) * stepX;
-								y = Math.round(y / stepY) * stepY;
 								x = Math.max(0, Math.min(canvas.width, x));
+							}
+							if (gridSizeY > 0) {
+								const stepY = canvas.height / gridSizeY;
+								y = Math.round(y / stepY) * stepY;
 								y = Math.max(0, Math.min(canvas.height, y));
 							}
 
@@ -4128,8 +4181,8 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 									for (let i = startIdx; i < endIdx; i++) currentShape[i] = val;
 								};
 
-								if (gridSize > 0) {
-									const stepWidth = len / gridSize;
+								if (gridSizeX > 0) {
+									const stepWidth = len / gridSizeX;
 									const currentStep = Math.floor(index / stepWidth);
 									const getFibonacciSteps = (max: number) => {
 										const steps = new Set<number>();
@@ -4140,7 +4193,7 @@ const LfoEditorModal: React.FC<LfoEditorModalProps> = ({ lfoState, onUpdate, onC
 
 									let shouldUpdate = true;
 									if (moveEvent.shiftKey && moveEvent.altKey) {
-										if (!getFibonacciSteps(gridSize).has(currentStep)) shouldUpdate = false;
+										if (!getFibonacciSteps(gridSizeX).has(currentStep)) shouldUpdate = false;
 									} else if (moveEvent.shiftKey) {
 										if (currentStep % 2 !== 0) shouldUpdate = false;
 									} else if (moveEvent.altKey) {
@@ -5402,10 +5455,9 @@ interface MSEGEditorProps {
 	height?: number;
 	readOnly?: boolean;
 	audioContext?: AudioContext | null;
-	gridSubdivision?: number;
 }
 
-const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, height = 200, readOnly = false, audioContext, gridSubdivision = 16 }) => {
+const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, height = 200, readOnly = false, audioContext }) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const [draggedPointIndex, setDraggedPointIndex] = useState<number | null>(null);
 	const [draggedCurveIndex, setDraggedCurveIndex] = useState<number | null>(null);
@@ -5430,20 +5482,39 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 			ctx.beginPath();
 			
 			// Vertical Grid (Time)
-			// Use gridSubdivision
-			const divisions = mseg.sync ? gridSubdivision : 10; 
-			for (let i = 0; i <= divisions; i++) {
-				const x = (i / divisions) * width;
-				ctx.moveTo(x, 0);
-				ctx.lineTo(x, height);
+			const gridSizeX = mseg.gridSizeX || 0;
+			if (gridSizeX > 0) {
+				const stepX = width / gridSizeX;
+				for (let i = 1; i < gridSizeX; i++) {
+					const x = i * stepX;
+					ctx.moveTo(x, 0);
+					ctx.lineTo(x, height);
+				}
+			} else {
+				// Default grid (quarters)
+				for (let i = 1; i < 4; i++) {
+					const x = (i / 4) * width;
+					ctx.moveTo(x, 0);
+					ctx.lineTo(x, height);
+				}
 			}
 			
 			// Horizontal Grid (Value)
-			// Draw center line and quarters
-			for (let i = 0; i <= 4; i++) {
-				const y = (i / 4) * height;
-				ctx.moveTo(0, y);
-				ctx.lineTo(width, y);
+			const gridSizeY = mseg.gridSizeY || 0;
+			if (gridSizeY > 0) {
+				const stepY = height / gridSizeY;
+				for (let i = 1; i < gridSizeY; i++) {
+					const y = i * stepY;
+					ctx.moveTo(0, y);
+					ctx.lineTo(width, y);
+				}
+			} else {
+				// Default grid (quarters)
+				for (let i = 0; i <= 4; i++) {
+					const y = (i / 4) * height;
+					ctx.moveTo(0, y);
+					ctx.lineTo(width, y);
+				}
 			}
 			ctx.stroke();
 
@@ -5703,16 +5774,25 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 			// Shift = Fine Tune (no snap)
 			// Default = Snap to grid if close
 			if (!e.shiftKey) {
-				// Snap Time
-				const gridDivisions = mseg.sync ? gridSubdivision : 10;
-				const snapThreshold = 0.02;
-				const snappedTime = Math.round(time * gridDivisions) / gridDivisions;
-				if (Math.abs(time - snappedTime) < snapThreshold) time = snappedTime;
-				
-				// Snap Value
-				const valGrid = 4; // 0, 0.25, 0.5, 0.75, 1
-				const snappedVal = Math.round(value * valGrid) / valGrid;
-				if (Math.abs(value - snappedVal) < snapThreshold) value = snappedVal;
+				// Snap Time (X)
+				if (mseg.gridSizeX && mseg.gridSizeX > 0) {
+					const gridSizeX = mseg.gridSizeX;
+					const stepX = 1 / gridSizeX;
+					time = Math.round(time / stepX) * stepX;
+				}
+
+				// Snap Value (Y)
+				if (mseg.gridSizeY && mseg.gridSizeY > 0) {
+					const gridSizeY = mseg.gridSizeY;
+					const stepY = 1 / gridSizeY;
+					value = Math.round(value / stepY) * stepY;
+				} else {
+					// Default snapping if grid is off (optional, or just remove)
+					// Snap Value to quarters
+					const valGrid = 4;
+					const snappedVal = Math.round(value * valGrid) / valGrid;
+					if (Math.abs(value - snappedVal) < 0.02) value = snappedVal;
+				}
 			}
 
 			const newPoints = [...mseg.points];
@@ -5790,8 +5870,23 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 			}
 		} else {
 			// Add new point
-			const time = Math.max(0, Math.min(1, x / width));
-			const value = Math.max(0, Math.min(1, 1 - y / height));
+			let time = Math.max(0, Math.min(1, x / width));
+			let value = Math.max(0, Math.min(1, 1 - y / height));
+
+			// Snap Time (X)
+			if (mseg.gridSizeX && mseg.gridSizeX > 0) {
+				const gridSizeX = mseg.gridSizeX;
+				const stepX = 1 / gridSizeX;
+				time = Math.round(time / stepX) * stepX;
+			}
+
+			// Snap Value (Y)
+			if (mseg.gridSizeY && mseg.gridSizeY > 0) {
+				const gridSizeY = mseg.gridSizeY;
+				const stepY = 1 / gridSizeY;
+				value = Math.round(value / stepY) * stepY;
+			}
+
 			const newPoints = [...mseg.points, { time, value, curve: 0 }];
 			newPoints.sort((a, b) => a.time - b.time);
 			onUpdate({ points: newPoints });
@@ -5833,7 +5928,6 @@ interface MSEGControlsProps {
 
 const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockState, onToggleLock, audioContext, onRandomize, onInitialize }) => {
 	const [isExpanded, setIsExpanded] = useState(false);
-	const [gridSubdivision, setGridSubdivision] = useState(16);
 
 	const getLock = (path: string) => {
 		return lockState.msegs[mseg.id]?.[path] ?? false;
@@ -5866,21 +5960,61 @@ const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockSt
 					<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
 						<h2>{mseg.name} Editor</h2>
 						<div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-							{mseg.sync && (
-								<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-									<label>Grid:</label>
-									<select 
-										value={gridSubdivision} 
-										onChange={(e) => setGridSubdivision(parseInt(e.target.value))}
-										style={{ padding: '0.2rem', background: '#333', color: '#fff', border: 'none', borderRadius: '4px' }}
-									>
-										<option value={4}>1/4</option>
-										<option value={8}>1/8</option>
-										<option value={16}>1/16</option>
-										<option value={32}>1/32</option>
-									</select>
+
+							<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+								<label>Grid X:</label>
+								<div
+									className="value-display"
+									style={{ 
+										width: '40px', textAlign: 'center', cursor: 'ns-resize',
+										background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
+									}}
+									onMouseDown={(e) => {
+										const startY = e.clientY;
+										const startVal = mseg.gridSizeX || 0;
+										const handleMove = (moveEvent: MouseEvent) => {
+											const delta = Math.floor((startY - moveEvent.clientY) / 5);
+											const newVal = Math.max(0, Math.min(64, startVal + delta));
+											if (newVal !== mseg.gridSizeX) onUpdate({ gridSizeX: newVal });
+										};
+										const handleUp = () => {
+											window.removeEventListener('mousemove', handleMove);
+											window.removeEventListener('mouseup', handleUp);
+										};
+										window.addEventListener('mousemove', handleMove);
+										window.addEventListener('mouseup', handleUp);
+									}}
+								>
+									{mseg.gridSizeX || "Off"}
 								</div>
-							)}
+							</div>
+							<div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+								<label>Grid Y:</label>
+								<div
+									className="value-display"
+									style={{ 
+										width: '40px', textAlign: 'center', cursor: 'ns-resize',
+										background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
+									}}
+									onMouseDown={(e) => {
+										const startY = e.clientY;
+										const startVal = mseg.gridSizeY || 0;
+										const handleMove = (moveEvent: MouseEvent) => {
+											const delta = Math.floor((startY - moveEvent.clientY) / 5);
+											const newVal = Math.max(0, Math.min(64, startVal + delta));
+											if (newVal !== mseg.gridSizeY) onUpdate({ gridSizeY: newVal });
+										};
+										const handleUp = () => {
+											window.removeEventListener('mousemove', handleMove);
+											window.removeEventListener('mouseup', handleUp);
+										};
+										window.addEventListener('mousemove', handleMove);
+										window.addEventListener('mouseup', handleUp);
+									}}
+								>
+									{mseg.gridSizeY || "Off"}
+								</div>
+							</div>
 							<button onClick={() => setIsExpanded(false)} style={{ padding: '0.5rem 1rem', background: '#444', border: 'none', color: '#fff', borderRadius: '4px', cursor: 'pointer' }}>Close</button>
 						</div>
 					</div>
@@ -5893,7 +6027,7 @@ const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockSt
 					</div>
 					
 					<div style={{ display: 'flex', gap: '1rem', flexDirection: 'column' }}>
-						<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={900} height={400} audioContext={audioContext} gridSubdivision={gridSubdivision} />
+						<MSEGEditor mseg={mseg} onUpdate={onUpdate} width={900} height={400} audioContext={audioContext} />
 						
 						<div className="control-row">
 							<label>Rate</label>

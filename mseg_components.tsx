@@ -20,18 +20,37 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 			ctx.clearRect(0, 0, width, height);
 
 			// Draw Grid
-			ctx.strokeStyle = "#333";
-			ctx.lineWidth = 1;
-			ctx.beginPath();
-			for (let i = 0; i <= 10; i++) {
-				const x = (i / 10) * width;
-				ctx.moveTo(x, 0);
-				ctx.lineTo(x, height);
-				const y = (i / 10) * height;
-				ctx.moveTo(0, y);
-				ctx.lineTo(width, y);
+			// Draw Grid
+			const gridSize = mseg.gridSize || 0;
+			if (gridSize > 0) {
+				ctx.strokeStyle = "#333";
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				const stepX = width / gridSize;
+				const stepY = height / gridSize;
+				
+				for (let i = 1; i < gridSize; i++) {
+					ctx.moveTo(i * stepX, 0);
+					ctx.lineTo(i * stepX, height);
+					ctx.moveTo(0, i * stepY);
+					ctx.lineTo(width, i * stepY);
+				}
+				ctx.stroke();
+			} else {
+				// Default subtle grid
+				ctx.strokeStyle = "#2a2a2a";
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				for (let i = 0; i <= 10; i++) {
+					const x = (i / 10) * width;
+					ctx.moveTo(x, 0);
+					ctx.lineTo(x, height);
+					const y = (i / 10) * height;
+					ctx.moveTo(0, y);
+					ctx.lineTo(width, y);
+				}
+				ctx.stroke();
 			}
-			ctx.stroke();
 
 			// Draw MSEG Line
 			ctx.strokeStyle = "#00ffcc";
@@ -73,7 +92,8 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 		};
 
 		draw();
-	}, [mseg.points, width, height, draggedPointIndex, readOnly]);
+		draw();
+	}, [mseg.points, width, height, draggedPointIndex, readOnly, mseg.gridSize]);
 
 	const handleMouseDown = (e: React.MouseEvent) => {
 		if (readOnly) return;
@@ -104,8 +124,18 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 			}
 		} else {
 			// Add new point
-			const time = Math.max(0, Math.min(1, x / width));
-			const value = Math.max(0, Math.min(1, 1 - y / height));
+			let time = Math.max(0, Math.min(1, x / width));
+			let value = Math.max(0, Math.min(1, 1 - y / height));
+
+			// Snap to grid
+			if (mseg.gridSize && mseg.gridSize > 0) {
+				const gridSize = mseg.gridSize;
+				const stepX = 1 / gridSize;
+				const stepY = 1 / gridSize;
+				time = Math.round(time / stepX) * stepX;
+				value = Math.round(value / stepY) * stepY;
+			}
+
 			const newPoints = [...mseg.points, { time, value, curve: 0 }];
 			newPoints.sort((a, b) => a.time - b.time);
 			onUpdate({ points: newPoints });
@@ -120,8 +150,17 @@ const MSEGEditor: React.FC<MSEGEditorProps> = ({ mseg, onUpdate, width = 600, he
 		const x = e.clientX - rect.left;
 		const y = e.clientY - rect.top;
 
-		const time = Math.max(0, Math.min(1, x / width));
-		const value = Math.max(0, Math.min(1, 1 - y / height));
+		let time = Math.max(0, Math.min(1, x / width));
+		let value = Math.max(0, Math.min(1, 1 - y / height));
+
+		// Snap to grid
+		if (mseg.gridSize && mseg.gridSize > 0) {
+			const gridSize = mseg.gridSize;
+			const stepX = 1 / gridSize;
+			const stepY = 1 / gridSize;
+			time = Math.round(time / stepX) * stepX;
+			value = Math.round(value / stepY) * stepY;
+		}
 
 		const newPoints = [...mseg.points];
 		newPoints[draggedPointIndex] = { ...newPoints[draggedPointIndex], time, value };
@@ -197,6 +236,37 @@ const MSEGControls: React.FC<MSEGControlsProps> = ({ mseg, onUpdate, bpm, lockSt
 						<div className="toggle-group">
 							<button className={mseg.loop ? "active" : ""} onClick={() => onUpdate({ loop: !mseg.loop })}>Loop</button>
 							<button className={mseg.sync ? "active" : ""} onClick={() => onUpdate({ sync: !mseg.sync })}>Sync</button>
+						</div>
+					</div>
+
+					<div style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}>
+						<label>Grid Size:</label>
+						<div
+							className="value-display"
+							style={{ 
+								width: '40px', textAlign: 'center', cursor: 'ns-resize',
+								background: '#333', padding: '4px 8px', borderRadius: '4px', userSelect: 'none'
+							}}
+							onMouseDown={(e) => {
+								const startY = e.clientY;
+								const startVal = mseg.gridSize || 0;
+								const handleMove = (moveEvent: MouseEvent) => {
+									const delta = Math.floor((startY - moveEvent.clientY) / 5);
+									const newVal = Math.max(0, Math.min(64, startVal + delta));
+									if (newVal !== mseg.gridSize) onUpdate({ gridSize: newVal });
+								};
+								const handleUp = () => {
+									window.removeEventListener('mousemove', handleMove);
+									window.removeEventListener('mouseup', handleUp);
+								};
+								window.addEventListener('mousemove', handleMove);
+								window.addEventListener('mouseup', handleUp);
+							}}
+						>
+							{mseg.gridSize || "Off"}
+						</div>
+						<div style={{ fontSize: '0.8rem', color: '#888' }}>
+							Drag to change (0-64)
 						</div>
 					</div>
 					
