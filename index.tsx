@@ -21,7 +21,7 @@ type RandomizeMode = "chaos" | "melodic" | "rhythmic";
 type EngineLayerType = "synth" | "noise" | "sampler";
 type DistortionMode = "overdrive" | "soft clip" | "hard clip" | "foldback";
 type FilterRouting = "series" | "parallel";
-type VoicingMode = "poly" | "mono" | "legato";
+type VoicingMode = "poly" | "mono" | "legato" | "trill";
 
 // --- Master Effects Types ---
 type MasterEffectType =
@@ -1730,14 +1730,16 @@ const LockIcon = ({ isLocked, onClick, title }: { isLocked: boolean; onClick: (e
 );
 
 const UndoIcon = () => (
-	<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-		<path d="M3 9l6 6M3 9l6-6M3 9h14a5 5 0 0 1 0 10" />
+	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+		<path d="M3 7v6h6" />
+		<path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
 	</svg>
 );
 
 const RedoIcon = () => (
-	<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-		<path d="M21 9l-6 6M21 9l-6-6M21 9H7a5 5 0 0 0 0 10" />
+	<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+		<path d="M21 7v6h-6" />
+		<path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
 	</svg>
 );
 
@@ -2399,26 +2401,36 @@ const TopBar: React.FC<TopBarProps> = ({
 
 				<div className="top-bar-group voicing-group">
 					<div className="control-group-row">
-						<div className="voicing-switch">
-							<button
-								className={voicingMode === "poly" ? "active" : ""}
-								onClick={(e) => { e.stopPropagation(); setVoicingMode("poly"); }}
-							>
-								Poly
-							</button>
-							<button
-								className={voicingMode === "mono" ? "active" : ""}
-								onClick={(e) => { e.stopPropagation(); setVoicingMode("mono"); }}
-							>
-								Mono
-							</button>
-							<button
-								className={voicingMode === "legato" ? "active" : ""}
-								onClick={(e) => { e.stopPropagation(); setVoicingMode("legato"); }}
-							>
-								Legato
-							</button>
-						</div>
+						<div className="toggle-group compact">
+						<button 
+							className={voicingMode === 'poly' ? 'active' : ''} 
+							onClick={() => setVoicingMode('poly')}
+							title="Polyphonic"
+						>
+							Poly
+						</button>
+						<button 
+							className={voicingMode === 'mono' ? 'active' : ''} 
+							onClick={() => setVoicingMode('mono')}
+							title="Monophonic (Retrigger)"
+						>
+							Mono
+						</button>
+						<button 
+							className={voicingMode === 'legato' ? 'active' : ''} 
+							onClick={() => setVoicingMode('legato')}
+							title="Legato (No Retrigger)"
+						>
+							Legato
+						</button>
+						<button 
+							className={voicingMode === 'trill' ? 'active' : ''} 
+							onClick={() => setVoicingMode('trill')}
+							title="Trill (Mono with History)"
+						>
+							Trill
+						</button>
+					</div>
 						<div className="control-value-wrapper">
 							<input
 								type="range"
@@ -5315,6 +5327,7 @@ const App: React.FC = () => {
 	const activeVoicesRef = useRef<Map<string, ActiveVoice>>(new Map());
 	const activeMonoNotePerEngineRef = useRef<Map<string, {note: number, freq: number, noteId: string}>>(new Map());
 	const lastPlayedNotePerEngineRef = useRef<Map<string, number>>(new Map());
+	const heldNotesPerEngineRef = useRef<Map<string, string[]>>(new Map());
 	const effectNodesRef = useRef<Map<string, MasterEffectNodes>>(new Map());
     const noiseBuffersRef = useRef<Map<NoiseType, AudioBuffer>>(new Map());
 	const reverbImpulseCache = useRef<Map<string, AudioBuffer>>(new Map());
@@ -6600,9 +6613,49 @@ const App: React.FC = () => {
 	
 
 
-	const noteOff = useCallback((noteId: string, time: number) => {
+	const noteOff = useCallback((noteId: string, time: number, isStealing: boolean = false) => {
 		if (!audioContext) return;
 		
+		// Handle Trill/Mono Logic
+		// Only process stack logic if this is a genuine Note Off event (not stealing)
+		if (!isStealing) {
+			// Extract engineId and note from noteId (format: midi_engineId_channel_note)
+			const parts = noteId.split('_');
+			if (parts.length >= 4 && parts[0] === 'midi') {
+				const engineId = parts[1];
+				const note = parseInt(parts[3]);
+				const { voicingMode } = latestStateRef.current;
+
+				if (voicingMode !== 'poly') {
+					const heldStack = heldNotesPerEngineRef.current.get(engineId);
+					if (heldStack) {
+						const index = heldStack.indexOf(noteId);
+						if (index !== -1) {
+							heldStack.splice(index, 1);
+							
+							// If we are in Trill mode and we just released the currently playing note,
+							// we should go back to the previous note in the stack.
+							if (voicingMode === 'trill' && heldStack.length > 0) {
+								const activeMono = activeMonoNotePerEngineRef.current.get(engineId);
+								
+								// Only re-trigger if the released note was the one currently playing
+								if (activeMono && activeMono.noteId === noteId) {
+									const prevNoteId = heldStack[heldStack.length - 1];
+									const prevParts = prevNoteId.split('_');
+									if (prevParts.length >= 4) {
+										const prevNote = parseInt(prevParts[3]);
+										// Re-trigger previous note
+										noteOn(engineId, prevNoteId, prevNote, time);
+										return; // noteOn will handle the rest
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
 		// If noteId is "all", kill everything
 		if (noteId === "all") {
 			allNotesOff();
@@ -6677,21 +6730,37 @@ const App: React.FC = () => {
 		const targetFrequency = explicitFrequency ?? midiNoteToFrequency(midiNote + transpose, harmonicTuningSystem);
 		
 		if (voicingMode !== 'poly') {
+			// Track held notes for Trill mode
+			if (!heldNotesPerEngineRef.current.has(engineId)) {
+				heldNotesPerEngineRef.current.set(engineId, []);
+			}
+			const heldStack = heldNotesPerEngineRef.current.get(engineId)!;
+			// Remove if already exists (re-press) to move to top
+			const existingIndex = heldStack.indexOf(noteId);
+			if (existingIndex !== -1) {
+				heldStack.splice(existingIndex, 1);
+			}
+			heldStack.push(noteId);
+
 			const activeMono = activeMonoNotePerEngineRef.current.get(engineId);
-			if (activeMono) {
-				noteOff(activeMono.noteId, scheduledTime);
+			// Update active mono note BEFORE stopping the old one to prevent recursion in Trill mode
+			// But we need to capture the old one to stop it
+			const prevActiveMono = activeMono;
+			activeMonoNotePerEngineRef.current.set(engineId, { note: midiNote, freq: targetFrequency, noteId });
+
+			if (prevActiveMono) {
+				noteOff(prevActiveMono.noteId, scheduledTime, true);
 			}
 
 			const lastNote = lastPlayedNotePerEngineRef.current.get(engineId);
-			if (lastNote && voicingMode === 'legato' && activeVoicesRef.current.size > 0) {
+			if (lastNote && (voicingMode === 'legato' || voicingMode === 'trill') && activeVoicesRef.current.size > 0) {
 				startFrequency = midiNoteToFrequency(lastNote, harmonicTuningSystem);
 			}
-			activeMonoNotePerEngineRef.current.set(engineId, { note: midiNote, freq: targetFrequency, noteId });
 		}
 		lastPlayedNotePerEngineRef.current.set(engineId, midiNote);
 	
 		// Clean up any previous voice with the same ID
-		noteOff(noteId, scheduledTime);
+		noteOff(noteId, scheduledTime, true);
 	
 		const { attack, decay, sustain } = engine.adsr;
 		const envelopeGain = audioContext.createGain();
